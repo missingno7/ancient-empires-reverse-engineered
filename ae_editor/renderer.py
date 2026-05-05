@@ -202,33 +202,29 @@ class RoomRenderer:
             # the byte length, not the command.  The real command is body[0].
             # This removes several old false positives where length 0x06/0x07
             # was treated as an object id.
-            if command in (0x00, 0x01) and arg_b in (0x10, 0x11, 0x12, 0x13):
-                # v33: visible conveyor belts are terrain-grid special tiles
-                # (0x0F/0x1F), much like ropes. These control commands may
-                # still carry trigger/motion metadata, but rendering them here
-                # creates misplaced duplicate belts. Keep them visible only in
-                # payload_debug labels for now.
-                if labels:
-                    x, y = control_xy(cmd, mode="button")
-                    self._label(draw, x, y, f"belt-meta {cmd.label}")
-                continue
-
             sprite = None
             mode = "button"
-            if command in (0x00, 0x01) and (arg_b in (0x02, 0x03, 0x04, 0x40, 0x41) or (cmd.y_raw or 0) >= 0x80):
-                # Trigger/buttons.  Ceiling/floor buttons are length-prefixed
-                # control commands; the visual compact3 code 0x0E is *not* a
-                # button.  Some floor buttons use arg_b=0, so y-position is a
-                # safer discriminator than a small whitelist alone.
-                if arg_b == 0x41 and pressed_button is not None:
-                    sprite = pressed_button
-                elif (cmd.y_raw or 0) >= 0x78 and floor_button is not None:
-                    sprite = floor_button
-                else:
-                    sprite = ceiling_button
+            if command == 0x00:
+                # Button command family, v38 cleanup:
+                #   command 0 => ceiling button
+                #   command 1 => floor switch
+                #
+                # Previous builds tried to infer floor/ceiling from arg_b or y.
+                # L1 Expert room 3 disproves that: all three records are command
+                # 0 ceiling buttons, including a record with arg_b == 0x02.  The
+                # arg/extra bytes are trigger-link metadata for platform logic,
+                # not visual sprite ids.
+                sprite = ceiling_button
+                mode = "ceiling_button"
+            elif command == 0x01:
+                # Floor switch/control trigger family.  Variants/pressed state are
+                # still unresolved; render the neutral floor switch for now and
+                # keep all arg bytes available in payload_debug labels.
+                sprite = floor_button
+                mode = "floor_switch"
             elif command == 0x02 and arg_a == 0 and arg_b in (0, 1):
-                # Actor/control record. Confirmed ant-like enemy in L6/R5;
-                # other actor families still need the EXE lookup table.
+                # Actor/control record. Confirmed ant/spider-like family in a
+                # few rooms; the full actor table is still unsolved.
                 sprite = ant
                 mode = "actor"
 

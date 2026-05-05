@@ -67,11 +67,17 @@ def control_xy(cmd: ControlCommand, *, mode: str = "button") -> tuple[int, int]:
     """Convert a length-prefixed control command body to screen coordinates.
 
     Important: cmd.x_raw/cmd.y_raw are body bytes, not the length prefix.
-    The conversion still varies by command family; keeping it here makes the
-    remaining uncertainty explicit.
+    Control commands are not one coordinate family:
+    * ceiling buttons are anchored by the hanging cord/trigger point;
+    * floor switches are anchored close to their base on the floor;
+    * actors still use a separate, partially unsolved runtime transform.
     """
     x_raw = cmd.x_raw or 0
     y_raw = cmd.y_raw or 0
     if mode == "actor":
         return x_raw * 4 - 4, y_raw - 12
+    if mode == "ceiling_button":
+        return x_raw * 2 - 12, y_raw - 46
+    if mode == "floor_switch":
+        return x_raw * 2 - 12, y_raw - 12
     return x_raw * 2 - 12, y_raw - 16

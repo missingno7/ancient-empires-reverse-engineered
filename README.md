@@ -155,9 +155,9 @@ This build restores the v31 background decoration behavior and adds a dedicated 
 
 Conveyor belts are now rendered from terrain tile codes `0x0F` and `0x1F`, not from control records. This matches the observed behaviour where belts show up in `codes_hex` like ropes and have distinct grey/teal tile codes. Control records with conveyor-like arguments are kept as metadata/debug only until the trigger system is fully understood.
 
-## v35 notes
+## v36 notes
 
-v35 keeps the v33 discovery that conveyors are terrain special tiles, but fixes
+v36 keeps the v33 discovery that conveyors are terrain special tiles, but fixes
 the strip length by adding the right-cap cell. It also adds horizontal flip
 support for theme visual entries: bit `0x40` in the compact3 visual code mirrors
 the selected `AE001:(25+theme):(code&0x3f)` sprite. The old global mapping of
@@ -165,6 +165,22 @@ compact3 code `0x02` to an enemy sprite was removed because it broke ordinary
 background decorations in some rooms.
 
 
-## v35 note
+## v36 note
 
 This build fixes the legacy mistake where visual compact3 code `0x0E` was drawn as a button. Buttons are control records; `0x0E` in the visual table is normally theme decoration. Payload debug now also shows EXE-derived probes for still-unsolved actor/item storage.
+
+
+## v36 button/control cleanup
+
+This build keeps the v31/v34 visual layer model, but fixes a control-command mistake: command `0x00` records are trigger/button records even when their link id (`arg_b` or extra byte) is `0x00`, `0x01`, `0x10`, or `0x11`. Previous builds skipped some of those values as conveyor metadata, which is why rooms such as Level 1 Expert room 3 only showed one of three floor buttons. Conveyors remain terrain special tiles (`0x0F`/`0x1F`), so command records are no longer used to draw conveyor belts.
+
+## v38 note
+
+The v38 build fixes the v36 button regression: command records now distinguish
+ceiling buttons, floor switches, and link metadata without using the old
+`y >= threshold` heuristic.  See `docs/level_format_v38.md`.
+
+
+## v38 note
+
+Switch rendering was cleaned up: command `0` records are ceiling buttons, command `1` records are floor switches. The remaining command bytes are kept as trigger/link metadata rather than sprite IDs.
