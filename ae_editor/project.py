@@ -19,5 +19,5 @@ class AncientEmpiresProject:
         self.ae001 = self.archives["AE001.DAT"]
         self.ae000 = self.archives.get("AE000.DAT")
         self.levels: list[Level] = load_levels(self.ae001)
-        self.graphics = GraphicsSet(self.ae001, self.exe)
+        self.graphics = GraphicsSet(self.ae001, self.exe, self.ae000)
         self.renderer = RoomRenderer(self.graphics)

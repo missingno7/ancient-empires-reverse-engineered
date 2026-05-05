@@ -10,25 +10,26 @@ from .constants import CELL_SIZE, LEVEL_PART_COUNT, ROOM_COLUMNS, ROOM_COUNT, RO
 from .exporters import export_bank_sheets, export_probe_csv, export_room_previews
 from .project import AncientEmpiresProject
 from .renderer import RenderOptions
+from .room_payload import parse_room_payload
 
 
 class LevelEditorApp(tk.Tk):
     def __init__(self, project: AncientEmpiresProject):
         super().__init__()
         self.project = project
-        self.title("Ancient Empires Level Editor - refactored research build")
+        self.title("Ancient Empires Level Editor - v18 objects/rope/platform research build")
         self.geometry("1220x840")
 
         self.level_var = tk.IntVar(value=0)
         self.room_var = tk.IntVar(value=0)
         self.part_var = tk.IntVar(value=0)
         self.zoom_var = tk.IntVar(value=2)
-        self.mode_var = tk.StringVar(value="terrain")
+        self.mode_var = tk.StringVar(value="terrain_objects")
         self.grid_var = tk.BooleanVar(value=False)
         self.crop_var = tk.BooleanVar(value=False)
         self.probe_var = tk.BooleanVar(value=False)
-        first_bank = next(iter(project.graphics.banks.keys()), 21)
-        self.bank_var = tk.IntVar(value=first_bank)
+        first_bank = next(iter(project.graphics.banks.keys()), "AE001:021")
+        self.bank_var = tk.StringVar(value=first_bank)
         self.status = tk.StringVar(value="")
         self.tk_image = None
         self.tk_sheet = None
@@ -67,7 +68,7 @@ class LevelEditorApp(tk.Tk):
         ttk.Button(top, text="Next", command=lambda: self.set_room((self.room_var.get() + 1) % ROOM_COUNT)).pack(side=tk.LEFT)
 
         ttk.Label(top, text="Mode").pack(side=tk.LEFT, padx=(10, 0))
-        mode = ttk.Combobox(top, textvariable=self.mode_var, state="readonly", width=12, values=["terrain", "codes_hex", "codes_dec", "trailing_hex"])
+        mode = ttk.Combobox(top, textvariable=self.mode_var, state="readonly", width=12, values=["terrain", "terrain_objects", "terrain_payload", "payload_probe", "codes_hex", "codes_dec", "trailing_hex"])
         mode.pack(side=tk.LEFT)
         mode.bind("<<ComboboxSelected>>", lambda _event: self.redraw_room())
 
@@ -104,7 +105,7 @@ class LevelEditorApp(tk.Tk):
         self.bank_combo = ttk.Combobox(
             bank_top,
             state="readonly",
-            width=7,
+            width=11,
             values=list(self.project.graphics.banks.keys()),
             textvariable=self.bank_var,
         )
@@ -154,18 +155,19 @@ class LevelEditorApp(tk.Tk):
         part = level.part(self.part_var.get())
         room = part.room(self.room_var.get())
         unique = sorted(set(room.tiles))
+        payload = parse_room_payload(room)
+        best = payload.best_table
+        best_txt = "none" if best is None else f"off=0x{best.offset:02X} {best.schema} n={best.count} score={best.score}"
+        lead_txt = "; ".join(p.label for p in payload.leading_triplets) or "none"
         self.status.set(
             f"level={level.index + 1} page={chr(65 + part.index)} room={room.index} theme={part.theme} "
             f"terrain_off=0x{room.terrain_offset:04X} preamble={room.preamble.hex(' ')} "
-            f"trailing_nonzero={sum(1 for b in room.trailing if b)} "
+            f"payload_nonzero={sum(1 for b in room.trailing if b)} lead=[{lead_txt}] best_payload={best_txt} "
             f"unique_tiles={unique} header[0..1f]={part.header[:32].hex(' ')} footer={part.footer.hex(' ')}"
         )
 
     def redraw_bank_sheet(self) -> None:
-        try:
-            rid = int(self.bank_var.get())
-        except Exception:
-            rid = next(iter(self.project.graphics.banks.keys()), 21)
+        rid = self.bank_var.get() or next(iter(self.project.graphics.banks.keys()), "AE001:021")
         sheet = self.project.graphics.make_bank_sheet(rid, self.project.graphics.banks.get(rid, []))
         self.tk_sheet = ImageTk.PhotoImage(sheet)
         self.bank_canvas.delete("all")

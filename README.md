@@ -89,3 +89,30 @@ docs/
 The remaining big unknown is the 314-byte payload after each terrain grid. It likely contains gameplay and front/decor data: player spawn, enemies, diamonds, apples, buttons, moving platforms, doors and trigger links.
 
 The `tile_code -> sprite` mapping is still partly empirical. The terrain renderer now maps the common low tile codes plus `0x80/0x90/0xA0/0xB0/0xC0` to the large terrain pieces because this matches screenshots better, but the exact EXE lookup tables still need to be fully identified.
+
+## v17 research update
+
+The project now loads VGA sprite banks from both `AE000.DAT` and `AE001.DAT`.  Bank ids in the UI are source-qualified, for example `AE000:020` or `AE001:025`.  This is important because gameplay sprites are not limited to `AE001:021..028`.
+
+New room payload modes:
+
+- `terrain_payload` overlays suspected payload positions on top of terrain.
+- `payload_probe` shows only payload candidate markers and ranked candidate tables.
+
+A helper is available:
+
+```bash
+PYTHONPATH=. python tools/probe_room_payload.py --exe AEPROG.EXE --level 1 --page A --room 1 AE000.DAT AE001.DAT
+```
+
+See `docs/level_format_v17.md` for the current handoff notes.
+
+
+## v18 update
+
+This build promotes several gameplay graphics from the raw bank browser into the room renderer:
+
+- AE000:005..008 are used for rope segments. Level tile codes `0x90`, `0xA0`, `0x80`, `0xB0`, `0xC0` are no longer treated as terrain-bank sprites. In level 1 room 1 this fixes the rope that previously looked like AE001:021 wall/door texture.
+- AE000:047 and AE000:048 are used for moving platform graphics. Contiguous terrain code `0x07` runs are rendered as one horizontal or vertical platform sprite rather than repeated small terrain pieces.
+- AE000:040/043 are drawn experimentally for typed6 payload entries with type `0x06`, which appear to be switch/control definitions. Exact anchors and trigger semantics are still research-grade.
+- The default GUI mode is now `terrain_objects`; use `terrain` for terrain-only and `payload_probe` / `terrain_payload` for payload debugging.
