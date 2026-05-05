@@ -35,6 +35,38 @@ class Room:
     def set(self, x: int, y: int, value: int) -> None:
         self.tiles[y * ROOM_COLUMNS + x] = value & 0xFF
 
+    @property
+    def nonzero_tile_count(self) -> int:
+        return sum(1 for value in self.tiles if value)
+
+    @property
+    def looks_empty(self) -> bool:
+        return self.nonzero_tile_count < 8
+
+    @property
+    def looks_like_room(self) -> bool:
+        """Lightweight quality flag for the viewer, not a hard parser rule.
+
+        Each level part has 13 fixed records. Some late records are unused,
+        placeholder, or non-room data in early caverns. We keep them browsable
+        but label them instead of pretending every record is a valid room.
+        """
+        if self.looks_empty:
+            return False
+        # Most confirmed rooms have lots of low terrain codes and only a small
+        # amount of special/control markers. Garbage records tend to contain a
+        # much wider byte range.
+        common = sum(1 for value in self.tiles if value <= 0x0F or value in {0x80, 0x90, 0xA0, 0xB0, 0xC0})
+        return common >= int(len(self.tiles) * 0.75)
+
+    @property
+    def quality_label(self) -> str:
+        if self.looks_empty:
+            return "empty"
+        if self.looks_like_room:
+            return "room"
+        return "data?"
+
 
 @dataclass
 class LevelPart:
@@ -49,8 +81,10 @@ class LevelPart:
             +0x2ae..0x3e7: unknown room payload, likely actors/triggers/decor
         4 byte footer, usually zero
 
-    The two parts often contain very similar terrain with small differences.
-    They are exposed as Page A/Page B until their exact in-game role is known.
+    The two parts are now exposed as Explorer / Expert. They are not animation
+    pages; they are the two difficulty variants stored inside the same level
+    resource. Some rooms are shared/similar, while later caverns can diverge
+    substantially between difficulties.
     """
 
     index: int

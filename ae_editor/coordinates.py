@@ -1,8 +1,14 @@
-"""Coordinate conversion helpers for room payload research.
+"""Coordinate conversion helpers for Ancient Empires room rendering.
 
-The game uses a visible 38x18 tile room. Terrain is on an 8px grid, while
-payload records use byte coordinates that are not always a direct top-left
-pixel.  Keeping the known conversions here makes renderer hacks easier to spot.
+The game mixes several coordinate spaces:
+
+* terrain cells: 38×18 cells, 8×8 pixels each;
+* terrain art: usually larger than 8×8 and blitted with an anchor offset;
+* platform/control records: 3-byte records at room+0x2AC;
+* compact3 visual records: x is a half-pixel coordinate, y is near the screen
+  baseline used by the EXE render routines.
+
+Keep these transforms in one place so renderer-side hacks do not accumulate.
 """
 from __future__ import annotations
 
@@ -15,46 +21,42 @@ from .constants import CELL_SIZE
 from .room_payload import ObjectTableEntry, PlatformTriplet
 
 AnchorMode = Literal[
-    "top_exe",          # x = raw*2, y = raw y, top-left
-    "bottom_center",    # x = raw*2 center, y = baseline/bottom
-    "tile_top",         # x = raw*8, y = raw y
-    "actor_top_2x",     # x = raw*2, y = raw y*2
-    "actor_bottom_2x",  # x = raw*2 center, y = raw y*2 baseline
+    "terrain",
+    "screen_exe",
+    "top_half",
+    "bottom_center",
 ]
 
 
 @dataclass(frozen=True)
-class ScreenBias:
-    """Optional global render bias.
+class TerrainAnchor:
+    """Top-left offset for terrain sprites relative to their 8×8 cell."""
 
-    Some screenshots suggest the final VGA viewport may be blitted with a small
-    sub-tile offset relative to the raw terrain grid.  The default is zero.  Use
-    the GUI alignment controls to test +4/+4 without baking it into the format.
-    """
+    x: int = -4
+    y: int = -4
 
-    x: int = 0
-    y: int = 0
+
+TERRAIN_ANCHOR = TerrainAnchor()
 
 
 def platform_xy(p: PlatformTriplet) -> tuple[int, int]:
-    """EXE-derived moving-platform coordinate conversion.
+    """EXE-derived moving platform/control coordinate conversion.
 
-    Static notes from the platform loop: byte1 is shifted left once and biased
-    by -4.  byte2 is already a pixel-ish Y coordinate.
+    The first payload area stores visible platform/control records. The x byte
+    is in half-pixel-ish units, while y is already a screen-space pixel
+    coordinate. Keep this transform boring and centralized; orientation and
+    sprite choice are *not* inferred from collision tile 0x07.
     """
     return p.x_raw * 2 - 4, p.y
 
 
-def compact3_xy(entry: ObjectTableEntry, sprite: Image.Image, mode: AnchorMode) -> tuple[int, int]:
-    """Convert a compact3 payload entry to a sprite top-left coordinate."""
-    if mode == "top_exe":
+def compact3_xy(entry: ObjectTableEntry, sprite: Image.Image, mode: AnchorMode = "screen_exe") -> tuple[int, int]:
+    """Convert a compact3 payload entry to sprite top-left coordinates."""
+    if mode == "top_half":
         return entry.x_raw * 2, entry.y
     if mode == "bottom_center":
         return entry.x_raw * 2 - sprite.width // 2, entry.y - sprite.height
-    if mode == "tile_top":
-        return entry.x_raw * CELL_SIZE, entry.y
-    if mode == "actor_top_2x":
-        return entry.x_raw * 2, entry.y * 2
-    if mode == "actor_bottom_2x":
-        return entry.x_raw * 2 - sprite.width // 2, entry.y * 2 - sprite.height
-    return entry.x_raw * 2, entry.y
+    # Best current model for EXE visual compact3 records. Screenshot matching
+    # showed the v27/v28 decor was consistently a little too far right/down.
+    # Use a small global anchor correction here instead of per-object hacks.
+    return entry.x_raw * 2 - 12, entry.y - 20
