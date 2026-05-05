@@ -4,6 +4,11 @@ Research viewer/editor for the DOS game *Super Solvers: Challenge of the Ancient
 
 This repository does **not** contain original game assets or binaries. Users must provide their own `AEPROG.EXE`, `AE000.DAT` and `AE001.DAT`.
 
+## v23 notes
+
+This build fixes the normal terrain tile lookup: `dec 2` now maps to sprite index `6` in the active AE001 terrain bank instead of duplicating sprite `5`. The mapping is centralized in `ae_editor/tile_mapping.py` so future corrections are not hidden as renderer hacks. `0x07` remains invisible collision/support; visible platforms come from room payload records.
+
+
 ## Quick start
 
 ```bash
@@ -116,3 +121,25 @@ This build promotes several gameplay graphics from the raw bank browser into the
 - AE000:047 and AE000:048 are used for moving platform graphics. Contiguous terrain code `0x07` runs are rendered as one horizontal or vertical platform sprite rather than repeated small terrain pieces.
 - AE000:040/043 are drawn experimentally for typed6 payload entries with type `0x06`, which appear to be switch/control definitions. Exact anchors and trigger semantics are still research-grade.
 - The default GUI mode is now `terrain_objects`; use `terrain` for terrain-only and `payload_probe` / `terrain_payload` for payload debugging.
+
+
+## v20 research update
+
+This build changes the interpretation of special terrain code `0x07`: it is treated as invisible solid/collision support, not as a visible moving platform. Moving platform sprites are now rendered from leading room-payload triplets where possible. This matches the observation that level 1 room 2 uses `0x07` as an invisible support under a statue, while actual platform graphics live in AE000 sprite banks.
+
+See `docs/level_format_v20.md` for the current handoff notes.
+
+
+## v21 status
+
+Latest research build parses variable-length leading platform triplets, treats terrain code `0x07` as invisible collision/support, and renders several compact3 payload decorations/objects such as the vase (`AE001:025:26`) and laser trigger (`AE000:041:0`). See `docs/level_format_v21.md`.
+
+
+## v22 research notes
+
+This build adds EXE-derived parsing for the first ten platform/control triplets and count-prefixed compact3 visual object/decor tables. See `docs/level_format_v22.md`.
+
+
+## v25 note: terrain sprite anchor
+
+Normal terrain sprites from `AE001:021..024` are larger than the 8 px grid cells and overlap adjacent cells.  The current renderer blits them with a default `(-4,-4)` terrain anchor, exposed in the GUI as `tile anchor -4,-4`.  This fixes the long-standing half-tile-looking down/right shift of foreground blocks while leaving background and payload-object coordinates separate.  See `docs/level_format_v25.md`.

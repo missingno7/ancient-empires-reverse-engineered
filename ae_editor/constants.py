@@ -22,25 +22,10 @@ CELL_SIZE = 8
 # Kept for compatibility in docs/tools.
 LEVEL_HEADER_SIZE = LEVEL_PART_HEADER_SIZE
 
-# Current best terrain-code mapping. Values are sequence indexes within the
-# terrain sprite bank for the level theme. 0x80/0x90/... are not ordinary tiles;
-# they appear as tall foreground/edge pieces, but rendering them here makes the
-# room previews much closer to the real game screenshots.
-DEFAULT_TERRAIN_CODE_TO_SPRITE = {
-    0x00: None,
-    0x01: 5,
-    0x02: 5,
-    0x03: 7,
-    0x04: 8,
-    0x05: 9,
-    0x06: 10,
-    0x07: 6,
-    0x80: 0,
-    0x90: 1,
-    0xA0: 2,
-    0xB0: 3,
-    0xC0: 4,
-}
+# Terrain mapping lives in ae_editor.tile_mapping now.  It used to be embedded
+# here, which made it too easy to hide renderer hacks that were actually mapping
+# mistakes.  Keep the import for backward compatibility with older modules.
+from .tile_mapping import TERRAIN_CODE_TO_SPRITE_V23 as DEFAULT_TERRAIN_CODE_TO_SPRITE
 
 TERRAIN_BANK_RESOURCE_START = 21
 TERRAIN_BANK_COUNT = 4

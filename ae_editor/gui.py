@@ -17,7 +17,7 @@ class LevelEditorApp(tk.Tk):
     def __init__(self, project: AncientEmpiresProject):
         super().__init__()
         self.project = project
-        self.title("Ancient Empires Level Editor - v18 objects/rope/platform research build")
+        self.title("Ancient Empires Level Editor - v25 tile-anchor research build")
         self.geometry("1220x840")
 
         self.level_var = tk.IntVar(value=0)
@@ -28,6 +28,8 @@ class LevelEditorApp(tk.Tk):
         self.grid_var = tk.BooleanVar(value=False)
         self.crop_var = tk.BooleanVar(value=False)
         self.probe_var = tk.BooleanVar(value=False)
+        self.align_var = tk.BooleanVar(value=False)
+        self.tile_anchor_var = tk.BooleanVar(value=True)
         first_bank = next(iter(project.graphics.banks.keys()), "AE001:021")
         self.bank_var = tk.StringVar(value=first_bank)
         self.status = tk.StringVar(value="")
@@ -68,11 +70,13 @@ class LevelEditorApp(tk.Tk):
         ttk.Button(top, text="Next", command=lambda: self.set_room((self.room_var.get() + 1) % ROOM_COUNT)).pack(side=tk.LEFT)
 
         ttk.Label(top, text="Mode").pack(side=tk.LEFT, padx=(10, 0))
-        mode = ttk.Combobox(top, textvariable=self.mode_var, state="readonly", width=12, values=["terrain", "terrain_objects", "terrain_payload", "payload_probe", "codes_hex", "codes_dec", "trailing_hex"])
+        mode = ttk.Combobox(top, textvariable=self.mode_var, state="readonly", width=14, values=["terrain", "terrain_objects", "object_anchors", "exe_sections", "collision_debug", "object_table", "terrain_payload", "payload_probe", "codes_hex", "codes_dec", "trailing_hex"])
         mode.pack(side=tk.LEFT)
         mode.bind("<<ComboboxSelected>>", lambda _event: self.redraw_room())
 
         ttk.Checkbutton(top, text="legacy crop left 2", variable=self.crop_var, command=self.redraw_room).pack(side=tk.LEFT, padx=6)
+        ttk.Checkbutton(top, text="test +4,+4 align", variable=self.align_var, command=self.redraw_room).pack(side=tk.LEFT)
+        ttk.Checkbutton(top, text="tile anchor -4,-4", variable=self.tile_anchor_var, command=self.redraw_room).pack(side=tk.LEFT, padx=6)
         ttk.Checkbutton(top, text="grid", variable=self.grid_var, command=self.redraw_room).pack(side=tk.LEFT)
         ttk.Checkbutton(top, text="header probe", variable=self.probe_var, command=self.redraw_room).pack(side=tk.LEFT, padx=6)
 
@@ -122,6 +126,10 @@ class LevelEditorApp(tk.Tk):
             crop_left_columns=2 if self.crop_var.get() else 0,
             header_probe=self.probe_var.get(),
             part_index=self.part_var.get(),
+            origin_x=4 if self.align_var.get() else 0,
+            origin_y=4 if self.align_var.get() else 0,
+            terrain_anchor_x=-4 if self.tile_anchor_var.get() else 0,
+            terrain_anchor_y=-4 if self.tile_anchor_var.get() else 0,
         )
 
     def current_level(self):

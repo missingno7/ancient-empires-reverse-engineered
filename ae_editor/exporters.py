@@ -9,11 +9,11 @@ from .renderer import RenderOptions
 from .room_payload import parse_room_payload
 
 
-def export_room_previews(project: AncientEmpiresProject, outdir: Path, crop_left: int = 0) -> None:
+def export_room_previews(project: AncientEmpiresProject, outdir: Path, crop_left: int = 0, origin_x: int = 0, origin_y: int = 0) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     for level in project.levels:
         for part in level.parts:
-            opts = RenderOptions(mode="terrain_objects", zoom=1, grid=False, crop_left_columns=crop_left, part_index=part.index)
+            opts = RenderOptions(mode="terrain_objects", zoom=1, grid=False, crop_left_columns=crop_left, part_index=part.index, origin_x=origin_x, origin_y=origin_y)
             for room_index in range(ROOM_COUNT):
                 image = project.renderer.render_room(level, room_index, opts)
                 image.save(outdir / f"level_{level.index + 1:02d}_page_{chr(65 + part.index)}_room_{room_index:02d}.png")

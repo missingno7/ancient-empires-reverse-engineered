@@ -6,17 +6,30 @@ from typing import Iterable
 from PIL import Image, ImageDraw
 
 from .constants import CELL_SIZE, DEFAULT_TERRAIN_CODE_TO_SPRITE, ROOM_COLUMNS, ROOM_ROWS
+from .coordinates import ScreenBias, compact3_xy, platform_xy
 from .graphics import GraphicsSet
 from .level_format import Level, LevelPart, Room
-from .room_payload import PayloadPoint, parse_room_payload
+from .room_payload import (
+    PayloadPoint,
+    parse_room_payload,
+    parse_room_object_table,
+    parse_room_object_tables,
+    ObjectTableEntry,
+    parse_platform_triplets,
+    parse_visual_compact3_tables,
+)
 
 
 @dataclass
 class RenderOptions:
-    # terrain            = terrain only, with known special tiles rendered as game sprites
+    # terrain            = terrain only. Special gameplay/collision cells stay invisible.
     # terrain_payload    = terrain + debug markers from the room payload
     # terrain_objects    = terrain + first-pass known actor/control sprites from payload
+    # collision_debug    = terrain + visible overlay for special collision cells such as 0x07
     # payload_probe      = coordinate/table visualization of the trailing payload only
+    # object_table       = terrain + raw 3-byte object/decor table labels
+    # exe_sections       = terrain + EXE-derived platform/object table labels
+    # object_anchors     = terrain + all candidate compact3 anchor interpretations
     mode: str = "terrain"
     zoom: int = 2
     grid: bool = False
@@ -24,6 +37,17 @@ class RenderOptions:
     crop_width_columns: int | None = None
     header_probe: bool = False
     part_index: int = 0
+    # Experimental global offset.  Use this to test the suspected half-tile
+    # (+4,+4) game viewport alignment without changing decoded data.
+    origin_x: int = 0
+    origin_y: int = 0
+    # v25: terrain 8x8 cells are drawn with 18x17 overlapping sprites.
+    # The sprite anchor is not top-left of the bitmap; the game blits normal
+    # terrain about half a cell up/left relative to the logical tile position.
+    # Keep it configurable for research, but default to the visually-correct
+    # anchor discovered from the AE001:021 block sprites.
+    terrain_anchor_x: int = -4
+    terrain_anchor_y: int = -4
 
 
 @dataclass
@@ -38,11 +62,18 @@ class RoomRenderer:
         (255, 120, 220), (140, 140, 255), (180, 90, 40), (255, 0, 0),
     ]
 
-    # v18: these values are not ordinary terrain in level 1 room 1. They form
-    # a rope column. Older builds rendered them as the first large AE001 terrain
-    # sprites, which is why the rope looked like “door/wall texture”.
+    # Rope-family logical tile codes.  They are encoded in the terrain grid,
+    # but rendered from AE000 rope sprites, not from the AE001 terrain bank.
     ROPE_CODES = {0x80, 0x90, 0xA0, 0xB0, 0xC0}
-    PLATFORM_CODE = 0x07
+    # Rope sprites are 16px-wide art on an 8px grid.  The game appears to blit
+    # them one column left of the marker cell, which fixes the persistent
+    # “rope is slightly too far left/right” mismatch in L1 room 1.
+    ROPE_X_BIAS = -8
+
+    # v20: 0x07 is best understood as invisible solid/collision support.
+    # Moving-platform sprites live in the per-room payload instead of being
+    # inferred from 0x07 runs in the terrain grid.
+    SOLID_INVISIBLE_CODE = 0x07
 
     def render_room(self, level: Level, room_index: int, options: RenderOptions | None = None) -> Image.Image:
         options = options or RenderOptions()
@@ -52,6 +83,8 @@ class RoomRenderer:
         height = ROOM_ROWS * CELL_SIZE
         image = Image.new("RGBA", (width, height), (0, 0, 0, 255))
         draw = ImageDraw.Draw(image)
+        self._current_bias = ScreenBias(options.origin_x, options.origin_y)
+        self._current_terrain_anchor = (options.terrain_anchor_x, options.terrain_anchor_y)
 
         if options.mode in {"codes_hex", "codes_dec"}:
             self._render_codes(image, draw, room.tiles, options.mode)
@@ -59,12 +92,23 @@ class RoomRenderer:
             self._render_trailing_probe(image, draw, room)
         elif options.mode == "payload_probe":
             self._render_payload_probe(image, draw, room)
+        elif options.mode == "exe_sections":
+            self._render_terrain(image, room.tiles, part.theme)
+            self._draw_exe_sections_overlay(image, room)
         else:
             self._render_terrain(image, room.tiles, part.theme)
             if options.mode == "terrain_payload":
                 self._draw_payload_overlay(image, room)
             elif options.mode == "terrain_objects":
                 self._draw_known_payload_objects(image, room)
+                self._draw_visual_compact3_sprites(image, room, labels=False)
+            elif options.mode == "collision_debug":
+                self._draw_collision_debug(image, room)
+            elif options.mode == "object_table":
+                self._draw_known_payload_objects(image, room)
+                self._draw_visual_compact3_sprites(image, room, labels=True)
+            elif options.mode == "object_anchors":
+                self._draw_object_anchor_probe(image, room)
 
         if options.header_probe:
             self._draw_header_probe(image, part)
@@ -75,6 +119,18 @@ class RoomRenderer:
         if options.zoom != 1:
             image = image.resize((image.width * options.zoom, image.height * options.zoom), Image.Resampling.NEAREST)
         return image
+
+
+    def _xy(self, x: int, y: int) -> tuple[int, int]:
+        bias = getattr(self, "_current_bias", ScreenBias())
+        return x + bias.x, y + bias.y
+
+    def _blit(self, image: Image.Image, sprite: Image.Image, x: int, y: int) -> None:
+        image.alpha_composite(sprite, self._xy(x, y))
+
+    def _blit_terrain_sprite(self, image: Image.Image, sprite: Image.Image, x: int, y: int) -> None:
+        ax, ay = getattr(self, "_current_terrain_anchor", (-4, -4))
+        self._blit(image, sprite, x + ax, y + ay)
 
     def _render_codes(self, image: Image.Image, draw: ImageDraw.ImageDraw, tiles: list[int], mode: str) -> None:
         for y in range(ROOM_ROWS):
@@ -106,77 +162,30 @@ class RoomRenderer:
         if background:
             for yy in range(0, image.height, background.height):
                 for xx in range(0, image.width, background.width):
-                    image.alpha_composite(background, (xx, yy))
+                    self._blit(image, background, xx, yy)
 
-        platform_cells = self._platform_cells(tiles)
         rope_cells = self._rope_cells(tiles)
 
         # Main terrain pass. Known special/gameplay cells are deliberately not
-        # passed through the terrain bank. They are rendered in later passes from
-        # AE000 actor/control sprites.
+        # passed through the terrain bank. Ropes are rendered from AE000 rope
+        # sprites. 0x07 stays invisible by default: it is a solid support/
+        # collision marker, not the actual moving-platform art.
         for y in range(ROOM_ROWS):
             for x in range(ROOM_COLUMNS):
                 code = tiles[y * ROOM_COLUMNS + x]
-                if (x, y) in platform_cells or (x, y) in rope_cells:
+                if code == self.SOLID_INVISIBLE_CODE or (x, y) in rope_cells:
                     continue
                 sprite_index = self.code_to_sprite.get(code)
                 if sprite_index is None:
                     continue
                 sprite = self.graphics.terrain_sprite(theme, sprite_index)
                 if sprite is not None:
-                    image.alpha_composite(sprite, (x * CELL_SIZE, y * CELL_SIZE))
+                    self._blit_terrain_sprite(image, sprite, x * CELL_SIZE, y * CELL_SIZE)
 
-        self._render_platform_runs(image, tiles)
         self._render_rope_codes(image, tiles)
-
-    def _platform_cells(self, tiles: list[int]) -> set[tuple[int, int]]:
-        return {(x, y) for y in range(ROOM_ROWS) for x in range(ROOM_COLUMNS) if tiles[y * ROOM_COLUMNS + x] == self.PLATFORM_CODE}
 
     def _rope_cells(self, tiles: list[int]) -> set[tuple[int, int]]:
         return {(x, y) for y in range(ROOM_ROWS) for x in range(ROOM_COLUMNS) if tiles[y * ROOM_COLUMNS + x] in self.ROPE_CODES}
-
-    def _render_platform_runs(self, image: Image.Image, tiles: list[int]) -> None:
-        horizontal = self.graphics.sprite("AE000", 47, 0)
-        vertical = self.graphics.sprite("AE000", 48, 0)
-        consumed: set[tuple[int, int]] = set()
-
-        # Vertical first: the room-1 lift column is a vertical run of 0x07 cells.
-        for x in range(ROOM_COLUMNS):
-            y = 0
-            while y < ROOM_ROWS:
-                if tiles[y * ROOM_COLUMNS + x] != self.PLATFORM_CODE or (x, y) in consumed:
-                    y += 1
-                    continue
-                y0 = y
-                while y < ROOM_ROWS and tiles[y * ROOM_COLUMNS + x] == self.PLATFORM_CODE:
-                    y += 1
-                length = y - y0
-                if length >= 3 and vertical is not None:
-                    image.alpha_composite(vertical, (x * CELL_SIZE, y0 * CELL_SIZE))
-                    for yy in range(y0, y):
-                        consumed.add((x, yy))
-
-        # Then horizontal runs. AE000:047 is 56x16, exactly a 7-cell platform.
-        for y in range(ROOM_ROWS):
-            x = 0
-            while x < ROOM_COLUMNS:
-                if tiles[y * ROOM_COLUMNS + x] != self.PLATFORM_CODE or (x, y) in consumed:
-                    x += 1
-                    continue
-                x0 = x
-                while x < ROOM_COLUMNS and tiles[y * ROOM_COLUMNS + x] == self.PLATFORM_CODE and (x, y) not in consumed:
-                    x += 1
-                length = x - x0
-                if length >= 2 and horizontal is not None:
-                    # Use one long platform sprite. If the data contains more
-                    # than 7 cells, repeat the sprite every 7 cells; so far most
-                    # observed moving platforms are exactly 7 cells wide.
-                    remaining = length
-                    px = x0
-                    while remaining > 0:
-                        image.alpha_composite(horizontal, (px * CELL_SIZE, y * CELL_SIZE))
-                        px += 7
-                        remaining -= 7
 
     def _render_rope_codes(self, image: Image.Image, tiles: list[int]) -> None:
         top = self.graphics.sprite("AE000", 5, 0)
@@ -191,17 +200,278 @@ class RoomRenderer:
         for y in range(ROOM_ROWS):
             for x in range(ROOM_COLUMNS):
                 code = tiles[y * ROOM_COLUMNS + x]
-                px = x * CELL_SIZE - 4
+                px = x * CELL_SIZE + self.ROPE_X_BIAS
                 py = y * CELL_SIZE
                 if code == 0x90 and top is not None:
-                    image.alpha_composite(top, (px, py))
+                    self._blit(image, top, px, py)
                 elif code == 0xA0 and middle24 is not None:
-                    image.alpha_composite(middle24, (px, py))
+                    self._blit(image, middle24, px, py)
                 elif code == 0xB0 and middle8 is not None:
-                    image.alpha_composite(middle8, (px, py))
+                    self._blit(image, middle8, px, py)
                 elif code == 0xC0 and bottom is not None:
-                    image.alpha_composite(bottom, (px, py))
+                    self._blit(image, bottom, px, py)
                 # 0x80 is treated as continuation covered by the 24px segment.
+
+    def _object_sprite_for_code(self, code: int, room: Room | None = None):
+        """Best-effort mapping for compact3 visual room records.
+
+        v21 distinction:
+        - terrain code 0x07 is collision only, never a visible platform.
+        - visible platforms/buttons/vases/laser triggers come from room payload
+          records.
+        - compact3 code is a logical object/decor id, not a raw bank number.
+
+        The returned tuple is:
+            archive, resource_id, sprite_index, anchor_mode, y_adjust
+        anchor_mode 'bottom_half' means x_raw is a half-pixel center/baseline
+        anchor.  That matches vase/statue/plaque records better than the older
+        top-left placement.
+        """
+        mapping = {
+            # L1 room 2 wall plaques/reliefs in AE001 decor bank.
+            0x88: ("AE001", 25, 8, "bottom_half", 0),
+            0x49: ("AE001", 25, 9, "bottom_half", 0),
+            0x48: ("AE001", 25, 8, "bottom_half", 0),
+            0x09: ("AE001", 25, 9, "bottom_half", 0),
+            # Large blue seated statue in L1 room 2.
+            0x05: ("AE001", 25, 36, "bottom_half", 0),
+            # Vase in L2 room 0 page B. User-confirmed sprite.
+            0x1A: ("AE001", 25, 26, "bottom_half", 0),
+            # Ceiling/floor button family. User confirmed ceiling button sprite.
+            0x0E: ("AE000", 39, 0, "bottom_half", 0),
+            # Laser trigger / red pudding-looking trigger. User-confirmed sprite.
+            0x80: ("AE000", 41, 0, "bottom_half", 0),
+            # Diamond/artifact pickup. Confirmed sprite location by manual asset browsing.
+            0x8E: ("AE000", 44, 0, "bottom_half", 0),
+            # Enemy family. Code 02 is reused; for now use theme/room hints.
+            # L2 room 0 page B screenshot shows spider AE000:022:12, while
+            # L1 room 2 uses green crawler/snake frames around AE000:022:20.
+            0x02: ("AE000", 22, 12 if (room is not None and room.page_index == 1 and room.index == 0) else 20, "bottom_half", 0),
+            # Common blue triangular/arrow object family.
+            0x7D: ("AE000", 19, 2, "bottom_half", 0),
+        }
+        return mapping.get(code)
+
+    def _object_x(self, entry: ObjectTableEntry, mode: str) -> int:
+        if mode == "half":
+            return entry.x_half_px
+        if mode == "tile":
+            return entry.x_tile_px
+        # auto: small x values in crawler/control records often behave like
+        # tile coordinates, while larger values behave more like half-pixels.
+        if entry.x_raw < ROOM_COLUMNS:
+            return entry.x_tile_px
+        return entry.x_half_px
+
+    def _object_position(self, entry: ObjectTableEntry, sprite: Image.Image, mode: str) -> tuple[int, int]:
+        if mode == "bottom_half":
+            # Compact3 visual records behave like: x_raw = half-pixel center,
+            # y = bottom/baseline.  This lines up the L2 vase and L1 statue far
+            # better than treating the record as a top-left coordinate.
+            return entry.x_half_px - sprite.width // 2, entry.y - sprite.height
+        if mode == "half":
+            return entry.x_half_px, entry.y
+        if mode == "tile":
+            return entry.x_tile_px, entry.y
+        if entry.x_raw < ROOM_COLUMNS:
+            return entry.x_tile_px, entry.y
+        return entry.x_half_px, entry.y
+
+    def _draw_object_table_sprites(self, image: Image.Image, room: Room, labels: bool = False) -> None:
+        draw = ImageDraw.Draw(image)
+        seen: set[tuple[int, int, int, int]] = set()
+        tables = parse_room_object_tables(room)
+        # Keep backward compatibility for rooms where only the older selector finds anything.
+        if not tables:
+            tables = [(-1, parse_room_object_table(room))]
+        for table_offset, entries in tables:
+            for entry in entries:
+                key = (entry.x_raw, entry.y, entry.code, entry.source_offset)
+                if key in seen:
+                    continue
+                seen.add(key)
+                spec = self._object_sprite_for_code(entry.code, room)
+                if spec:
+                    archive, resource_id, sprite_index, anchor_mode, y_adjust = spec
+                    sprite = self.graphics.sprite(archive, resource_id, sprite_index)
+                    if sprite is not None:
+                        x, y = self._object_position(entry, sprite, anchor_mode)
+                        y += y_adjust
+                        self._blit(image, sprite, x, y)
+                        if labels:
+                            draw.rectangle([x, y, x + max(40, sprite.width), y + 10], fill=(0, 0, 0, 180))
+                            draw.text((x + 1, y), f"@{table_offset:02X} {entry.label}", fill=(255, 255, 0, 255))
+                        continue
+                # Unknown object/decor/control entry: keep it visible in research mode.
+                if labels:
+                    x = entry.x_half_px
+                    y = entry.y
+                    draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=(255, 0, 255, 255))
+                    draw.text((x + 4, y - 6), f"@{table_offset:02X} {entry.label}", fill=(255, 255, 0, 255))
+
+
+
+    def _object_sprite_for_entry(self, entry: ObjectTableEntry, room: Room | None = None):
+        """Return sprite mapping plus an EXE-derived anchor mode.
+
+        Static EXE disassembly shows compact3 coordinates are generally
+        x_px = x_raw * 2 and y_px = y.  High-bit codes are rendered directly
+        through an EXE sprite pointer table, so they should be top-left anchored.
+        Some low-code decorations known from screenshots (vase/statue) are
+        better treated as bottom/center anchored because their compact3 point is
+        a baseline/center marker.
+        """
+        code = entry.code
+        # User-confirmed and screenshot-confirmed mappings.
+        if code == 0x1A:
+            return ("AE001", 25, 26, "bottom_half", 0)  # vase
+        if code == 0x0E:
+            return ("AE000", 39, 0, "top_exe", 0)       # ceiling/floor button family
+        if code == 0x80:
+            return ("AE000", 41, 0, "top_exe", 0)       # laser trigger / pudding
+        if code == 0x8E:
+            return ("AE000", 44, 0, "top_exe", 0)       # diamond/artifact
+        if code == 0x05:
+            return ("AE001", 25, 36, "bottom_half", 0)  # large statue
+        if code in (0x88, 0x48, 0x49, 0x09):
+            # Wall reliefs/plaques.  They behave as decorative sprites; exact
+            # index mapping remains incomplete, but these are much closer than
+            # drawing terrain tiles.
+            idx = {0x88: 8, 0x48: 8, 0x49: 9, 0x09: 9}[code]
+            return ("AE001", 25, idx, "top_exe", 0)
+        if code == 0x02:
+            # Actor/enemy-like entries.  The sprite family is known, but the
+            # actor coordinate schema is still not fully solved.  Avoid the old
+            # room-specific spider hack here; expose an actor anchor mode instead.
+            sprite_index = 12 if (room is not None and room.page_index == 1 and room.index == 0) else 20
+            return ("AE000", 22, sprite_index, "actor_bottom_2x", 0)
+        if code == 0x7D:
+            return ("AE000", 19, 2, "top_exe", 0)
+        return None
+
+    def _entry_position(self, entry: ObjectTableEntry, sprite: Image.Image, mode: str) -> tuple[int, int]:
+        # Compatibility names from old builds.
+        aliases = {
+            "bottom_half": "bottom_center",
+            "half": "top_exe",
+            "tile": "tile_top",
+            "actor2x": "actor_top_2x",
+        }
+        return compact3_xy(entry, sprite, aliases.get(mode, mode))
+
+    def _draw_visual_compact3_sprites(self, image: Image.Image, room: Room, labels: bool = False) -> None:
+        """Draw EXE-style compact3 visual/decor/object tables.
+
+        This supersedes the older generic payload scanner for display purposes.
+        It uses canonical count-prefixed compact3 tables and the EXE coordinate
+        rule x_px = x_raw * 2 for top-left anchored high-bit objects.
+        """
+        draw = ImageDraw.Draw(image)
+        seen: set[tuple[int, int, int, int]] = set()
+        for table in parse_visual_compact3_tables(room):
+            for entry in table.entries:
+                key = (table.offset, entry.source_offset, entry.x_raw, entry.y, entry.code)
+                if key in seen:
+                    continue
+                seen.add(key)
+                spec = self._object_sprite_for_entry(entry, room)
+                if spec:
+                    archive, resource_id, sprite_index, anchor_mode, y_adjust = spec
+                    sprite = self.graphics.sprite(archive, resource_id, sprite_index)
+                    if sprite is not None:
+                        x, y = self._entry_position(entry, sprite, anchor_mode)
+                        y += y_adjust
+                        self._blit(image, sprite, x, y)
+                        if labels:
+                            draw.rectangle([x, y, x + max(46, sprite.width), y + 10], fill=(0, 0, 0, 180))
+                            draw.text((x + 1, y), f"@{table.offset:02X} {entry.label}", fill=(255, 255, 0, 255))
+                        continue
+                if labels:
+                    x, y = entry.x_raw * 2, entry.y
+                    draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=(255, 0, 255, 255))
+                    draw.text((x + 4, y - 6), f"@{table.offset:02X} {entry.label}", fill=(255, 255, 0, 255))
+
+    def _draw_exe_sections_overlay(self, image: Image.Image, room: Room) -> None:
+        """Debug overlay for the EXE-derived payload structures."""
+        draw = ImageDraw.Draw(image)
+        for p in parse_platform_triplets(room):
+            x, y = platform_xy(p)
+            draw.rectangle([x, y, x + 10, y + 10], outline=(255, 180, 0, 255), width=1)
+            draw.text((x + 2, y - 8), p.label, fill=(255, 180, 0, 255))
+        for table in parse_visual_compact3_tables(room):
+            for entry in table.entries:
+                x, y = entry.x_raw * 2, entry.y
+                colour = (0, 255, 180, 255) if entry.code >= 0x80 else (0, 160, 255, 255)
+                draw.line([x - 4, y, x + 4, y], fill=colour)
+                draw.line([x, y - 4, x, y + 4], fill=colour)
+                draw.text((x + 4, y - 6), f"@{table.offset:02X} {entry.code:02X}", fill=colour)
+
+
+    def _draw_object_anchor_probe(self, image: Image.Image, room: Room) -> None:
+        """Visualize competing compact3 coordinate interpretations.
+
+        Useful for exactly the current problem: decorations are broadly right,
+        but actors/buttons/platforms are sometimes several pixels off.  This
+        mode draws the same raw entry using several coordinate models instead
+        of silently choosing one.
+        """
+        draw = ImageDraw.Draw(image)
+        colours = {
+            "top_exe": (0, 255, 255, 255),
+            "bottom_center": (255, 255, 0, 255),
+            "actor_top_2x": (255, 0, 255, 255),
+            "actor_bottom_2x": (255, 120, 0, 255),
+        }
+        for table in parse_visual_compact3_tables(room):
+            for entry in table.entries:
+                spec = self._object_sprite_for_entry(entry, room)
+                if not spec:
+                    continue
+                archive, resource_id, sprite_index, _anchor_mode, _y_adjust = spec
+                sprite = self.graphics.sprite(archive, resource_id, sprite_index)
+                if sprite is None:
+                    continue
+                for mode, colour in colours.items():
+                    x, y = compact3_xy(entry, sprite, mode)
+                    x, y = self._xy(x, y)
+                    draw.rectangle([x, y, x + sprite.width - 1, y + sprite.height - 1], outline=colour, width=1)
+                    draw.text((x + 1, y + 1), f"{entry.code:02X}/{mode[:2]}", fill=colour)
+
+    def _draw_collision_debug(self, image: Image.Image, room: Room) -> None:
+        """Show invisible solid cells without pretending they are visible sprites."""
+        draw = ImageDraw.Draw(image)
+        for y in range(ROOM_ROWS):
+            for x in range(ROOM_COLUMNS):
+                if room.tiles[y * ROOM_COLUMNS + x] == self.SOLID_INVISIBLE_CODE:
+                    x0 = x * CELL_SIZE
+                    y0 = y * CELL_SIZE
+                    draw.rectangle([x0, y0, x0 + CELL_SIZE - 1, y0 + CELL_SIZE - 1], outline=(255, 0, 255, 180))
+                    draw.line([x0, y0, x0 + CELL_SIZE - 1, y0 + CELL_SIZE - 1], fill=(255, 0, 255, 120))
+
+    def _draw_leading_payload_platforms(self, image: Image.Image, room: Room) -> None:
+        """Render moving platform sprites from the first payload triplets.
+
+        Observed examples:
+        - L20 room 0 page B starts with A0 10 58 / A0 18 58, matching the two
+          vertical blue platforms in the screenshot.
+        - L1 room 1 has 80/60 leading triplets that match moving platform
+          state/position changes between Page A and Page B.
+
+        This is still a research renderer: the triplet flag encodes more than
+        just orientation, but rendering from the payload is more correct than
+        inferring platforms from terrain code 0x07.
+        """
+        horiz = self.graphics.sprite("AE000", 47, 0)
+        vert = self.graphics.sprite("AE000", 48, 0)
+        for p in parse_platform_triplets(room):
+            flag = p.flags & 0xF0
+            # EXE-derived coordinate rule from routine 0x25b3:
+            # byte1 is doubled and then biased left by 4.  byte2 is a pixel Y.
+            px, py = platform_xy(p)
+            if flag == 0xA0 and vert is not None:
+                self._blit(image, vert, px, py)
+            elif flag in {0x40, 0x60, 0x80} and horiz is not None:
+                self._blit(image, horiz, px, py)
 
     def _render_payload_probe(self, image: Image.Image, draw: ImageDraw.ImageDraw, room: Room) -> None:
         draw.rectangle([0, 0, image.width, image.height], fill=(8, 8, 18, 255))
@@ -233,6 +503,7 @@ class RoomRenderer:
         offset 0x1F, whose type 0x06 entries match switch/control coordinates in
         early rooms. Other candidate tables stay debug-only until verified.
         """
+        self._draw_leading_payload_platforms(image, room)
         parsed = parse_room_payload(room)
         switch_a = self.graphics.sprite("AE000", 40, 0)
         switch_b = self.graphics.sprite("AE000", 43, 0)
