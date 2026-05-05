@@ -15,7 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--export-previews", help="Export rendered room previews and exit")
     parser.add_argument("--export-bank-sheets", help="Export decoded graphics bank sheets and exit")
     parser.add_argument("--export-csv", help="Export tile/header probe CSV and exit")
-    parser.add_argument("--no-crop", action="store_true", help="Do not crop the two suspected offscreen columns")
+    parser.add_argument("--legacy-crop", action="store_true", help="Crop two columns from old pre-v16 experiments; normally leave this off")
     return parser
 
 
@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> None:
 
     did_export = False
     if args.export_previews:
-        export_room_previews(project, Path(args.export_previews), crop_left=0 if args.no_crop else 2)
+        export_room_previews(project, Path(args.export_previews), crop_left=2 if args.legacy_crop else 0)
         did_export = True
     if args.export_bank_sheets:
         export_bank_sheets(project, Path(args.export_bank_sheets))

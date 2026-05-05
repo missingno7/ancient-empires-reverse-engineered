@@ -134,3 +134,19 @@ Terrain draw order is currently row-major top-to-bottom. This is close but not e
    - actors/items,
    - foreground/UI.
 6. Only after the read path is confirmed, add safe write-back.
+
+## v16 correction: room record stride
+
+The old `38 rooms × 684 bytes` interpretation is wrong. The decoded level resource is two `0x330c` parts. Each part contains 13 room records of 1000 bytes. The 38×18 terrain grid begins two bytes into each room record.
+
+Formula:
+
+```text
+part_base = 0 or 0x330c
+room_record = part_base + 0x40 + room_index * 1000
+terrain = room_record + 2
+terrain_length = 38 * 18 = 684
+unknown_room_payload = room_record + 2 + 684, length 314
+```
+
+This fixes the shift that made level 1 room 1 render as nonsense. The correct level 1 page A room 1 terrain offset is `0x042a`.

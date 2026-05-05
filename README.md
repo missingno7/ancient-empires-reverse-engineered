@@ -1,35 +1,54 @@
 # Super Solvers: Challenge of the Ancient Empires — research level editor
 
-This is a **research build** of a level viewer/editor for the DOS game *Super Solvers: Challenge of the Ancient Empires*.
+Research viewer/editor for the DOS game *Super Solvers: Challenge of the Ancient Empires*.
 
-It is not a finished editor yet. The current goal is to make the reverse-engineered data pipeline clean, testable and easy to continue from.
+This repository does **not** contain original game assets or binaries. Users must provide their own `AEPROG.EXE`, `AE000.DAT` and `AE001.DAT`.
 
 ## Quick start
-
-Put the original game files next to this project or pass explicit paths:
 
 ```bash
 pip install -r requirements.txt
 python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT
 ```
 
-Export all known room previews:
+Export all currently parsed room previews:
 
 ```bash
 python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-previews previews
 ```
 
-Export graphics-bank contact sheets:
+Export decoded graphics-bank contact sheets:
 
 ```bash
 python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-bank-sheets sheets
 ```
 
-Export a CSV probe of non-zero tile values and raw level headers:
+Export a CSV probe of non-zero tile values and room metadata:
 
 ```bash
 python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-csv ae_level_probe.csv
 ```
+
+## Current status
+
+The project can now correctly parse the terrain rooms much better than the older 38-room builds.
+
+The important v16 correction is:
+
+```text
+AE001 level resource, decoded size 0x6618 / 26136 bytes
+
+  2 equal parts, each 0x330c bytes:
+
+    0x40 part header
+    13 room records × 1000 bytes
+      +0x000..0x001  unknown room preamble
+      +0x002..0x2ad  terrain: 38×18 bytes, row-major
+      +0x2ae..0x3e7  unknown room payload, probably actors/triggers/decor
+    0x04 footer, usually zero
+```
+
+Older builds treated this as `0x40 + 38 × (38×18) + footer`. That was wrong: room 0 looked plausible by accident, but room 1+ were shifted. The correct room terrain start for page A room 1 in level 1 is `0x042a`, not the old `0x02ec`.
 
 ## Current features
 
@@ -38,8 +57,8 @@ python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-csv ae_level_
 - Extracts the custom VGA palette from `AEPROG.EXE`.
 - Decodes type `0x47` VGA images with transparency.
 - Loads the first 20 `AE001.DAT` resources as level candidates.
-- Parses each level as 38 rooms of `38×18` tile bytes.
-- Renders rooms using the currently known terrain tile mapping.
+- Parses each level as two pages, each with 13 fixed room records.
+- Renders the 38×18 terrain grid at 8-pixel cell spacing.
 - Shows decoded sprite/tile banks in the side panel.
 - Exports previews, bank sheets and CSV probes.
 
@@ -52,7 +71,7 @@ ae_editor/
   palette.py         MZ EXE parsing + custom VGA palette extraction
   type47.py          type 0x47 VGA/EGA bitmap decoder with transparency
   dat_archive.py     DAT archive reader and resource wrapper
-  level_format.py    level and room parser
+  level_format.py    level/part/room parser
   graphics.py        type47 image-bank loader and bank-sheet generator
   renderer.py        room rendering pipeline
   gui.py             Tkinter UI
@@ -63,21 +82,10 @@ docs/
   reverse_engineering_notes.md
   handoff.md
   file_format_summary.md
-
-tools/
-  dump_resources.py
-  export_previews.py
 ```
 
-## Important status note
+## Unsolved parts
 
-The VGA decoder logic is now absorbed into project modules instead of living as a copied script dependency. The terrain renderer is deliberately conservative. It uses the v11/v15 interpretation that best matched screenshots: each room cell is one full byte terrain code, placed on an 8px grid, and the terrain sprite itself may be larger than 8×8 and overlap neighbouring cells.
+The remaining big unknown is the 314-byte payload after each terrain grid. It likely contains gameplay and front/decor data: player spawn, enemies, diamonds, apples, buttons, moving platforms, doors and trigger links.
 
-The following are **not solved yet**:
-
-- exact `tile_code -> sprite` lookup for every theme and room,
-- exact background/decor/front-layer split,
-- actor/object records: player spawn, enemies, diamonds, apples, buttons, moving platforms and doors,
-- write-back/recompression safe enough for editing the real game files.
-
-Always test on copies of the game data.
+The `tile_code -> sprite` mapping is still partly empirical. The terrain renderer now maps the common low tile codes plus `0x80/0x90/0xA0/0xB0/0xC0` to the large terrain pieces because this matches screenshots better, but the exact EXE lookup tables still need to be fully identified.

@@ -6,17 +6,18 @@ from PIL import Image, ImageDraw
 
 from .constants import CELL_SIZE, DEFAULT_TERRAIN_CODE_TO_SPRITE, ROOM_COLUMNS, ROOM_ROWS
 from .graphics import GraphicsSet
-from .level_format import Level
+from .level_format import Level, LevelPart, Room
 
 
 @dataclass
 class RenderOptions:
-    mode: str = "terrain"  # terrain | codes_hex | codes_dec
+    mode: str = "terrain"  # terrain | codes_hex | codes_dec | trailing_hex
     zoom: int = 2
     grid: bool = False
     crop_left_columns: int = 0
     crop_width_columns: int | None = None
     header_probe: bool = False
+    part_index: int = 0
 
 
 @dataclass
@@ -33,19 +34,22 @@ class RoomRenderer:
 
     def render_room(self, level: Level, room_index: int, options: RenderOptions | None = None) -> Image.Image:
         options = options or RenderOptions()
+        part = level.part(options.part_index)
+        room = part.room(room_index)
         width = ROOM_COLUMNS * CELL_SIZE
         height = ROOM_ROWS * CELL_SIZE
         image = Image.new("RGBA", (width, height), (0, 0, 0, 255))
         draw = ImageDraw.Draw(image)
-        room = level.room(room_index)
 
         if options.mode in {"codes_hex", "codes_dec"}:
             self._render_codes(image, draw, room.tiles, options.mode)
+        elif options.mode == "trailing_hex":
+            self._render_trailing_probe(image, draw, room)
         else:
-            self._render_terrain(image, room.tiles, level.theme)
+            self._render_terrain(image, room.tiles, part.theme)
 
         if options.header_probe:
-            self._draw_header_probe(image, level)
+            self._draw_header_probe(image, part)
         if options.grid:
             self._draw_grid(image)
 
@@ -66,6 +70,20 @@ class RoomRenderer:
                     label = f"{value:02X}" if mode == "codes_hex" else str(value)
                     draw.text((x0, y0 - 1), label, fill=(255, 255, 255, 255))
 
+    def _render_trailing_probe(self, image: Image.Image, draw: ImageDraw.ImageDraw, room: Room) -> None:
+        # Visualize the unknown 314-byte room payload as a coarse hex grid.
+        draw.rectangle([0, 0, image.width, image.height], fill=(20, 20, 20, 255))
+        cols = 19
+        for i, value in enumerate(room.trailing[:cols * ROOM_ROWS]):
+            x = i % cols
+            y = i // cols
+            colour = self.debug_colours[value % len(self.debug_colours)]
+            x0 = x * 16
+            y0 = y * 8
+            draw.rectangle([x0, y0, x0 + 15, y0 + 7], fill=colour + (255,))
+            if value:
+                draw.text((x0, y0 - 1), f"{value:02X}", fill=(255, 255, 255, 255))
+
     def _render_terrain(self, image: Image.Image, tiles: list[int], theme: int) -> None:
         background = self.graphics.terrain_background(theme)
         if background:
@@ -73,9 +91,6 @@ class RoomRenderer:
                 for xx in range(0, image.width, background.width):
                     image.alpha_composite(background, (xx, yy))
 
-        # Current best behaviour from v11/v15: use the full tile byte as a terrain
-        # code. Terrain sprites are larger than one cell (often 18x17), but they
-        # are placed on an 8px grid, so overlap order matters.
         for y in range(ROOM_ROWS):
             for x in range(ROOM_COLUMNS):
                 code = tiles[y * ROOM_COLUMNS + x]
@@ -95,11 +110,10 @@ class RoomRenderer:
                     outline=(0, 0, 0, 100),
                 )
 
-    def _draw_header_probe(self, image: Image.Image, level: Level) -> None:
+    def _draw_header_probe(self, image: Image.Image, part: LevelPart) -> None:
         draw = ImageDraw.Draw(image)
         colours = [(255, 0, 0, 255), (0, 255, 0, 255), (0, 160, 255, 255), (255, 255, 0, 255), (255, 0, 255, 255), (255, 128, 0, 255)]
-        for n, byte in enumerate(level.header[0x0E:0x1A]):
-            # Visual-only hypothesis probe. Not a solved object format.
+        for n, byte in enumerate(part.header[0x0E:0x1A]):
             for x, y, offset in [((byte >> 4), (byte & 0x0F), 0), ((byte & 0x0F), (byte >> 4), 4)]:
                 if x < ROOM_COLUMNS and y < ROOM_ROWS:
                     px = x * CELL_SIZE + offset

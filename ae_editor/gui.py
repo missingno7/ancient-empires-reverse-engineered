@@ -6,7 +6,7 @@ from tkinter import filedialog, ttk
 
 from PIL import ImageTk
 
-from .constants import CELL_SIZE, ROOM_COLUMNS, ROOM_COUNT, ROOM_ROWS
+from .constants import CELL_SIZE, LEVEL_PART_COUNT, ROOM_COLUMNS, ROOM_COUNT, ROOM_ROWS
 from .exporters import export_bank_sheets, export_probe_csv, export_room_previews
 from .project import AncientEmpiresProject
 from .renderer import RenderOptions
@@ -21,10 +21,11 @@ class LevelEditorApp(tk.Tk):
 
         self.level_var = tk.IntVar(value=0)
         self.room_var = tk.IntVar(value=0)
+        self.part_var = tk.IntVar(value=0)
         self.zoom_var = tk.IntVar(value=2)
         self.mode_var = tk.StringVar(value="terrain")
         self.grid_var = tk.BooleanVar(value=False)
-        self.crop_var = tk.BooleanVar(value=True)
+        self.crop_var = tk.BooleanVar(value=False)
         self.probe_var = tk.BooleanVar(value=False)
         first_bank = next(iter(project.graphics.banks.keys()), 21)
         self.bank_var = tk.IntVar(value=first_bank)
@@ -51,6 +52,12 @@ class LevelEditorApp(tk.Tk):
         self.level_combo.pack(side=tk.LEFT)
         self.level_combo.bind("<<ComboboxSelected>>", lambda _event: self.set_level(self.level_combo.current()))
 
+        ttk.Label(top, text="Page").pack(side=tk.LEFT, padx=(10, 0))
+        self.part_combo = ttk.Combobox(top, state="readonly", width=7, values=["A", "B"])
+        self.part_combo.current(0)
+        self.part_combo.pack(side=tk.LEFT)
+        self.part_combo.bind("<<ComboboxSelected>>", lambda _event: self.set_part(self.part_combo.current()))
+
         ttk.Label(top, text="Room").pack(side=tk.LEFT, padx=(10, 0))
         self.room_combo = ttk.Combobox(top, state="readonly", width=5, values=[f"{i:02d}" for i in range(ROOM_COUNT)])
         self.room_combo.current(0)
@@ -60,11 +67,11 @@ class LevelEditorApp(tk.Tk):
         ttk.Button(top, text="Next", command=lambda: self.set_room((self.room_var.get() + 1) % ROOM_COUNT)).pack(side=tk.LEFT)
 
         ttk.Label(top, text="Mode").pack(side=tk.LEFT, padx=(10, 0))
-        mode = ttk.Combobox(top, textvariable=self.mode_var, state="readonly", width=10, values=["terrain", "codes_hex", "codes_dec"])
+        mode = ttk.Combobox(top, textvariable=self.mode_var, state="readonly", width=12, values=["terrain", "codes_hex", "codes_dec", "trailing_hex"])
         mode.pack(side=tk.LEFT)
         mode.bind("<<ComboboxSelected>>", lambda _event: self.redraw_room())
 
-        ttk.Checkbutton(top, text="crop left 2 cols", variable=self.crop_var, command=self.redraw_room).pack(side=tk.LEFT, padx=6)
+        ttk.Checkbutton(top, text="legacy crop left 2", variable=self.crop_var, command=self.redraw_room).pack(side=tk.LEFT, padx=6)
         ttk.Checkbutton(top, text="grid", variable=self.grid_var, command=self.redraw_room).pack(side=tk.LEFT)
         ttk.Checkbutton(top, text="header probe", variable=self.probe_var, command=self.redraw_room).pack(side=tk.LEFT, padx=6)
 
@@ -113,6 +120,7 @@ class LevelEditorApp(tk.Tk):
             grid=self.grid_var.get(),
             crop_left_columns=2 if self.crop_var.get() else 0,
             header_probe=self.probe_var.get(),
+            part_index=self.part_var.get(),
         )
 
     def current_level(self):
@@ -120,6 +128,11 @@ class LevelEditorApp(tk.Tk):
 
     def current_image(self, zoom: int | None = None):
         return self.project.renderer.render_room(self.current_level(), self.room_var.get(), self.options(zoom))
+
+    def set_part(self, index: int) -> None:
+        self.part_var.set(index)
+        self.part_combo.current(index)
+        self.redraw_room()
 
     def set_level(self, index: int) -> None:
         self.level_var.set(index)
@@ -138,12 +151,14 @@ class LevelEditorApp(tk.Tk):
         self.canvas.config(scrollregion=(0, 0, image.width, image.height))
 
         level = self.current_level()
-        room = level.room(self.room_var.get())
+        part = level.part(self.part_var.get())
+        room = part.room(self.room_var.get())
         unique = sorted(set(room.tiles))
         self.status.set(
-            f"level={level.index + 1} room={room.index} theme={level.theme} "
-            f"resource_size={len(level.decoded)} expected_size={level.expected_size} "
-            f"unique_tiles={unique} header[0..1f]={level.header[:32].hex(' ')}"
+            f"level={level.index + 1} page={chr(65 + part.index)} room={room.index} theme={part.theme} "
+            f"terrain_off=0x{room.terrain_offset:04X} preamble={room.preamble.hex(' ')} "
+            f"trailing_nonzero={sum(1 for b in room.trailing if b)} "
+            f"unique_tiles={unique} header[0..1f]={part.header[:32].hex(' ')} footer={part.footer.hex(' ')}"
         )
 
     def redraw_bank_sheet(self) -> None:
@@ -164,11 +179,11 @@ class LevelEditorApp(tk.Tk):
         if self.crop_var.get():
             x += 2
         if 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS:
-            value = self.current_level().room(self.room_var.get()).get(x, y)
+            value = self.current_level().room(self.room_var.get(), self.part_var.get()).get(x, y)
             self.status.set(self.status.get() + f" | click x={x} y={y} tile={value:02X}/{value}")
 
     def export_current(self) -> None:
-        path = filedialog.asksaveasfilename(defaultextension=".png", initialfile=f"level_{self.level_var.get()+1:02d}_room_{self.room_var.get():02d}.png")
+        path = filedialog.asksaveasfilename(defaultextension=".png", initialfile=f"level_{self.level_var.get()+1:02d}_page_{chr(65+self.part_var.get())}_room_{self.room_var.get():02d}.png")
         if path:
             self.current_image(zoom=1).save(path)
 
