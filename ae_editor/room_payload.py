@@ -308,3 +308,69 @@ def laser_crystal_table(room: Room) -> Compact3Table | None:
     if directory and directory.sections and directory.sections.section_c and directory.sections.section_c.count:
         return directory.sections.section_c
     return None
+
+@dataclass(frozen=True)
+class RoomTailMarker:
+    """Three-byte room-gated marker at the very end of the 1000-byte record.
+
+    AEPROG around 0x2e89 checks record[0x3e7] against current_room+1 and,
+    when it matches, draws a small global sprite using record[0x3e5] and
+    record[0x3e6] as coordinates.  The exact gameplay meaning is still under
+    research, so the renderer exposes it only in payload_debug for now.
+    """
+
+    x_raw: int
+    y_raw: int
+    room_plus_one: int
+
+    @property
+    def active(self) -> bool:
+        return self.room_plus_one != 0
+
+    @property
+    def label(self) -> str:
+        return f"tail_marker room+1={self.room_plus_one} x={self.x_raw:02X} y={self.y_raw:02X}"
+
+
+def room_tail_marker(room: Room) -> RoomTailMarker | None:
+    if len(room.trailing) < 3:
+        return None
+    x_raw, y_raw, room_plus_one = room.trailing[-3], room.trailing[-2], room.trailing[-1]
+    marker = RoomTailMarker(x_raw, y_raw, room_plus_one)
+    return marker if marker.active else None
+
+
+@dataclass(frozen=True)
+class HeaderRoomObjectCandidate:
+    """Candidate object table derived from the 6-entry arrays seen in EXE.
+
+    Static analysis around 0x2e36 uses three six-byte arrays in globals
+    0x437a/0x4380/0x4386 and draws an object when room_id == current_room+1.
+    We do not yet know where those globals are populated.  This helper exposes
+    one plausible interpretation of the level header tail so the GUI/debugger can
+    compare it against screenshots without hard-coding actors into the renderer.
+    """
+
+    index: int
+    room_plus_one: int
+    x_raw: int
+    y_raw: int
+
+    @property
+    def label(self) -> str:
+        return f"header_obj[{self.index}] room+1={self.room_plus_one} x={self.x_raw:02X} y={self.y_raw:02X}"
+
+
+def header_object_candidates(header: bytes) -> list[HeaderRoomObjectCandidate]:
+    # Conservative probe only: three adjacent 6-byte arrays starting at 0x1a.
+    # This is intentionally not used for normal rendering yet.
+    if len(header) < 0x1a + 18:
+        return []
+    room_ids = header[0x1a:0x20]
+    xs = header[0x20:0x26]
+    ys = header[0x26:0x2c]
+    out: list[HeaderRoomObjectCandidate] = []
+    for i, (room_id, x, y) in enumerate(zip(room_ids, xs, ys)):
+        if room_id:
+            out.append(HeaderRoomObjectCandidate(i, room_id, x, y))
+    return out

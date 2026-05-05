@@ -155,11 +155,16 @@ This build restores the v31 background decoration behavior and adds a dedicated 
 
 Conveyor belts are now rendered from terrain tile codes `0x0F` and `0x1F`, not from control records. This matches the observed behaviour where belts show up in `codes_hex` like ropes and have distinct grey/teal tile codes. Control records with conveyor-like arguments are kept as metadata/debug only until the trigger system is fully understood.
 
-## v34 notes
+## v35 notes
 
-v34 keeps the v33 discovery that conveyors are terrain special tiles, but fixes
+v35 keeps the v33 discovery that conveyors are terrain special tiles, but fixes
 the strip length by adding the right-cap cell. It also adds horizontal flip
 support for theme visual entries: bit `0x40` in the compact3 visual code mirrors
 the selected `AE001:(25+theme):(code&0x3f)` sprite. The old global mapping of
 compact3 code `0x02` to an enemy sprite was removed because it broke ordinary
 background decorations in some rooms.
+
+
+## v35 note
+
+This build fixes the legacy mistake where visual compact3 code `0x0E` was drawn as a button. Buttons are control records; `0x0E` in the visual table is normally theme decoration. Payload debug now also shows EXE-derived probes for still-unsolved actor/item storage.

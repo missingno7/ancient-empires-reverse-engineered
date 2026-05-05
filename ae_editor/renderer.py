@@ -17,6 +17,8 @@ from .room_payload import (
     parse_platform_triplets,
     visual_compact3_table,
     laser_crystal_table,
+    room_tail_marker,
+    header_object_candidates,
 )
 
 
@@ -91,6 +93,7 @@ class RoomRenderer:
                 self._draw_record12_puzzle_panels(image, room, labels=True)
                 self._draw_laser_crystals(image, room, labels=True)
                 self._draw_visual_objects(image, room, labels=True, layer="foreground")
+                self._draw_actor_probes(image, room, part.header)
                 self._draw_payload_debug(image, room)
 
         if options.grid:
@@ -212,9 +215,11 @@ class RoomRenderer:
 
             sprite = None
             mode = "button"
-            if command in (0x00, 0x01) and arg_b in (0x02, 0x03, 0x04, 0x40, 0x41):
-                # Trigger/buttons.  Ceiling and floor buttons share similar
-                # command bodies; y decides which art is the best current guess.
+            if command in (0x00, 0x01) and (arg_b in (0x02, 0x03, 0x04, 0x40, 0x41) or (cmd.y_raw or 0) >= 0x80):
+                # Trigger/buttons.  Ceiling/floor buttons are length-prefixed
+                # control commands; the visual compact3 code 0x0E is *not* a
+                # button.  Some floor buttons use arg_b=0, so y-position is a
+                # safer discriminator than a small whitelist alone.
                 if arg_b == 0x41 and pressed_button is not None:
                     sprite = pressed_button
                 elif (cmd.y_raw or 0) >= 0x78 and floor_button is not None:
@@ -334,6 +339,32 @@ class RoomRenderer:
         if sprite is not None and getattr(ref, "flip_h", False):
             sprite = sprite.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
         return sprite
+
+    def _draw_actor_probes(self, image: Image.Image, room: Room, header: bytes) -> None:
+        """Debug-only overlay for actor/item storage that is not solved yet.
+
+        Static analysis of AEPROG shows at least two additional object paths
+        after the terrain/decor renderer: a six-slot room-gated global array
+        and a three-byte marker at the end of the room record.  They are exposed
+        here as probes so screenshots can be compared without polluting the
+        normal game renderer with guesses.
+        """
+        draw = ImageDraw.Draw(image)
+        tail = room_tail_marker(room)
+        if tail is not None:
+            x = tail.x_raw * 2
+            y = tail.y_raw
+            colour = (0, 255, 255, 255) if tail.room_plus_one == room.index + 1 else (80, 120, 120, 180)
+            draw.rectangle([x - 3, y - 3, x + 3, y + 3], outline=colour, width=1)
+            self._label(draw, x + 4, y - 6, tail.label)
+
+        for cand in header_object_candidates(header):
+            if cand.room_plus_one != room.index + 1:
+                continue
+            x = cand.x_raw * 2
+            y = cand.y_raw
+            draw.ellipse([x - 4, y - 4, x + 4, y + 4], outline=(255, 128, 0, 255), width=1)
+            self._label(draw, x + 5, y - 6, cand.label)
 
     def _draw_payload_debug(self, image: Image.Image, room: Room) -> None:
         draw = ImageDraw.Draw(image)

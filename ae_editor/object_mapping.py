@@ -31,8 +31,9 @@ def visual_sprite_ref(entry: ObjectTableEntry, *, theme: int, level_index: int |
     code = entry.code
 
     # Confirmed global/gameplay objects from screenshots and asset browsing.
-    if code == 0x0E:
-        return SpriteRef("AE000", 39, 0, "button")
+    # Do NOT map code 0x0E to AE000:039 here.  That was a legacy mistake:
+    # in visual compact3 tables, 0x0E is usually just theme decoration
+    # AE001:(25+theme):14.  Real buttons come from control records.
     if code == 0x8E:
         return SpriteRef("AE000", 44, 0, "diamond/artifact pickup")
     if code == 0x7D:
@@ -61,7 +62,7 @@ def visual_render_layer(entry: ObjectTableEntry, *, level_index: int | None = No
     terrain.
     """
     code = entry.code
-    if code in {0x0E, 0x7D, 0x8E}:
+    if code in {0x7D, 0x8E}:
         return "foreground"
     if code == 0x80 and level_index == 1 and page_index == 1 and room_index == 0:
         return "foreground"
