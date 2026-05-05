@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 
 from ae_editor.project import AncientEmpiresProject
-from ae_editor.room_payload import parse_exe_payload_directory, parse_platform_triplets, visual_compact3_table, laser_crystal_table
+from ae_editor.room_payload import control_commands, parse_exe_payload_directory, parse_platform_triplets, visual_compact3_table, laser_crystal_table
 
 
 def main() -> None:
@@ -35,6 +35,9 @@ def main() -> None:
         print("  length-prefixed control records:")
         for rec in d.control_records:
             print(f"    {rec.label}")
+        print("  decoded control command bodies:")
+        for cmd in control_commands(room):
+            print(f"    {cmd.label} command={cmd.command} x={cmd.x_raw} y={cmd.y_raw} arg_a={cmd.arg_a} arg_b={cmd.arg_b} extra={cmd.extra.hex(' ')}")
         if d.sections:
             print("  EXE sections after control records:")
             def dump_c3(name, table):

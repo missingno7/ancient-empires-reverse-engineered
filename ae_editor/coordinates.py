@@ -18,7 +18,7 @@ from typing import Literal
 from PIL import Image
 
 from .constants import CELL_SIZE
-from .room_payload import ObjectTableEntry, PlatformTriplet
+from .room_payload import ControlCommand, ObjectTableEntry, PlatformTriplet
 
 AnchorMode = Literal[
     "terrain",
@@ -56,7 +56,22 @@ def compact3_xy(entry: ObjectTableEntry, sprite: Image.Image, mode: AnchorMode =
         return entry.x_raw * 2, entry.y
     if mode == "bottom_center":
         return entry.x_raw * 2 - sprite.width // 2, entry.y - sprite.height
-    # Best current model for EXE visual compact3 records. Screenshot matching
-    # showed the v27/v28 decor was consistently a little too far right/down.
-    # Use a small global anchor correction here instead of per-object hacks.
+    # Compact3 visual records store x in half-screen units. The EXE then
+    # passes x*2 to the blitter. We subtract a small sprite-anchor correction
+    # because the stored point is closer to a logical anchor than to bitmap
+    # top-left.
     return entry.x_raw * 2 - 12, entry.y - 20
+
+
+def control_xy(cmd: ControlCommand, *, mode: str = "button") -> tuple[int, int]:
+    """Convert a length-prefixed control command body to screen coordinates.
+
+    Important: cmd.x_raw/cmd.y_raw are body bytes, not the length prefix.
+    The conversion still varies by command family; keeping it here makes the
+    remaining uncertainty explicit.
+    """
+    x_raw = cmd.x_raw or 0
+    y_raw = cmd.y_raw or 0
+    if mode == "actor":
+        return x_raw * 4 - 4, y_raw - 12
+    return x_raw * 2 - 12, y_raw - 16

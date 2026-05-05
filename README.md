@@ -130,3 +130,36 @@ This version keeps the v28 cleanup structure but adds another small payload pass
 - Payload `section_a` is now rendered separately; this makes Level 9 / Expert / Room 0 show the three round hanging markers that were missing before.
 
 See `docs/level_format_v29.md` for the current handoff notes.
+
+
+## v33 notes
+
+- `Page A/B` is now treated as `Explorer/Expert`.
+- Visual compact3 payloads are drawn in EXE order: high-bit entries before terrain, low-bit entries after terrain.
+- Platform triplets with `0x80/0xA0` are rendered as vertical platforms; `0x40/0x60` as horizontal.
+- Puzzle buttons use `AE000:009` plus symbols from `AE000:010..016`; the progress block uses `AE000:017`.
+- Old alignment/crop experiments have been removed; terrain anchor `(-4,-4)` is part of the renderer.
+
+
+## v33 note
+
+Control records are now parsed as length-prefixed records; the old renderer accidentally treated the length byte as the command id.  This version also adds first-pass conveyor belt rendering from AE000:038.
+
+
+## v33 notes
+
+This build restores the v31 background decoration behavior and adds a dedicated conveyor renderer for `AE000:038`. Conveyors are now composed from left/middle/right strip sprites instead of treating payload bytes as direct sprite indexes. See `docs/level_format_v33.md`.
+
+
+## v33 note
+
+Conveyor belts are now rendered from terrain tile codes `0x0F` and `0x1F`, not from control records. This matches the observed behaviour where belts show up in `codes_hex` like ropes and have distinct grey/teal tile codes. Control records with conveyor-like arguments are kept as metadata/debug only until the trigger system is fully understood.
+
+## v34 notes
+
+v34 keeps the v33 discovery that conveyors are terrain special tiles, but fixes
+the strip length by adding the right-cap cell. It also adds horizontal flip
+support for theme visual entries: bit `0x40` in the compact3 visual code mirrors
+the selected `AE001:(25+theme):(code&0x3f)` sprite. The old global mapping of
+compact3 code `0x02` to an enemy sprite was removed because it broke ordinary
+background decorations in some rooms.

@@ -19,7 +19,7 @@ class LevelEditorApp(tk.Tk):
     def __init__(self, project: AncientEmpiresProject):
         super().__init__()
         self.project = project
-        self.title("Ancient Empires Level Editor - v29 cleanup")
+        self.title("Ancient Empires Level Editor - v34 visual cleanup")
         self.geometry("1220x840")
 
         self.level_var = tk.IntVar(value=0)

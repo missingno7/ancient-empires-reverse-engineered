@@ -5,12 +5,14 @@ from dataclasses import dataclass, field
 from PIL import Image, ImageDraw
 
 from .constants import CELL_SIZE, DEFAULT_TERRAIN_CODE_TO_SPRITE, ROOM_COLUMNS, ROOM_ROWS
-from .coordinates import TERRAIN_ANCHOR, compact3_xy, platform_xy
+from .coordinates import TERRAIN_ANCHOR, compact3_xy, control_xy, platform_xy
+from .conveyors import ConveyorSpec, compose_conveyor
 from .graphics import GraphicsSet
 from .level_format import Level, Room
-from .object_mapping import visual_sprite_ref
+from .object_mapping import visual_render_layer, visual_sprite_ref
 from .room_payload import (
     ObjectTableEntry,
+    control_commands,
     parse_exe_payload_directory,
     parse_platform_triplets,
     visual_compact3_table,
@@ -41,7 +43,10 @@ class RoomRenderer:
     ]
 
     ROPE_CODES = {0x80, 0x90, 0xA0, 0xB0, 0xC0}
-    ROPE_X_BIAS = 0
+    CONVEYOR_TILE_CODES = {0x0F: "grey", 0x1F: "teal"}
+    # Rope markers sit on the left edge of the 8×8 grid cell, but the visible
+    # rope art is slightly right of that logical column in the captured game.
+    ROPE_X_BIAS = 4
     SOLID_INVISIBLE_CODE = 0x07
 
     def render_room(self, level: Level, room_index: int, options: RenderOptions | None = None) -> Image.Image:
@@ -58,21 +63,34 @@ class RoomRenderer:
         elif options.mode == "trailing_hex":
             self._render_trailing_probe(image, draw, room)
         else:
-            self._render_terrain(image, room, part.theme)
+            # EXE-style order: background, high-bit visual entries, terrain,
+            # then foreground/control/low-bit visual entries. This fixes many
+            # cases where wall decorations were painted over solid geometry.
+            self._draw_background(image, part.theme)
             if options.mode == "game":
+                self._draw_visual_objects(image, room, labels=False, layer="background")
+            self._draw_terrain_tiles(image, room, part.theme)
+            self._render_rope(image, room)
+
+            if options.mode == "game":
+                self._draw_conveyor_tiles(image, room)
                 self._draw_platforms(image, room)
                 self._draw_control_records(image, room, labels=False)
-                self._draw_section_a_markers(image, room, labels=False)
+                self._draw_puzzle_markers(image, room, labels=False)
+                self._draw_record12_puzzle_panels(image, room, labels=False)
                 self._draw_laser_crystals(image, room, labels=False)
-                self._draw_visual_objects(image, room, labels=False)
+                self._draw_visual_objects(image, room, labels=False, layer="foreground")
             elif options.mode == "collision":
                 self._draw_collision_debug(image, room)
             elif options.mode == "payload_debug":
+                self._draw_visual_objects(image, room, labels=True, layer="background")
+                self._draw_conveyor_tiles(image, room)
                 self._draw_platforms(image, room)
                 self._draw_control_records(image, room, labels=True)
-                self._draw_section_a_markers(image, room, labels=True)
+                self._draw_puzzle_markers(image, room, labels=True)
+                self._draw_record12_puzzle_panels(image, room, labels=True)
                 self._draw_laser_crystals(image, room, labels=True)
-                self._draw_visual_objects(image, room, labels=True)
+                self._draw_visual_objects(image, room, labels=True, layer="foreground")
                 self._draw_payload_debug(image, room)
 
         if options.grid:
@@ -82,20 +100,22 @@ class RoomRenderer:
         return image
 
     def _blit(self, image: Image.Image, sprite: Image.Image, x: int, y: int) -> None:
-        image.alpha_composite(sprite, (x, y))
+        image.alpha_composite(sprite, (int(x), int(y)))
 
-    def _render_terrain(self, image: Image.Image, room: Room, theme: int) -> None:
+    def _draw_background(self, image: Image.Image, theme: int) -> None:
         background = self.graphics.terrain_background(theme)
-        if background:
-            for yy in range(0, image.height, background.height):
-                for xx in range(0, image.width, background.width):
-                    self._blit(image, background, xx, yy)
+        if not background:
+            return
+        for yy in range(0, image.height, background.height):
+            for xx in range(0, image.width, background.width):
+                self._blit(image, background, xx, yy)
 
+    def _draw_terrain_tiles(self, image: Image.Image, room: Room, theme: int) -> None:
         rope_cells = self._rope_cells(room)
         for y in range(ROOM_ROWS):
             for x in range(ROOM_COLUMNS):
                 code = room.get(x, y)
-                if code == self.SOLID_INVISIBLE_CODE or (x, y) in rope_cells:
+                if code == self.SOLID_INVISIBLE_CODE or code in self.CONVEYOR_TILE_CODES or (x, y) in rope_cells:
                     continue
                 sprite_index = self.code_to_sprite.get(code)
                 if sprite_index is None:
@@ -103,7 +123,6 @@ class RoomRenderer:
                 sprite = self.graphics.terrain_sprite(theme, sprite_index)
                 if sprite is not None:
                     self._blit(image, sprite, x * CELL_SIZE + TERRAIN_ANCHOR.x, y * CELL_SIZE + TERRAIN_ANCHOR.y)
-        self._render_rope(image, room)
 
     def _rope_cells(self, room: Room) -> set[tuple[int, int]]:
         return {(x, y) for y in range(ROOM_ROWS) for x in range(ROOM_COLUMNS) if room.get(x, y) in self.ROPE_CODES}
@@ -121,6 +140,38 @@ class RoomRenderer:
                 if sprite is not None:
                     self._blit(image, sprite, x * CELL_SIZE + self.ROPE_X_BIAS, y * CELL_SIZE)
 
+
+    def _draw_conveyor_tiles(self, image: Image.Image, room: Room) -> None:
+        """Render conveyor belts directly from terrain tile runs.
+
+        User screenshots plus codes_hex confirmed that belts behave like rope:
+        the room grid contains special non-terrain tile codes.  The visible belt
+        is not a one-sprite object and should not be inferred from trigger/control
+        records.  AE000:038 stores left/middle/right pieces for four animation
+        frames and two colour/direction families; static previews use frame 0.
+        """
+        parts = [self.graphics.sprite("AE000", 38, i) for i in range(24)]
+        y_bias = -8
+        x_bias = -4
+        for y in range(ROOM_ROWS):
+            x = 0
+            while x < ROOM_COLUMNS:
+                code = room.get(x, y)
+                kind = self.CONVEYOR_TILE_CODES.get(code)
+                if kind is None:
+                    x += 1
+                    continue
+                start = x
+                while x < ROOM_COLUMNS and room.get(x, y) == code:
+                    x += 1
+                # Conveyor tile runs need one extra cell on the right: the grid
+                # marks occupied conveyor cells, while the visual right cap extends
+                # past the final marker.
+                width = max(8, (x - start + 1) * CELL_SIZE)
+                strip = compose_conveyor(parts, ConveyorSpec(kind=kind, x=0, y=0, width=width, frame=0))
+                if strip is not None:
+                    self._blit(image, strip, start * CELL_SIZE + x_bias, y * CELL_SIZE + y_bias)
+
     def _draw_platforms(self, image: Image.Image, room: Room) -> None:
         horizontal = self.graphics.sprite("AE000", 47, 0)
         vertical = self.graphics.sprite("AE000", 48, 0)
@@ -132,57 +183,104 @@ class RoomRenderer:
                 self._blit(image, horizontal, x, y)
 
     def _draw_control_records(self, image: Image.Image, room: Room, *, labels: bool) -> None:
-        directory = parse_exe_payload_directory(room)
-        if not directory:
-            return
         draw = ImageDraw.Draw(image)
-        button = self.graphics.sprite("AE000", 39, 0)
+        ceiling_button = self.graphics.sprite("AE000", 39, 0)
+        floor_button = self.graphics.sprite("AE000", 40, 0)
         pressed_button = self.graphics.sprite("AE000", 42, 0)
         ant = self.graphics.sprite("AE000", 20, 0)
-        for record in directory.control_records:
-            if len(record.raw) < 6:
+        for cmd in control_commands(room):
+            if cmd.command is None or cmd.x_raw is None or cmd.y_raw is None:
                 continue
-            rec_type, subtype, x_raw, y_raw, arg_a, arg_b = record.raw[:6]
+            command = cmd.command
+            arg_a = cmd.arg_a or 0
+            arg_b = cmd.arg_b or 0
+
+            # Aha from the v31 cleanup: LengthPrefixedControlRecord.raw[0] is
+            # the byte length, not the command.  The real command is body[0].
+            # This removes several old false positives where length 0x06/0x07
+            # was treated as an object id.
+            if command in (0x00, 0x01) and arg_b in (0x10, 0x11, 0x12, 0x13):
+                # v33: visible conveyor belts are terrain-grid special tiles
+                # (0x0F/0x1F), much like ropes. These control commands may
+                # still carry trigger/motion metadata, but rendering them here
+                # creates misplaced duplicate belts. Keep them visible only in
+                # payload_debug labels for now.
+                if labels:
+                    x, y = control_xy(cmd, mode="button")
+                    self._label(draw, x, y, f"belt-meta {cmd.label}")
+                continue
+
             sprite = None
-            x = x_raw * 2 - 8
-            y = y_raw - 16
-            if rec_type == 0x06 and arg_b in (0x40, 0x41):
-                sprite = pressed_button if arg_b == 0x41 and pressed_button is not None else button
-            elif rec_type == 0x06 and subtype == 0x02 and arg_a == 0 and arg_b == 0:
-                # Confirmed in L6/R5 as ant-like actor. Exact actor table is
-                # still not fully solved, so this remains narrowly scoped.
+            mode = "button"
+            if command in (0x00, 0x01) and arg_b in (0x02, 0x03, 0x04, 0x40, 0x41):
+                # Trigger/buttons.  Ceiling and floor buttons share similar
+                # command bodies; y decides which art is the best current guess.
+                if arg_b == 0x41 and pressed_button is not None:
+                    sprite = pressed_button
+                elif (cmd.y_raw or 0) >= 0x78 and floor_button is not None:
+                    sprite = floor_button
+                else:
+                    sprite = ceiling_button
+            elif command == 0x02 and arg_a == 0 and arg_b in (0, 1):
+                # Actor/control record. Confirmed ant-like enemy in L6/R5;
+                # other actor families still need the EXE lookup table.
                 sprite = ant
-                x = x_raw * 4 - 4
-                y = y_raw - 12
+                mode = "actor"
+
             if sprite is not None:
+                x, y = control_xy(cmd, mode=mode)
                 self._blit(image, sprite, x, y)
                 if labels:
-                    self._label(draw, x, y, record.label)
+                    self._label(draw, x, y, cmd.label)
 
+    def _draw_puzzle_markers(self, image: Image.Image, room: Room, *, labels: bool) -> None:
+        """Draw symbol buttons from section_a.
 
-    def _draw_section_a_markers(self, image: Image.Image, room: Room, *, labels: bool) -> None:
-        """Render the first compact3 section as lightweight markers.
-
-        This section was previously ignored. In level 9 / Expert / room 0 it
-        contains the three hanging round markers visible in the game screenshot.
-        Treating it as a separate section is cleaner than folding those entries
-        into the main visual decor lookup.
+        The base marker is AE000:009.  Its symbol is a separate one-sprite bank
+        AE000:010..016 selected by the compact3 code. This replaces the older
+        renderer that drew only the blank medallion and missed the puzzle state
+        encoded in the payload.
         """
         directory = parse_exe_payload_directory(room)
         if not directory or not directory.sections or not directory.sections.section_a:
             return
-        marker = self.graphics.sprite("AE000", 9, 0)
-        if marker is None:
+        base = self.graphics.sprite("AE000", 9, 0)
+        if base is None:
             return
         draw = ImageDraw.Draw(image)
         for entry in directory.sections.section_a.entries:
-            # Same half-x family as compact3 visuals, but these markers are
-            # anchored closer to their hanging point.
-            x = entry.x_raw * 2 - marker.width // 2
-            y = entry.y - marker.height
-            self._blit(image, marker, x, y)
+            x = entry.x_raw * 2 - base.width // 2
+            y = entry.y - base.height // 2
+            self._blit(image, base, x, y)
+            symbol = self.graphics.sprite("AE000", 10 + (entry.code & 0x07), 0)
+            if symbol is not None:
+                self._blit(image, symbol, x + (base.width - symbol.width) // 2, y)
             if labels:
-                self._label(draw, x, y, f"section_a {entry.label}")
+                self._label(draw, x, y, f"puzzle {entry.label}")
+
+    def _draw_record12_puzzle_panels(self, image: Image.Image, room: Room, *, labels: bool) -> None:
+        """Draw the puzzle progress block from the 12-byte section when present.
+
+        This is still a partial model, but it is much cleaner than hard-coding
+        it as a visual compact3 object. The L9 Expert room 0 record places the
+        AE000:017 progress block at the right side of the room.
+        """
+        directory = parse_exe_payload_directory(room)
+        if not directory or not directory.sections or not directory.sections.section_b_records:
+            return
+        panel = self.graphics.sprite("AE000", 17, 0)
+        if panel is None:
+            return
+        draw = ImageDraw.Draw(image)
+        for i, rec in enumerate(directory.sections.section_b_records):
+            if len(rec) < 4:
+                continue
+            # Observed layout family: byte1 behaves as half-x, byte3 as y.
+            x = rec[1] * 2 - 4
+            y = rec[3] + 8
+            self._blit(image, panel, x, y)
+            if labels:
+                self._label(draw, x, y, f"rec12[{i}] {rec.hex(' ')}")
 
     def _draw_laser_crystals(self, image: Image.Image, room: Room, *, labels: bool) -> None:
         table = laser_crystal_table(room)
@@ -198,12 +296,20 @@ class RoomRenderer:
             if labels:
                 self._label(draw, x, y, f"crystal @{table.offset:02X} {entry.label}")
 
-    def _draw_visual_objects(self, image: Image.Image, room: Room, *, labels: bool) -> None:
+    def _draw_visual_objects(self, image: Image.Image, room: Room, *, labels: bool, layer: str = "all") -> None:
         table = visual_compact3_table(room)
         if not table:
             return
         draw = ImageDraw.Draw(image)
         for entry in table.entries:
+            entry_layer = visual_render_layer(
+                entry,
+                level_index=getattr(self, "_current_level_index", None),
+                room_index=room.index,
+                page_index=room.page_index,
+            )
+            if layer != "all" and entry_layer != layer:
+                continue
             sprite = self._sprite_for_visual_entry(entry, room)
             if sprite is None:
                 if labels:
@@ -214,7 +320,7 @@ class RoomRenderer:
             x, y = compact3_xy(entry, sprite, "screen_exe")
             self._blit(image, sprite, x, y)
             if labels:
-                self._label(draw, x, y, f"visual @{table.offset:02X} {entry.label}")
+                self._label(draw, x, y, f"{entry_layer} @{table.offset:02X} {entry.label}")
 
     def _sprite_for_visual_entry(self, entry: ObjectTableEntry, room: Room) -> Image.Image | None:
         ref = visual_sprite_ref(
@@ -224,7 +330,10 @@ class RoomRenderer:
             room_index=room.index,
             page_index=room.page_index,
         )
-        return self.graphics.sprite(ref.archive, ref.resource_id, ref.sprite_index)
+        sprite = self.graphics.sprite(ref.archive, ref.resource_id, ref.sprite_index)
+        if sprite is not None and getattr(ref, "flip_h", False):
+            sprite = sprite.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        return sprite
 
     def _draw_payload_debug(self, image: Image.Image, room: Room) -> None:
         draw = ImageDraw.Draw(image)

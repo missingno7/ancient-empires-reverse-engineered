@@ -50,14 +50,15 @@ class PlatformTriplet:
     def orientation(self) -> PlatformOrientation:
         """Best current orientation model.
 
-        The high nibble alone is not enough in every room. Current confirmed
-        examples suggest 0xA0 is commonly vertical, while 0x40/0x60/0x80 are
-        commonly horizontal. Unknown flags are left visible in debug mode only.
+        Runtime records are not inferred from collision tile 0x07.  The EXE
+        update routine treats 0x80-family records differently from the
+        0x40/0x60 family; screenshots confirm that 0x80 and 0xA0 are visible
+        vertical platform sprites, while 0x40/0x60 are horizontal.
         """
         high = self.flags & 0xF0
-        if high == 0xA0:
+        if high in {0x80, 0xA0}:
             return "vertical"
-        if high in {0x40, 0x60, 0x80}:
+        if high in {0x40, 0x60}:
             return "horizontal"
         return "unknown"
 
@@ -102,6 +103,58 @@ class LengthPrefixedControlRecord:
     @property
     def label(self) -> str:
         return f"ctrl[{self.index}] @{self.source_offset:02X} len={self.length} {self.raw.hex(' ')}"
+
+
+@dataclass(frozen=True)
+class ControlCommand:
+    """Length-prefixed room command with the prefix stripped.
+
+    Older renderer versions accidentally treated the length byte itself as the
+    command/type.  The actual command body starts at raw[1:].  This small
+    wrapper makes that explicit and prevents trigger ids from being confused
+    with sprite ids.
+    """
+
+    record: LengthPrefixedControlRecord
+
+    @property
+    def body(self) -> bytes:
+        return self.record.body
+
+    @property
+    def command(self) -> int | None:
+        return self.body[0] if len(self.body) >= 1 else None
+
+    @property
+    def x_raw(self) -> int | None:
+        return self.body[1] if len(self.body) >= 2 else None
+
+    @property
+    def y_raw(self) -> int | None:
+        return self.body[2] if len(self.body) >= 3 else None
+
+    @property
+    def arg_a(self) -> int | None:
+        return self.body[3] if len(self.body) >= 4 else None
+
+    @property
+    def arg_b(self) -> int | None:
+        return self.body[4] if len(self.body) >= 5 else None
+
+    @property
+    def extra(self) -> bytes:
+        return self.body[5:] if len(self.body) > 5 else b""
+
+    @property
+    def label(self) -> str:
+        return f"cmd[{self.record.index}] @{self.record.source_offset:02X} body={self.body.hex(' ')}"
+
+
+def control_commands(room: Room) -> list[ControlCommand]:
+    directory = parse_exe_payload_directory(room)
+    if not directory:
+        return []
+    return [ControlCommand(record) for record in directory.control_records]
 
 
 @dataclass
