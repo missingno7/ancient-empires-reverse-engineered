@@ -1,0 +1,9 @@
+[project]
+name = "ancient-empires-level-editor"
+version = "0.1.0"
+description = "Research level viewer/editor for Super Solvers: Challenge of the Ancient Empires"
+requires-python = ">=3.10"
+dependencies = ["Pillow>=10.0"]
+
+[project.scripts]
+ae-level-editor = "ae_editor.cli:main"
