@@ -751,6 +751,51 @@ def visual_compact3_table(room: Room) -> Compact3Table | None:
     return None
 
 
+def set_visual_compact3_entry(room: Room, index: int, *, x_raw: int, y: int, code: int) -> None:
+    table = visual_compact3_table(room)
+    if table is None or not 0 <= index < len(table.entries):
+        raise ValueError(f"visual compact3 index out of range: {index}")
+    off = table.entries[index].source_offset
+    room.set_trailing_bytes(off, [x_raw, y, code])
+
+
+def add_visual_compact3_entry(room: Room, *, x_raw: int, y: int, code: int) -> int:
+    table = visual_compact3_table(room)
+    if table is None:
+        raise ValueError("room has no editable visual compact3 table")
+    if table.count >= 32:
+        raise ValueError("visual compact3 table is full")
+    original_len = len(room.trailing)
+    data = bytearray(room.trailing)
+    insert_at = table.offset + 1 + table.count * 3
+    data[table.offset] = table.count + 1
+    data[insert_at:insert_at] = bytes([x_raw & 0xFF, y & 0xFF, code & 0xFF])
+    padding_start = _payload_padding_start(room)
+    shifted_padding_start = padding_start + 3 if padding_start >= insert_at else padding_start
+    _delete_padding_bytes_after_insert(data, shifted_padding_start, 3, original_len)
+    _replace_trailing(room, data)
+    return table.count
+
+
+def delete_visual_compact3_entry(room: Room, index: int) -> None:
+    table = visual_compact3_table(room)
+    if table is None or not 0 <= index < len(table.entries):
+        raise ValueError(f"visual compact3 index out of range: {index}")
+    original_len = len(room.trailing)
+    data = bytearray(room.trailing)
+    off = table.entries[index].source_offset
+    del data[off:off + 3]
+    data[table.offset] = max(0, data[table.offset] - 1)
+    old_trailing = room.trailing
+    room.trailing = bytes(data[:original_len - 3])
+    padding_start = _payload_padding_start(room)
+    room.trailing = old_trailing
+    padding_start = max(0, min(len(data), padding_start))
+    data[padding_start:padding_start] = b"\x00" * 3
+    del data[original_len:]
+    room.trailing = bytes(data)
+
+
 def laser_crystal_table(room: Room) -> Compact3Table | None:
     """Return the section currently matching rotating triangular laser crystals."""
     directory = parse_exe_payload_directory(room)

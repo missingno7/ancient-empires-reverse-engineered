@@ -29,3 +29,10 @@ TERRAIN_CODE_TO_SPRITE: dict[int, int | None] = {
     0x06: 10,
     # NOTE: 0x07 deliberately omitted/None in renderer logic.
 }
+
+# Small editor-side family for the smart brush.  These are the only normal
+# terrain bytes with a confirmed sprite mapping, so auto-tiling deliberately
+# stays inside this family until the full EXE lookup table is recovered.
+AUTO_SOLID_TILE_CODES = frozenset(range(0x01, 0x07))
+CONVEYOR_PHYSICS_TILE_CODES = frozenset({0x0F, 0x1F})
+ROPE_TILE_CODES = frozenset({0x90, 0xA0, 0xB0, 0xC0})

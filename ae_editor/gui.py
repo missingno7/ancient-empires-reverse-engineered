@@ -15,6 +15,8 @@ from .coordinates import control_xy, actor_xy
 from .conveyors import iter_conveyor_runs
 from .project import AncientEmpiresProject
 from .renderer import RenderOptions
+from .object_mapping import visual_sprite_ref
+from .tile_mapping import AUTO_SOLID_TILE_CODES, CONVEYOR_PHYSICS_TILE_CODES, ROPE_TILE_CODES
 from .room_payload import (
     actor_records_for_room,
     control_commands,
@@ -31,6 +33,9 @@ from .room_payload import (
     set_conveyor_visual_record,
     set_control_command_body,
     delete_conveyor_visual_record,
+    add_visual_compact3_entry,
+    set_visual_compact3_entry,
+    delete_visual_compact3_entry,
     add_control_command,
     delete_control_command,
     cv_geometry_to_raw,
@@ -111,6 +116,8 @@ class LevelEditorApp(tk.Tk):
         self.control_targets_var = tk.StringVar(value="P0")
         self.control_state_var = tk.StringVar(value="00")
         self.brush_size_var = tk.IntVar(value=1)
+        self.tile_brush_mode_var = tk.StringVar(value="exact")
+        self.decor_code_var = tk.StringVar(value="00")
         self.editor_info = tk.StringVar(value="")
         self.palette_selection_var = tk.StringVar(value="Selection mode")
         self.property_title_var = tk.StringVar(value="No object selected")
@@ -125,6 +132,8 @@ class LevelEditorApp(tk.Tk):
         self.property_label_code_var = tk.StringVar(value="code")
         self.property_label_props_var = tk.StringVar(value="props")
         self.property_note_var = tk.StringVar(value="")
+        self.property_actor_facing_var = tk.BooleanVar(value=False)
+        self.property_actor_hidden_var = tk.BooleanVar(value=False)
         self.editor_selected_ref: tuple[str, int | None] | None = None
         self.editor_drag_offset: tuple[int, int] | None = None
 
@@ -139,6 +148,7 @@ class LevelEditorApp(tk.Tk):
         self.tk_editor_image = None
         self.tk_tile_images = []
         self.tk_editor_object_images = []
+        self.tk_decor_images = []
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_window)
@@ -147,6 +157,7 @@ class LevelEditorApp(tk.Tk):
         self.redraw_objects_atlas()
         self.redraw_tile_palette()
         self.redraw_editor_object_palette()
+        self.redraw_decor_palette()
         self.refresh_placeable_settings()
 
     def _build_ui(self) -> None:
@@ -340,8 +351,7 @@ class LevelEditorApp(tk.Tk):
 
         tools_row = ttk.Frame(right)
         tools_row.pack(fill=tk.X, padx=6, pady=(6, 2))
-        ttk.Label(tools_row, text="Editor tools").pack(side=tk.LEFT)
-        ttk.Button(tools_row, text="Delete selected", command=self.delete_selected_editor_object).pack(side=tk.RIGHT)
+        ttk.Label(tools_row, text="Editor").pack(side=tk.LEFT)
 
         view_row = ttk.Frame(right)
         view_row.pack(fill=tk.X, padx=6, pady=(0, 6))
@@ -349,13 +359,7 @@ class LevelEditorApp(tk.Tk):
         ttk.Checkbutton(view_row, text="Overlay", variable=self.editor_overlay_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Checkbutton(view_row, text="Collision", variable=self.editor_collision_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(8, 0))
 
-        mode_box = ttk.LabelFrame(right, text="Editor mode")
-        mode_box.pack(fill=tk.X, padx=6, pady=(0, 6))
-        ttk.Label(mode_box, textvariable=self.palette_selection_var, wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(4, 4))
-        mode_buttons = ttk.Frame(mode_box)
-        mode_buttons.pack(fill=tk.X, padx=6, pady=(0, 6))
-        ttk.Button(mode_buttons, text="Select / move", command=self.select_selection_mode).pack(side=tk.LEFT)
-        ttk.Button(mode_buttons, text="Delete selected", command=self.delete_selected_editor_object).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(right, textvariable=self.palette_selection_var, wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
 
         self.placeable_settings_host = ttk.Frame(right)
         self.placeable_settings_host.pack(fill=tk.X, padx=6, pady=(0, 6))
@@ -363,7 +367,7 @@ class LevelEditorApp(tk.Tk):
         self.select_settings_frame = ttk.LabelFrame(self.placeable_settings_host, text="Selection")
         ttk.Label(
             self.select_settings_frame,
-            text="Click a handle in the room to select it. Drag to move it. Delete removes the selected object. Pick tiles or objects from the image palettes below to switch into placement/paint mode.",
+            text="Select, move and delete existing room objects. Tile painting is handled separately by Tile brush.",
             wraplength=260,
             justify=tk.LEFT,
         ).pack(fill=tk.X, padx=6, pady=6)
@@ -378,7 +382,17 @@ class LevelEditorApp(tk.Tk):
         brush_row.pack(fill=tk.X, padx=6, pady=(0, 6))
         ttk.Label(brush_row, text="Brush").pack(side=tk.LEFT)
         ttk.Spinbox(brush_row, from_=1, to=5, textvariable=self.brush_size_var, width=4).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Label(self.tile_settings_frame, text="Painting over a belt removes the whole belt composite first, so the room cannot keep orphan invisible conveyor physics.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
+        ttk.Label(brush_row, text="Mode").pack(side=tk.LEFT, padx=(10, 0))
+        tile_mode = ttk.Combobox(
+            brush_row,
+            state="readonly",
+            textvariable=self.tile_brush_mode_var,
+            values=["exact", "auto solid", "auto rope"],
+            width=10,
+        )
+        tile_mode.pack(side=tk.LEFT, padx=(4, 0))
+        tile_mode.bind("<<ComboboxSelected>>", lambda _event: self.on_palette_setting_changed())
+        ttk.Label(self.tile_settings_frame, text="Auto modes retile nearby known terrain cells. Belts stay in the Belt tool so 0F/1F physics cannot be painted without a CV visual object.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
 
         self.belt_settings_frame = ttk.LabelFrame(self.placeable_settings_host, text="Belt placement")
         belt_row = ttk.Frame(self.belt_settings_frame)
@@ -411,31 +425,49 @@ class LevelEditorApp(tk.Tk):
         ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
 
         self.object_settings_frame = ttk.LabelFrame(self.placeable_settings_host, text="Object placement")
-        ttk.Label(self.object_settings_frame, text="Click in the room to place the selected atlas object. For editable objects, selection and properties are handled by the Select mode.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=6)
+        ttk.Label(self.object_settings_frame, text="Choose an object from Object placement, then click in the room to place it. Use Select objects to move or delete existing objects.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=6)
 
         prop_box = ttk.LabelFrame(right, text="Selected object properties")
         prop_box.pack(fill=tk.X, padx=6, pady=(0, 6))
-        ttk.Label(prop_box, textvariable=self.property_title_var, wraplength=260, justify=tk.LEFT).grid(row=0, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
-        ttk.Label(prop_box, textvariable=self.property_label_x_var).grid(row=1, column=0, sticky="e", padx=(6, 2))
-        ttk.Entry(prop_box, textvariable=self.property_x_var, width=8).grid(row=1, column=1, sticky="w")
-        ttk.Label(prop_box, textvariable=self.property_label_y_var).grid(row=1, column=2, sticky="e", padx=(8, 2))
-        ttk.Entry(prop_box, textvariable=self.property_y_var, width=8).grid(row=1, column=3, sticky="w")
-        ttk.Label(prop_box, textvariable=self.property_label_len_var).grid(row=2, column=0, sticky="e", padx=(6, 2))
-        ttk.Entry(prop_box, textvariable=self.property_len_var, width=8).grid(row=2, column=1, sticky="w")
-        ttk.Label(prop_box, textvariable=self.property_label_code_var).grid(row=2, column=2, sticky="e", padx=(8, 2))
-        ttk.Entry(prop_box, textvariable=self.property_code_var, width=8).grid(row=2, column=3, sticky="w")
-        ttk.Label(prop_box, textvariable=self.property_label_props_var).grid(row=3, column=0, sticky="e", padx=(6, 2))
-        ttk.Entry(prop_box, textvariable=self.property_props_var, width=18).grid(row=3, column=1, columnspan=3, sticky="ew")
-        ttk.Button(prop_box, text="Apply", command=self.apply_selected_properties).grid(row=4, column=0, columnspan=4, sticky="ew", padx=6, pady=(4, 4))
-        ttk.Label(prop_box, textvariable=self.property_note_var, wraplength=260, justify=tk.LEFT).grid(row=5, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 4))
+        self.property_title_label = ttk.Label(prop_box, textvariable=self.property_title_var, wraplength=260, justify=tk.LEFT)
+        self.property_title_label.grid(row=0, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
+        self.property_rows = [
+            (
+                ttk.Label(prop_box, textvariable=self.property_label_x_var),
+                ttk.Entry(prop_box, textvariable=self.property_x_var, width=8),
+                ttk.Label(prop_box, textvariable=self.property_label_y_var),
+                ttk.Entry(prop_box, textvariable=self.property_y_var, width=8),
+            ),
+            (
+                ttk.Label(prop_box, textvariable=self.property_label_len_var),
+                ttk.Entry(prop_box, textvariable=self.property_len_var, width=8),
+                ttk.Label(prop_box, textvariable=self.property_label_code_var),
+                ttk.Entry(prop_box, textvariable=self.property_code_var, width=8),
+            ),
+            (
+                ttk.Label(prop_box, textvariable=self.property_label_props_var),
+                ttk.Entry(prop_box, textvariable=self.property_props_var, width=18),
+                None,
+                None,
+            ),
+        ]
+        self.property_actor_bool_row = ttk.Frame(prop_box)
+        self.property_actor_facing_check = ttk.Checkbutton(self.property_actor_bool_row, text="Facing variant", variable=self.property_actor_facing_var)
+        self.property_actor_hidden_check = ttk.Checkbutton(self.property_actor_bool_row, text="Hidden", variable=self.property_actor_hidden_var)
+        self.property_apply_button = ttk.Button(prop_box, text="Apply", command=self.apply_selected_properties)
+        self.property_note_label = ttk.Label(prop_box, textvariable=self.property_note_var, wraplength=260, justify=tk.LEFT)
+        prop_box.columnconfigure(3, weight=1)
 
-        palettes = ttk.Notebook(right)
-        palettes.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
+        self.editor_palettes = ttk.Notebook(right)
+        self.editor_palettes.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
 
-        tile_tab = ttk.Frame(palettes)
-        object_tab = ttk.Frame(palettes)
-        palettes.add(tile_tab, text="Tile atlas")
-        palettes.add(object_tab, text="Object atlas")
+        tile_tab = ttk.Frame(self.editor_palettes)
+        object_tab = ttk.Frame(self.editor_palettes)
+        decor_tab = ttk.Frame(self.editor_palettes)
+        self.editor_palettes.add(tile_tab, text="Tile brush")
+        self.editor_palettes.add(object_tab, text="Objects")
+        self.editor_palettes.add(decor_tab, text="Decor decals")
+        self.editor_palettes.bind("<<NotebookTabChanged>>", self.on_editor_palette_tab_changed)
 
         tile_frame = ttk.Frame(tile_tab)
         tile_frame.pack(fill=tk.BOTH, expand=True)
@@ -450,36 +482,82 @@ class LevelEditorApp(tk.Tk):
 
         object_frame = ttk.Frame(object_tab)
         object_frame.pack(fill=tk.BOTH, expand=True)
+        object_actions = ttk.Frame(object_frame)
+        object_actions.pack(fill=tk.X, padx=4, pady=(4, 2))
+        ttk.Button(object_actions, text="Select / move", command=self.select_selection_mode).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(object_actions, text="Delete selected", command=self.delete_selected_editor_object).pack(side=tk.LEFT, padx=(6, 0))
         self.object_palette_canvas = tk.Canvas(object_frame, bg="#202020", width=260)
         object_scroll = ttk.Scrollbar(object_frame, orient=tk.VERTICAL, command=self.object_palette_canvas.yview)
         self.object_palette_canvas.configure(yscrollcommand=object_scroll.set)
-        self.object_palette_canvas.grid(row=0, column=0, sticky="nsew")
-        object_scroll.grid(row=0, column=1, sticky="ns")
-        object_frame.rowconfigure(0, weight=1)
+        self.object_palette_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        object_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         object_frame.columnconfigure(0, weight=1)
         self.object_palette_canvas.bind("<Button-1>", self.object_palette_click)
 
+        decor_settings = ttk.Frame(decor_tab)
+        decor_settings.pack(fill=tk.X, padx=6, pady=(6, 4))
+        ttk.Label(decor_settings, text="Code").pack(side=tk.LEFT)
+        ttk.Entry(decor_settings, textvariable=self.decor_code_var, width=6).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(decor_settings, text="Delete selected", command=self.delete_selected_editor_object).pack(side=tk.RIGHT)
+        ttk.Label(
+            decor_tab,
+            text="Theme decor from the room visual compact3 table. Choose a decal, click to place it, or select an existing V handle to move/delete it.",
+            wraplength=260,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=6, pady=(0, 4))
+        decor_frame = ttk.Frame(decor_tab)
+        decor_frame.pack(fill=tk.BOTH, expand=True)
+        self.decor_palette_canvas = tk.Canvas(decor_frame, bg="#202020", width=260)
+        decor_scroll = ttk.Scrollbar(decor_frame, orient=tk.VERTICAL, command=self.decor_palette_canvas.yview)
+        self.decor_palette_canvas.configure(yscrollcommand=decor_scroll.set)
+        self.decor_palette_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        decor_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.decor_palette_canvas.bind("<Button-1>", self.decor_palette_click)
+
     def on_editor_tool_changed(self) -> None:
-        tab_by_tool = {"select": 0, "terrain": 1, "belt": 2, "object": 3}
-        if hasattr(self, "tool_settings_tabs"):
-            self.tool_settings_tabs.select(tab_by_tool.get(self.editor_tool_var.get(), 0))
         self.refresh_placeable_settings()
         self.redraw_editor_room()
 
-    def on_tool_tab_changed(self, _event=None) -> None:
-        if not hasattr(self, "tool_settings_tabs"):
+    def on_editor_palette_tab_changed(self, _event=None) -> None:
+        if not hasattr(self, "editor_palettes"):
             return
-        selected = self.tool_settings_tabs.index(self.tool_settings_tabs.select())
-        tool_by_tab = {0: "select", 1: "terrain", 2: "belt", 3: "object"}
-        tool = tool_by_tab.get(selected, "select")
-        if self.editor_tool_var.get() != tool:
-            self.editor_tool_var.set(tool)
-            self.redraw_editor_room()
+        selected = self.editor_palettes.index(self.editor_palettes.select())
+        if selected == 0:
+            if self.editor_tool_var.get() != "terrain":
+                self.select_tile_brush_mode()
+        elif selected == 1:
+            if self.editor_tool_var.get() not in {"select", "belt", "object"}:
+                self.select_selection_mode()
+        elif selected == 2:
+            if self.editor_tool_var.get() != "decor":
+                self.select_decor_mode()
+
+    def select_tile_brush_mode(self) -> None:
+        self.editor_tool_var.set("terrain")
+        self.editor_selected_ref = None
+        self.editor_drag_offset = None
+        if hasattr(self, "editor_palettes"):
+            self.editor_palettes.select(0)
+        self.refresh_placeable_settings()
+        self.redraw_tile_palette()
+        self.redraw_editor_room()
 
     def select_selection_mode(self) -> None:
         self.editor_tool_var.set("select")
         self.palette_selection_var.set("Selection mode")
+        if hasattr(self, "editor_palettes"):
+            self.editor_palettes.select(1)
         self.refresh_placeable_settings()
+        self.redraw_editor_room()
+
+    def select_decor_mode(self) -> None:
+        self.editor_tool_var.set("decor")
+        self.editor_selected_ref = None
+        self.editor_drag_offset = None
+        if hasattr(self, "editor_palettes"):
+            self.editor_palettes.select(2)
+        self.refresh_placeable_settings()
+        self.redraw_decor_palette()
         self.redraw_editor_room()
 
     def refresh_placeable_settings(self) -> None:
@@ -496,20 +574,22 @@ class LevelEditorApp(tk.Tk):
         tool = self.editor_tool_var.get()
         if tool == "terrain":
             self.tile_settings_frame.pack(fill=tk.X)
-            self.palette_selection_var.set(f"Painting tile {self.tile_value_var.get().upper()}")
+            self.palette_selection_var.set(f"Tile brush: {self.tile_value_var.get().upper()} ({self._tile_brush_mode()})")
         elif tool == "belt":
             self.belt_settings_frame.pack(fill=tk.X)
-            self.palette_selection_var.set(f"Placing {self.belt_kind_var.get()} belt, length {self._belt_length()}")
+            self.palette_selection_var.set(f"Object placement: {self.belt_kind_var.get()} belt, length {self._belt_length()}")
         elif tool == "object":
             obj = self.editor_object_var.get().replace("_", " ")
             if self.editor_object_var.get() in {"ceiling_button", "floor_switch", "jello"}:
                 self.control_settings_frame.pack(fill=tk.X)
             else:
                 self.object_settings_frame.pack(fill=tk.X)
-            self.palette_selection_var.set(f"Placing {obj}")
+            self.palette_selection_var.set(f"Object placement: {obj}")
+        elif tool == "decor":
+            self.palette_selection_var.set(f"Decor decals: code {self.decor_code_var.get().upper()}")
         else:
             self.select_settings_frame.pack(fill=tk.X)
-            self.palette_selection_var.set("Selection mode")
+            self.palette_selection_var.set("Object selection")
 
 
     def on_palette_setting_changed(self) -> None:
@@ -561,6 +641,7 @@ class LevelEditorApp(tk.Tk):
         self.redraw_objects_atlas()
         self.redraw_tile_palette()
         self.redraw_editor_object_palette()
+        self.redraw_decor_palette()
 
     def set_level(self, index: int) -> None:
         self.level_var.set(index)
@@ -580,6 +661,7 @@ class LevelEditorApp(tk.Tk):
         self.redraw_room()
         self.redraw_objects_atlas()
         self.redraw_editor_object_palette()
+        self.redraw_decor_palette()
 
     def redraw_room(self) -> None:
         image = self.current_image()
@@ -645,12 +727,43 @@ class LevelEditorApp(tk.Tk):
             return None
         return value if 0 <= value <= 0xFF else None
 
+    def _parse_decor_code(self) -> int | None:
+        text = self.decor_code_var.get().strip()
+        if not text:
+            return None
+        try:
+            value = int(text, 16) if not text.lower().startswith("0x") else int(text, 0)
+        except ValueError:
+            messagebox.showerror("Invalid decal", f"Decor code must be a byte, got {text!r}.")
+            return None
+        if not 0 <= value <= 0xFF:
+            messagebox.showerror("Invalid decal", f"Decor code must be between 00 and FF, got {text!r}.")
+            return None
+        self.decor_code_var.set(f"{value:02X}")
+        return value
+
+    def _parse_decor_code_silent(self) -> int | None:
+        text = self.decor_code_var.get().strip()
+        if not text:
+            return None
+        try:
+            value = int(text, 16) if not text.lower().startswith("0x") else int(text, 0)
+        except ValueError:
+            return None
+        return value if 0 <= value <= 0xFF else None
+
     def select_tile_code(self, code: int) -> None:
+        if code in CONVEYOR_PHYSICS_TILE_CODES:
+            self.select_editor_object("belt_teal" if code == 0x1F else "belt_grey")
+            self.status.set(f"Tile {code:02X} is conveyor physics; use the Belt tool so it stays paired with a CV visual object.")
+            return
         self.editor_tool_var.set("terrain")
         self.editor_selected_ref = None
         self.editor_drag_offset = None
         self.tile_value_var.set(f"{code & 0xFF:02X}")
         self.palette_selection_var.set(f"Painting tile {code & 0xFF:02X}")
+        if hasattr(self, "editor_palettes"):
+            self.editor_palettes.select(0)
         self.refresh_placeable_settings()
         self.redraw_tile_palette()
         self.redraw_editor_room()
@@ -667,10 +780,19 @@ class LevelEditorApp(tk.Tk):
         else:
             self.editor_tool_var.set("object")
             self.editor_object_var.set(value)
+        if hasattr(self, "editor_palettes"):
+            self.editor_palettes.select(1)
         self.refresh_placeable_settings()
         self.redraw_editor_object_palette()
         self.redraw_objects_atlas()
+        self.redraw_decor_palette()
         self.redraw_editor_room()
+
+    def select_decor_code(self, code: int) -> None:
+        self.editor_selected_ref = None
+        self.editor_drag_offset = None
+        self.decor_code_var.set(f"{code & 0xFF:02X}")
+        self.select_decor_mode()
 
     def _brush_size(self) -> int:
         try:
@@ -680,6 +802,46 @@ class LevelEditorApp(tk.Tk):
         value = max(1, min(5, value))
         self.brush_size_var.set(value)
         return value
+
+    def _tile_brush_mode(self) -> str:
+        mode = self.tile_brush_mode_var.get()
+        if mode not in {"exact", "auto solid", "auto rope"}:
+            mode = "exact"
+            self.tile_brush_mode_var.set(mode)
+        return mode
+
+    def _auto_solid_code_for_cell(self, active: set[tuple[int, int]], painted: set[tuple[int, int]], x: int, y: int) -> int:
+        north = (x, y - 1) in active
+        south = (x, y + 1) in active
+        west = (x - 1, y) in active
+        east = (x + 1, y) in active
+        northwest = (x - 1, y - 1) in active
+        southwest = (x - 1, y + 1) in active
+        if not west:
+            if not north:
+                return 0x01
+            if not south:
+                return 0x06
+            return 0x03
+        if not north:
+            if (x - 1, y) not in painted and east and (northwest or southwest):
+                return 0x05
+            return 0x02
+        return 0x04
+
+    def _auto_rope_code_for_cell(self, active: set[tuple[int, int]], x: int, y: int) -> int:
+        north = (x, y - 1) in active
+        south = (x, y + 1) in active
+        if not north:
+            return 0x90
+        if not south:
+            return 0xC0
+        depth = 0
+        yy = y - 1
+        while (x, yy) in active:
+            depth += 1
+            yy -= 1
+        return 0xA0 if depth % 3 == 0 else 0xB0
 
     def _belt_length(self) -> int:
         try:
@@ -709,6 +871,18 @@ class LevelEditorApp(tk.Tk):
         for cv in parse_conveyor_visual_records(room):
             if cv.index == index:
                 return cv
+        return None
+
+    def _decor_from_ref(self, room, ref):
+        if ref is None or ref[0] != "decor":
+            return None
+        table = visual_compact3_table(room)
+        if table is None:
+            return None
+        index = ref[1]
+        for entry in table.entries:
+            if entry.index == index:
+                return entry
         return None
 
     def _cv_records_touching_cells(self, room, cells: set[tuple[int, int]]) -> list:
@@ -763,9 +937,11 @@ class LevelEditorApp(tk.Tk):
     def _update_editor_info(self) -> None:
         tool = self.editor_tool_var.get()
         if tool == "terrain":
-            self.editor_info.set(f"tile {self.tile_value_var.get().upper()}  brush {self._brush_size()}x{self._brush_size()}")
+            self.editor_info.set(f"tile {self.tile_value_var.get().upper()}  brush {self._brush_size()}x{self._brush_size()}  {self._tile_brush_mode()}")
         elif tool == "belt":
             self.editor_info.set(f"belt {self.belt_kind_var.get()} {self._belt_tile_code():02X}  len {self._belt_length()}  (click place/replace; select+Del removes)")
+        elif tool == "decor":
+            self.editor_info.set(f"decor decal {self.decor_code_var.get().upper()}")
         elif tool == "select":
             if self.editor_selected_ref is None:
                 self.editor_info.set("select")
@@ -865,6 +1041,53 @@ class LevelEditorApp(tk.Tk):
         self.property_code_var.set("")
         self.property_props_var.set("")
 
+    def _set_property_row_visible(self, row_index: int, visible: bool) -> None:
+        widgets = self.property_rows[row_index]
+        if not visible:
+            for widget in widgets:
+                if widget is not None:
+                    widget.grid_remove()
+            return
+        row = row_index + 1
+        if row_index < 2:
+            label_a, entry_a, label_b, entry_b = widgets
+            label_a.grid(row=row, column=0, sticky="e", padx=(6, 2), pady=2)
+            entry_a.grid(row=row, column=1, sticky="w", pady=2)
+            label_b.grid(row=row, column=2, sticky="e", padx=(8, 2), pady=2)
+            entry_b.grid(row=row, column=3, sticky="w", pady=2)
+        else:
+            label, entry, _unused_a, _unused_b = widgets
+            label.grid(row=row, column=0, sticky="e", padx=(6, 2), pady=2)
+            entry.grid(row=row, column=1, columnspan=3, sticky="ew", pady=2)
+
+    def _layout_property_panel(self, *, rows: tuple[bool, bool, bool] = (False, False, False), actor_bools: bool = False, apply: bool = False) -> None:
+        for index, visible in enumerate(rows):
+            self._set_property_row_visible(index, visible)
+        if actor_bools:
+            self.property_actor_bool_row.grid(row=4, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
+        else:
+            self.property_actor_bool_row.grid_remove()
+        if apply:
+            self.property_apply_button.grid(row=5, column=0, columnspan=4, sticky="ew", padx=6, pady=(4, 4))
+            note_row = 6
+        else:
+            self.property_apply_button.grid_remove()
+            note_row = 5
+        self.property_note_label.grid(row=note_row, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 4))
+
+    def _set_actor_bool_controls(self, *, facing: bool, hidden: bool, show_facing: bool, show_hidden: bool, enabled: bool = False) -> None:
+        self.property_actor_facing_var.set(facing)
+        self.property_actor_hidden_var.set(hidden)
+        self.property_actor_facing_check.pack_forget()
+        self.property_actor_hidden_check.pack_forget()
+        if show_facing:
+            self.property_actor_facing_check.pack(side=tk.LEFT)
+        if show_hidden:
+            self.property_actor_hidden_check.pack(side=tk.LEFT, padx=(12 if show_facing else 0, 0))
+        state = tk.NORMAL if enabled else tk.DISABLED
+        self.property_actor_facing_check.configure(state=state)
+        self.property_actor_hidden_check.configure(state=state)
+
     def refresh_property_panel(self) -> None:
         ref = self.editor_selected_ref
         room = self.current_room()
@@ -872,6 +1095,7 @@ class LevelEditorApp(tk.Tk):
         if ref is None:
             self.property_title_var.set("No object selected")
             self._clear_property_values()
+            self._layout_property_panel()
             self.property_note_var.set("Use Select to edit existing CV belts, controls, platforms and actors. Tool-specific placement options are in the tool tabs above.")
             return
         kind = ref[0]
@@ -880,7 +1104,9 @@ class LevelEditorApp(tk.Tk):
             if cv is None:
                 self.property_title_var.set("Selected CV no longer exists")
                 self._clear_property_values()
+                self._layout_property_panel()
                 return
+            self._layout_property_panel(rows=(True, True, True), apply=True)
             footprint_codes = sorted({room.get(x, y) for x, y in cv.cells if 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS})
             self.property_title_var.set(f"CV{cv.index} conveyor visual object")
             self.property_label_x_var.set("cell x")
@@ -901,7 +1127,9 @@ class LevelEditorApp(tk.Tk):
             if run is None:
                 self.property_title_var.set("Selected tile-only belt no longer exists")
                 self._clear_property_values()
+                self._layout_property_panel()
                 return
+            self._layout_property_panel(rows=(True, True, True))
             self.property_title_var.set("Tile-only conveyor footprint")
             self.property_label_x_var.set("cell x")
             self.property_label_y_var.set("cell y")
@@ -919,7 +1147,9 @@ class LevelEditorApp(tk.Tk):
             if not platforms:
                 self.property_title_var.set("Selected platform no longer exists")
                 self._clear_property_values()
+                self._layout_property_panel()
                 return
+            self._layout_property_panel(rows=(True, True, True), apply=True)
             pl = platforms[0]
             refs = [cmd.record.index for cmd in control_commands(room) if any(t.kind == "platform" and t.index == pl.index for t in control_targets(cmd))]
             self.property_title_var.set(f"P{pl.index} platform/runtime object")
@@ -940,7 +1170,9 @@ class LevelEditorApp(tk.Tk):
             if not cmds:
                 self.property_title_var.set("Selected control no longer exists")
                 self._clear_property_values()
+                self._layout_property_panel()
                 return
+            self._layout_property_panel(rows=(True, True, True), apply=True)
             cmd = cmds[0]
             self.property_title_var.set(f"C{idx} trigger/control command @{cmd.record.source_offset:02X}")
             self.property_label_x_var.set("raw x")
@@ -956,18 +1188,57 @@ class LevelEditorApp(tk.Tk):
             state = cmd.body[3] if len(cmd.body) >= 4 else None
             state_text = "n/a" if state is None else f"{state:02X}"
             self.property_note_var.set("Friendly model: body = type, x, y, state/subtype, target0, target1...  Targets are typed bytes: P0=00, CV0=10, M0=40. One button can control multiple things, e.g. P0,CV0. State/subtype is preserved as raw byte " + state_text + ".")
+        elif kind == "decor":
+            entry = self._decor_from_ref(room, ref)
+            if entry is None:
+                self.property_title_var.set("Selected decor decal no longer exists")
+                self._clear_property_values()
+                self._layout_property_panel()
+                return
+            self._layout_property_panel(rows=(True, True, False), apply=True)
+            sprite_ref = visual_sprite_ref(
+                entry,
+                theme=self.current_level().part(self.part_var.get()).theme,
+                level_index=self.current_level().index,
+                room_index=room.index,
+                part_index=self.part_var.get(),
+            )
+            self.property_title_var.set(f"V{entry.index} decor decal")
+            self.property_label_x_var.set("raw x")
+            self.property_label_y_var.set("raw y")
+            self.property_label_len_var.set("code")
+            self.property_label_code_var.set("sprite")
+            self.property_x_var.set(str(entry.x_raw))
+            self.property_y_var.set(str(entry.y))
+            self.property_len_var.set(f"{entry.code:02X}")
+            self.property_code_var.set(f"{sprite_ref.archive}:{sprite_ref.resource_id:03d}:{sprite_ref.sprite_index}")
+            self.property_note_var.set(sprite_ref.note or "Theme visual compact3 entry.")
         elif kind == "actor":
             idx = ref[1]
             actors = [a for a in actor_records_for_room(self.current_level().part(self.part_var.get()), room.index) if a.index == idx]
             if not actors:
                 self.property_title_var.set("Selected actor no longer exists")
                 self._clear_property_values()
+                self._layout_property_panel()
                 return
             actor = actors[0]
+            binary_facing = actor.frame_variant in {0, 1}
+            binary_hidden = actor.hidden in {0, 1}
+            self._layout_property_panel(rows=(True, True, not binary_hidden), actor_bools=binary_facing or binary_hidden)
+            if binary_facing:
+                self.property_rows[1][0].grid_remove()
+                self.property_rows[1][1].grid_remove()
+            self._set_actor_bool_controls(
+                facing=bool(actor.frame_variant & 0x01),
+                hidden=bool(actor.hidden),
+                show_facing=binary_facing,
+                show_hidden=binary_hidden,
+                enabled=False,
+            )
             self.property_title_var.set(f"A{actor.index} {actor.confirmed_name or 'actor'}")
             self.property_label_x_var.set("x")
             self.property_label_y_var.set("y")
-            self.property_label_len_var.set("facing/var")
+            self.property_label_len_var.set("variant")
             self.property_label_code_var.set("frame")
             self.property_label_props_var.set("hidden")
             self.property_x_var.set(str(actor.x))
@@ -975,10 +1246,64 @@ class LevelEditorApp(tk.Tk):
             self.property_len_var.set(f"{actor.frame_variant:02X}")
             self.property_code_var.set(f"{actor.frame:02X}")
             self.property_props_var.set(f"{actor.hidden:02X}")
-            self.property_note_var.set("Actor editing scaffold: frame_variant is a likely direction/facing/state byte for many enemies. Apply is intentionally not enabled for actor table yet.")
+            note_bits = []
+            if binary_facing:
+                note_bits.append("facing is shown as a boolean variant")
+            if binary_hidden:
+                note_bits.append("hidden is shown as a checkbox")
+            suffix = "; ".join(note_bits) or "raw actor bytes are shown because this actor uses non-binary state values"
+            self.property_note_var.set(f"Actor table is inspect-only for now; {suffix}.")
+        elif kind in {"exit_door", "player_start", "artifact"}:
+            self._layout_property_panel(rows=(True, True, False), apply=True)
+            self.property_label_x_var.set("raw x")
+            self.property_label_y_var.set("raw y")
+            self.property_label_len_var.set("room")
+            self.property_label_code_var.set("slot")
+            if kind == "exit_door":
+                door = header_exit_door(self.current_level().part(self.part_var.get()).header)
+                if door is None:
+                    self.property_title_var.set("Exit door is not configured")
+                    self._clear_property_values()
+                    self._layout_property_panel()
+                    return
+                self.property_title_var.set("Exit door")
+                self.property_x_var.set(str(door.x_raw))
+                self.property_y_var.set(str(door.y_raw))
+                self.property_len_var.set(str(door.room_index))
+                self.property_code_var.set("-")
+                self.property_note_var.set("Header object. Move the handle or edit raw x/y here.")
+            elif kind == "player_start":
+                start = header_player_start(self.current_level().part(self.part_var.get()).header)
+                if start is None:
+                    self.property_title_var.set("Player start is not configured")
+                    self._clear_property_values()
+                    self._layout_property_panel()
+                    return
+                self.property_title_var.set("Player start")
+                self.property_x_var.set(str(start.x_raw))
+                self.property_y_var.set(str(start.y_raw))
+                self.property_len_var.set("0")
+                self.property_code_var.set("-")
+                self.property_note_var.set("Header object. Player start belongs to room 0 in the current model.")
+            else:
+                slot = ref[1]
+                cands = [cand for cand in header_object_candidates(self.current_level().part(self.part_var.get()).header) if cand.index == slot]
+                if not cands:
+                    self.property_title_var.set("Selected artifact no longer exists")
+                    self._clear_property_values()
+                    self._layout_property_panel()
+                    return
+                cand = cands[0]
+                self.property_title_var.set(f"Artifact {slot}")
+                self.property_x_var.set(str(cand.x_raw))
+                self.property_y_var.set(str(cand.y_raw))
+                self.property_len_var.set(str(cand.room_plus_one - 1))
+                self.property_code_var.set(f"{slot}")
+                self.property_note_var.set("Header artifact slot. Room is zero-based here.")
         else:
             self.property_title_var.set(kind.replace("_", " "))
             self._clear_property_values()
+            self._layout_property_panel()
 
     def apply_selected_properties(self) -> None:
         ref = self.editor_selected_ref
@@ -1053,8 +1378,40 @@ class LevelEditorApp(tk.Tk):
                 set_control_command_body(room, idx, bytes(body))
                 new_targets = [decode_control_target(value).label for value in body[4:]]
                 self.status.set(f"Updated C{idx}: targets={','.join(new_targets)} body={bytes(body).hex(' ')}")
+            elif kind == "decor":
+                entry = self._decor_from_ref(room, ref)
+                if entry is None:
+                    self.status.set("Selected decor decal no longer exists.")
+                    return
+                x_raw = self._parse_int_property(self.property_x_var.get(), default=entry.x_raw) & 0xFF
+                y_raw = self._parse_int_property(self.property_y_var.get(), default=entry.y) & 0xFF
+                code = self._parse_int_property(self.property_len_var.get(), default=entry.code) & 0xFF
+                set_visual_compact3_entry(room, entry.index, x_raw=x_raw, y=y_raw, code=code)
+                self.decor_code_var.set(f"{code:02X}")
+                self.status.set(f"Updated V{entry.index}: code={code:02X} x={x_raw} y={y_raw}")
+            elif kind == "exit_door":
+                part = self.current_level().part(self.part_var.get())
+                x_raw = self._parse_int_property(self.property_x_var.get(), default=0) & 0xFF
+                y_raw = self._parse_int_property(self.property_y_var.get(), default=0) & 0xFF
+                room_index = max(0, min(ROOM_COUNT - 1, self._parse_int_property(self.property_len_var.get(), default=room.index)))
+                part.set_exit_door(room_index, x_raw, y_raw)
+                self.status.set(f"Updated exit door: room={room_index} x={x_raw} y={y_raw}")
+            elif kind == "player_start":
+                part = self.current_level().part(self.part_var.get())
+                x_raw = self._parse_int_property(self.property_x_var.get(), default=0) & 0xFF
+                y_raw = self._parse_int_property(self.property_y_var.get(), default=0) & 0xFF
+                part.set_player_start(x_raw, y_raw)
+                self.status.set(f"Updated player start: x={x_raw} y={y_raw}")
+            elif kind == "artifact":
+                slot = ref[1]
+                part = self.current_level().part(self.part_var.get())
+                x_raw = self._parse_int_property(self.property_x_var.get(), default=0) & 0xFF
+                y_raw = self._parse_int_property(self.property_y_var.get(), default=0) & 0xFF
+                room_index = max(0, min(ROOM_COUNT - 1, self._parse_int_property(self.property_len_var.get(), default=room.index)))
+                part.set_artifact_slot(slot, room_index, x_raw, y_raw)
+                self.status.set(f"Updated artifact {slot}: room={room_index} x={x_raw} y={y_raw}")
             else:
-                self.status.set("Properties are editable for CV belts, platforms and control triggers for now.")
+                self.status.set("Properties are editable for CV belts, platforms, controls and header objects for now.")
                 return
         except Exception as exc:
             self.status.set(f"Invalid properties: {exc}")
@@ -1062,6 +1419,7 @@ class LevelEditorApp(tk.Tk):
         self._set_dirty()
         self.redraw_room()
         self.redraw_editor_object_palette()
+        self.redraw_decor_palette()
 
     def redraw_editor_room(self) -> None:
         if not hasattr(self, "editor_canvas"):
@@ -1096,8 +1454,9 @@ class LevelEditorApp(tk.Tk):
             x = 8
             y = 8
             size = 28
-            self.editor_canvas.create_rectangle(x, y, x + 78, y + 42, fill="#111111", outline="#d8e8ff", stipple="gray50")
-            self.editor_canvas.create_text(x + 38, y + 7, text=f"Tile {value:02X}", fill="#ffffff", font=("Consolas", 10))
+            mode = self._tile_brush_mode()
+            self.editor_canvas.create_rectangle(x, y, x + 112, y + 42, fill="#111111", outline="#d8e8ff", stipple="gray50")
+            self.editor_canvas.create_text(x + 54, y + 7, text=f"Tile {value:02X} {mode}", fill="#ffffff", font=("Consolas", 9))
             self.editor_canvas.create_rectangle(x + 10, y + 24, x + 10 + size, y + 24 + 8, outline="#d8e8ff", fill="")
         elif tool == "belt":
             text = f"Belt {self.belt_kind_var.get()} x{self._belt_length()}"
@@ -1105,6 +1464,10 @@ class LevelEditorApp(tk.Tk):
             self.editor_canvas.create_text(14, 14, anchor="nw", text=text, fill="#ffffff", font=("Segoe UI", 9))
         elif tool == "select":
             text = "Select" if self.editor_selected_ref is None else self.editor_info.get()
+            self.editor_canvas.create_rectangle(8, 8, 132, 34, fill="#111111", outline="#d8e8ff", stipple="gray50")
+            self.editor_canvas.create_text(14, 14, anchor="nw", text=text, fill="#ffffff", font=("Segoe UI", 9))
+        elif tool == "decor":
+            text = f"Decor {self.decor_code_var.get().upper()}"
             self.editor_canvas.create_rectangle(8, 8, 132, 34, fill="#111111", outline="#d8e8ff", stipple="gray50")
             self.editor_canvas.create_text(14, 14, anchor="nw", text=text, fill="#ffffff", font=("Segoe UI", 9))
         else:
@@ -1170,7 +1533,7 @@ class LevelEditorApp(tk.Tk):
             handles.append(EditorHandle(("player_start", None), start.x_raw * 2, start.y_raw, "Start", "#7cff6b"))
         for cand in header_object_candidates(part.header):
             if cand.room_plus_one == room.index + 1:
-                handles.append(EditorHandle(("artifact", cand.index), cand.x_raw * 2, cand.y_raw, f"A{cand.index}", "#ff40ff"))
+                handles.append(EditorHandle(("artifact", cand.index), cand.x_raw * 2, cand.y_raw, f"D{cand.index}", "#ff40ff"))
         for platform in parse_platform_triplets(room):
             if platform.visible:
                 handles.append(EditorHandle(("platform", platform.index), platform.x_raw * 2, platform.y, f"P{platform.index}", "#ffb000"))
@@ -1201,6 +1564,10 @@ class LevelEditorApp(tk.Tk):
         for cv in parse_conveyor_visual_records(room):
             cv_cells |= cv.cells
             handles.append(EditorHandle(self._cv_ref(cv), cv.x_raw * 2, cv.y - 8, f"CV{cv.index}×{cv.length}", "#4aa8ff"))
+        visual_table = visual_compact3_table(room)
+        if visual_table is not None:
+            for entry in visual_table.entries:
+                handles.append(EditorHandle(("decor", entry.index), entry.x_raw * 2, entry.y, f"V{entry.index}:{entry.code:02X}", "#d4a8ff"))
         # Tile-only belt runs are physics footprints. Show them as a separate
         # grey handle only when no CV object covers them, because in-game they
         # are invisible but still push the player.
@@ -1219,8 +1586,13 @@ class LevelEditorApp(tk.Tk):
         value = self._parse_tile_value()
         if cell is None or value is None:
             return
+        if value in CONVEYOR_PHYSICS_TILE_CODES:
+            self.select_editor_object("belt_teal" if value == 0x1F else "belt_grey")
+            self.status.set(f"Tile {value:02X} is conveyor physics. Switched to Belt placement to keep the CV visual object and physics footprint together.")
+            return
         cx, cy = cell
         room = self.current_room()
+        mode = self._tile_brush_mode()
         brush = self._brush_size()
         half = brush // 2
         cells = {
@@ -1246,17 +1618,60 @@ class LevelEditorApp(tk.Tk):
             self.editor_selected_ref = None
             self.editor_drag_offset = None
 
-        for xx, yy in cells:
-            if room.get(xx, yy) == value:
-                continue
-            room.set(xx, yy, value)
-            changed = True
+        if mode == "auto solid":
+            active = {
+                (xx, yy)
+                for yy in range(ROOM_ROWS)
+                for xx in range(ROOM_COLUMNS)
+                if room.get(xx, yy) in AUTO_SOLID_TILE_CODES
+            } | cells
+            affected = set(cells)
+            for xx, yy in list(cells):
+                affected |= {
+                    (nx, ny)
+                    for nx, ny in ((xx - 1, yy), (xx + 1, yy), (xx, yy - 1), (xx, yy + 1))
+                    if 0 <= nx < ROOM_COLUMNS and 0 <= ny < ROOM_ROWS and (nx, ny) in active
+                }
+            for xx, yy in affected:
+                new_value = self._auto_solid_code_for_cell(active, cells, xx, yy)
+                if room.get(xx, yy) != new_value:
+                    room.set(xx, yy, new_value)
+                    changed = True
+        elif mode == "auto rope":
+            active = {
+                (xx, yy)
+                for yy in range(ROOM_ROWS)
+                for xx in range(ROOM_COLUMNS)
+                if room.get(xx, yy) in ROPE_TILE_CODES
+            } | cells
+            affected = set()
+            for xx, yy in cells:
+                top = yy
+                while (xx, top - 1) in active:
+                    top -= 1
+                bottom = yy
+                while (xx, bottom + 1) in active:
+                    bottom += 1
+                affected |= {(xx, run_y) for run_y in range(top, bottom + 1)}
+            for xx, yy in affected:
+                new_value = self._auto_rope_code_for_cell(active, xx, yy)
+                if room.get(xx, yy) != new_value:
+                    room.set(xx, yy, new_value)
+                    changed = True
+        else:
+            for xx, yy in cells:
+                if room.get(xx, yy) == value:
+                    continue
+                room.set(xx, yy, value)
+                changed = True
         if not changed:
             return
         self._set_dirty()
         self.redraw_room()
         if touched_belts or touched_cvs:
             self.status.set(f"Painted tile {value:02X}; removed {len(touched_belts) + len(touched_cvs)} belt/CV object(s) that overlapped the brush.")
+        elif mode != "exact":
+            self.status.set(f"Painted {mode} brush at x={cx} y={cy}.")
 
     def place_editor_belt(self, event) -> None:
         cell = self._cell_from_event(event, self.editor_canvas)
@@ -1318,6 +1733,13 @@ class LevelEditorApp(tk.Tk):
             slot = handle.ref[1] if len(handle.ref) > 1 else None
             if kind == "artifact" and slot is not None:
                 self.editor_object_var.set(f"artifact_{slot}")
+            elif kind == "decor" and slot is not None:
+                entry = self._decor_from_ref(self.current_room(), handle.ref)
+                if entry is not None:
+                    self.decor_code_var.set(f"{entry.code:02X}")
+                    self.editor_tool_var.set("decor")
+                    if hasattr(self, "editor_palettes"):
+                        self.editor_palettes.select(2)
             else:
                 self.editor_object_var.set(kind)
             self.status.set(f"Selected {handle.label}")
@@ -1368,6 +1790,15 @@ class LevelEditorApp(tk.Tk):
             body[1] = self._clamp_byte(round(x / 2))
             body[2] = self._clamp_byte(y)
             set_control_command_body(room, slot, bytes(body))
+        elif kind == "decor" and slot is not None:
+            entry = self._decor_from_ref(room, self.editor_selected_ref)
+            if entry is None:
+                self.status.set("Selected decor decal no longer exists.")
+                self.editor_selected_ref = None
+                self.editor_drag_offset = None
+                self.redraw_editor_room()
+                return
+            set_visual_compact3_entry(room, entry.index, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y), code=entry.code)
         elif kind == "actor":
             self.status.set("Actor table handles are selectable for inspection; movement editing is not enabled yet.")
             return
@@ -1422,6 +1853,7 @@ class LevelEditorApp(tk.Tk):
         self._set_dirty()
         self.redraw_room()
         self.redraw_editor_object_palette()
+        self.redraw_decor_palette()
         label = kind.replace("_", " ")
         suffix = "" if slot is None or kind == "conveyor" else f" {slot}"
         self.status.set(f"Moved {label}{suffix} to x={x} y={y}")
@@ -1435,6 +1867,12 @@ class LevelEditorApp(tk.Tk):
             self.paint_editor_tile(event)
         elif tool == "belt":
             self.place_editor_belt(event)
+        elif tool == "decor":
+            handle = self.find_editor_handle(event)
+            if handle is not None and handle.ref[0] == "decor":
+                self.select_editor_handle(event)
+            else:
+                self.place_editor_decor(event)
         else:
             self.place_editor_object(event)
 
@@ -1444,6 +1882,8 @@ class LevelEditorApp(tk.Tk):
             self.move_selected_editor_object(event)
         elif tool == "terrain":
             self.paint_editor_tile(event)
+        elif tool == "decor" and self.editor_selected_ref is not None and self.editor_selected_ref[0] == "decor":
+            self.move_selected_editor_object(event)
 
     def editor_pick_tile(self, event) -> None:
         # Right-click on an editable handle selects it. Right-click again or use
@@ -1457,6 +1897,13 @@ class LevelEditorApp(tk.Tk):
             slot = handle.ref[1] if len(handle.ref) > 1 else None
             if kind == "artifact" and slot is not None:
                 self.editor_object_var.set(f"artifact_{slot}")
+            elif kind == "decor" and slot is not None:
+                entry = self._decor_from_ref(self.current_room(), handle.ref)
+                if entry is not None:
+                    self.decor_code_var.set(f"{entry.code:02X}")
+                    self.editor_tool_var.set("decor")
+                    if hasattr(self, "editor_palettes"):
+                        self.editor_palettes.select(2)
             else:
                 self.editor_object_var.set(kind)
             if kind in {"belt", "conveyor"} and self.editor_tool_var.get() == "belt":
@@ -1476,6 +1923,26 @@ class LevelEditorApp(tk.Tk):
 
     def _clamp_byte(self, value: int) -> int:
         return max(0, min(0xFF, int(value)))
+
+    def place_editor_decor(self, event) -> None:
+        x, y = self._screen_xy_from_event(event, self.editor_canvas)
+        if not (0 <= x < ROOM_COLUMNS * CELL_SIZE and 0 <= y < ROOM_ROWS * CELL_SIZE):
+            return
+        code = self._parse_decor_code()
+        if code is None:
+            return
+        room = self.current_room()
+        try:
+            idx = add_visual_compact3_entry(room, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y), code=code)
+        except ValueError as exc:
+            self.status.set(f"Cannot place decor decal: {exc}")
+            return
+        self.editor_selected_ref = ("decor", idx)
+        self.editor_drag_offset = None
+        self._set_dirty()
+        self.redraw_room()
+        self.redraw_decor_palette()
+        self.status.set(f"Placed decor V{idx} code={code:02X} at x={x} y={y}")
 
     def place_editor_object(self, event) -> None:
         x, y = self._screen_xy_from_event(event, self.editor_canvas)
@@ -1560,6 +2027,9 @@ class LevelEditorApp(tk.Tk):
         elif kind == "control":
             room = self.current_room()
             delete_control_command(room, slot)
+        elif kind == "decor":
+            room = self.current_room()
+            delete_visual_compact3_entry(room, slot)
         elif kind == "actor":
             self.status.set("Actor deletion is intentionally disabled for now; use properties to inspect actor fields.")
             return "break"
@@ -1572,6 +2042,7 @@ class LevelEditorApp(tk.Tk):
         self._set_dirty()
         self.redraw_room()
         self.redraw_editor_object_palette()
+        self.redraw_decor_palette()
         self.status.set(f"Deleted {kind}")
         return "break"
 
@@ -1744,8 +2215,8 @@ class LevelEditorApp(tk.Tk):
         """Return a grouped catalog of recognized gameplay objects.
 
         Each item is (label, archive, resource_id, sprite_index, note).  The
-        dynamic sections summarize the currently selected room so the atlas also
-        works as a lightweight object inspector.
+        static sections are the object catalog/picker. Current-room sections are
+        an inspector and are intentionally not used for placement.
         """
         static = [
             (
@@ -1781,7 +2252,7 @@ class LevelEditorApp(tk.Tk):
             (
                 "Pickups",
                 [
-                    ("Diamond / artifact", "AE000", 44, 0, "header room object"),
+                    *[(f"D{i} artifact", "AE000", 44, 0, f"artifact slot {i}") for i in range(6)],
                     ("Apple", "AE000", 45, 0, "verified collectible, schema still WIP"),
                 ],
             ),
@@ -1898,7 +2369,7 @@ class LevelEditorApp(tk.Tk):
                 )],
             ))
 
-        return dynamic + static
+        return static + dynamic
 
     def _actor_resource_id(self, frame: int) -> int:
         if 0 <= frame < 0x17:
@@ -1921,16 +2392,24 @@ class LevelEditorApp(tk.Tk):
             return f"belt_{self.belt_kind_var.get()}"
         if self.editor_tool_var.get() == "object":
             return self.editor_object_var.get()
+        if self.editor_tool_var.get() == "decor":
+            return f"decor_{self.decor_code_var.get().upper()}"
         return None
 
     def _editable_value_for_atlas_item(self, label: str, archive: str, resource_id: int, sprite_index: int, note: str = "") -> str | None:
         # Prefer exact sprite identity.  This makes the editor palette and the
         # full Objects atlas use the same source of truth even when labels vary.
+        if archive == "AE000" and resource_id == 44 and sprite_index == 0:
+            lower_note = note.lower()
+            if lower_note.startswith("artifact slot "):
+                try:
+                    slot = int(lower_note.rsplit(" ", 1)[1])
+                except ValueError:
+                    return None
+                return f"artifact_{slot}" if 0 <= slot < 6 else None
+            return None
         for value, _label, a, rid, si in self.editor_object_specs():
             if (archive, resource_id, sprite_index) == (a, rid, si):
-                # Artifacts have several slots using the same sprite.  The first
-                # slot is a sane default for atlas placement; users can select a
-                # specific slot from the editor palette if needed.
                 return value
         return None
 
@@ -1954,12 +2433,27 @@ class LevelEditorApp(tk.Tk):
 
         x0 = 12
         y = 12
+        section_font = tkfont.Font(family="Segoe UI", size=12, weight="bold")
         category_font = tkfont.Font(family="Segoe UI", size=11, weight="bold")
         item_font = tkfont.Font(family="Segoe UI", size=9)
         note_font = tkfont.Font(family="Segoe UI", size=8)
+        last_section = None
 
         for title, items in self.atlas_categories():
-            self.objects_canvas.create_text(x0, y, anchor="nw", text=title, fill="#ffffff", font=category_font)
+            room_section = title.startswith("Current room:")
+            section = "Current room inspector" if room_section else "Placement catalog"
+            if section != last_section:
+                if last_section is not None:
+                    y += 8
+                    self.objects_canvas.create_line(x0, y, x0 + 4 * 170 - 8, y, fill="#4f5964")
+                    y += 12
+                self.objects_canvas.create_text(x0, y, anchor="nw", text=section, fill="#ffffff", font=section_font)
+                y += 28
+                last_section = section
+
+            title_text = title.replace("Current room: ", "")
+            title_colour = "#b8e0ff" if room_section else "#ffffff"
+            self.objects_canvas.create_text(x0, y, anchor="nw", text=title_text, fill=title_colour, font=category_font)
             y += 24
 
             col_w = 170
@@ -1971,7 +2465,7 @@ class LevelEditorApp(tk.Tk):
                 x = x0 + col * col_w
                 yy = y + row * row_h
 
-                editable_value = self._editable_value_for_atlas_item(label, archive, resource_id, sprite_index, note)
+                editable_value = None if room_section else self._editable_value_for_atlas_item(label, archive, resource_id, sprite_index, note)
                 selected = editable_value is not None and editable_value == self._current_palette_value()
                 fill = "#4f6f8f" if selected else ("#343434" if editable_value else "#2b2b2b")
                 outline = "#9ed0ff" if editable_value else "#555555"
@@ -2008,7 +2502,7 @@ class LevelEditorApp(tk.Tk):
         part = self.current_level().part(self.part_var.get())
         theme = part.theme
         normal_codes = sorted(self.project.renderer.code_to_sprite.keys())
-        special_codes = [0x07, 0x0F, 0x1F, 0x90, 0xA0, 0xB0, 0xC0]
+        special_codes = [0x07, 0x90, 0xA0, 0xB0, 0xC0]
         codes = []
         for code in normal_codes + special_codes:
             if code not in codes:
@@ -2032,8 +2526,6 @@ class LevelEditorApp(tk.Tk):
             elif code in {0x90, 0xA0, 0xB0, 0xC0}:
                 rope_rid = {0x90: 5, 0xA0: 6, 0xB0: 7, 0xC0: 8}[code]
                 sprite = self.project.graphics.sprite("AE000", rope_rid, 0)
-            elif code in {0x0F, 0x1F}:
-                sprite = self.project.graphics.sprite("AE000", 38, 0 if code == 0x0F else 12)
             if sprite is not None:
                 thumb = sprite.copy()
                 scale = min(2, max(1, 28 // max(1, max(thumb.size))))
@@ -2062,6 +2554,55 @@ class LevelEditorApp(tk.Tk):
             code = self.tile_palette_codes[idx]
             self.select_tile_code(code)
 
+    def redraw_decor_palette(self) -> None:
+        if not hasattr(self, "decor_palette_canvas"):
+            return
+        self.decor_palette_canvas.delete("all")
+        self.tk_decor_images = []
+        selected = self._parse_decor_code_silent()
+        part = self.current_level().part(self.part_var.get())
+        bank = self.project.graphics.banks.get(f"AE001:{25 + part.theme:03d}", [])
+        codes = list(range(min(64, len(bank))))
+        self.decor_palette_codes = codes
+
+        cell_w = 76
+        cell_h = 58
+        cols = 3
+        for idx, code in enumerate(codes):
+            col = idx % cols
+            row = idx // cols
+            x = 8 + col * cell_w
+            y = 8 + row * cell_h
+            fill = "#4f6f8f" if code == selected else "#343434"
+            self.decor_palette_canvas.create_rectangle(x, y, x + cell_w - 8, y + cell_h - 8, outline="#777777", fill=fill)
+            sprite = bank[code] if 0 <= code < len(bank) else None
+            if sprite is not None:
+                thumb = sprite.copy()
+                scale = min(2, max(1, 30 // max(1, max(thumb.size))))
+                thumb = thumb.resize((max(1, thumb.width * scale), max(1, thumb.height * scale)), Image.Resampling.NEAREST)
+                tk_img = ImageTk.PhotoImage(thumb)
+                self.tk_decor_images.append(tk_img)
+                self.decor_palette_canvas.create_image(x + 34, y + 22, image=tk_img)
+            self.decor_palette_canvas.create_text(x + 4, y + 38, anchor="nw", text=f"{code:02X}", fill="#ffffff", font=("Consolas", 9))
+
+        rows = (len(codes) + cols - 1) // cols
+        self.decor_palette_canvas.config(scrollregion=(0, 0, cols * cell_w + 12, rows * cell_h + 12))
+
+    def decor_palette_click(self, event) -> None:
+        if not hasattr(self, "decor_palette_codes"):
+            return
+        cell_w = 76
+        cell_h = 58
+        x = int(self.decor_palette_canvas.canvasx(event.x) - 8)
+        y = int(self.decor_palette_canvas.canvasy(event.y) - 8)
+        if x < 0 or y < 0:
+            return
+        col = x // cell_w
+        row = y // cell_h
+        idx = row * 3 + col
+        if 0 <= idx < len(self.decor_palette_codes):
+            self.select_decor_code(self.decor_palette_codes[idx])
+
     def editor_object_specs(self):
         """Editable/placeable atlas entries.
 
@@ -2079,7 +2620,7 @@ class LevelEditorApp(tk.Tk):
             ("jello", "Jello / light trigger", "AE000", 41, 0),
             ("belt_grey", "Conveyor grey", "AE000", 38, 0),
             ("belt_teal", "Conveyor teal", "AE000", 38, 12),
-            *[(f"artifact_{i}", f"Artifact {i}", "AE000", 44, 0) for i in range(6)],
+            *[(f"artifact_{i}", f"D{i} artifact", "AE000", 44, 0) for i in range(6)],
         ]
 
     def redraw_editor_object_palette(self) -> None:
@@ -2096,17 +2637,27 @@ class LevelEditorApp(tk.Tk):
         row_h = 58
         width = 238
 
+        self.object_palette_canvas.create_text(8, y, anchor="nw", text="Placeable objects", fill="#ffffff", font=category_font)
+        y += 24
         for title, items in self.atlas_categories():
-            self.object_palette_canvas.create_text(8, y, anchor="nw", text=title, fill="#ffffff", font=category_font)
+            if title.startswith("Current room:"):
+                continue
+            placeable_items = [
+                (label, archive, resource_id, sprite_index, note, value)
+                for label, archive, resource_id, sprite_index, note in items
+                for value in [self._editable_value_for_atlas_item(label, archive, resource_id, sprite_index, note)]
+                if value is not None
+            ]
+            if not placeable_items:
+                continue
+            self.object_palette_canvas.create_text(8, y, anchor="nw", text=title, fill="#b8e0ff", font=category_font)
             y += 22
-            for label, archive, resource_id, sprite_index, note in items:
-                value = self._editable_value_for_atlas_item(label, archive, resource_id, sprite_index, note)
+            for label, archive, resource_id, sprite_index, _note, value in placeable_items:
                 selected = value is not None and value == self._current_palette_value()
-                fill = "#4f6f8f" if selected else ("#343434" if value else "#272727")
-                outline = "#9ed0ff" if value else "#555555"
+                fill = "#4f6f8f" if selected else "#343434"
+                outline = "#9ed0ff"
                 self.object_palette_canvas.create_rectangle(8, y, 8 + width, y + row_h - 6, outline=outline, fill=fill)
-                if value:
-                    self.editor_object_palette_hitboxes.append((8, y, 8 + width, y + row_h - 6, value))
+                self.editor_object_palette_hitboxes.append((8, y, 8 + width, y + row_h - 6, value))
                 sprite = self.project.graphics.sprite(archive, resource_id, sprite_index)
                 if sprite is not None:
                     thumb = sprite.copy()
@@ -2118,8 +2669,7 @@ class LevelEditorApp(tk.Tk):
                     self.tk_editor_object_images.append(tk_img)
                     self.object_palette_canvas.create_image(30, y + 25, image=tk_img)
                 self.object_palette_canvas.create_text(56, y + 7, anchor="nw", text=label, fill="#ffffff", font=item_font)
-                sub = "click to place" if value else note
-                self.object_palette_canvas.create_text(56, y + 27, anchor="nw", text=sub[:28], fill="#c8c8c8", font=note_font)
+                self.object_palette_canvas.create_text(56, y + 27, anchor="nw", text="click to place", fill="#c8c8c8", font=note_font)
                 y += row_h
             y += 8
         self.object_palette_canvas.config(scrollregion=(0, 0, 260, y + 8))
@@ -2168,6 +2718,7 @@ class LevelEditorApp(tk.Tk):
         self.redraw_objects_atlas()
         self.redraw_tile_palette()
         self.redraw_editor_object_palette()
+        self.redraw_decor_palette()
         self.status.set(f"Saved AE001.DAT edits to {path}")
 
     def save_ae001(self) -> None:

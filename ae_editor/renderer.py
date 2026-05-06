@@ -29,6 +29,7 @@ from .conveyors import ConveyorSpec, compose_conveyor, iter_conveyor_runs
 from .graphics import GraphicsSet
 from .level_format import Level, Room
 from .object_mapping import visual_render_layer, visual_sprite_ref
+from .tile_mapping import CONVEYOR_PHYSICS_TILE_CODES
 
 
 def _record12_panel_xy(rec: bytes) -> tuple[int, int] | None:
@@ -158,7 +159,7 @@ class RoomRenderer:
         part = level.part(options.part_index)
         room = part.room(room_index)
         image = Image.new("RGBA", (ROOM_SCREEN_WIDTH_PX, ROOM_SCREEN_HEIGHT_PX), (0, 0, 0, 255))
-        draw = ImageDraw.Draw(image)
+        draw = ImageDraw.Draw(image, "RGBA")
         self._current_theme = part.theme
         self._current_level_index = level.index
 
@@ -206,10 +207,10 @@ class RoomRenderer:
                 self._draw_actor_probes(image, room, part.header)
                 self._draw_payload_debug(image, room)
 
-        if options.grid:
-            self._draw_grid(image)
         if options.zoom != 1:
             image = image.resize((image.width * options.zoom, image.height * options.zoom), Image.Resampling.NEAREST)
+        if options.grid:
+            self._draw_grid(image, zoom=options.zoom)
         return image
 
     def _blit(self, image: Image.Image, sprite: Image.Image, x: int, y: int) -> None:
@@ -228,7 +229,7 @@ class RoomRenderer:
         for y in range(ROOM_ROWS):
             for x in range(ROOM_COLUMNS):
                 code = room.get(x, y)
-                if code == self.SOLID_INVISIBLE_CODE or code in self.CONVEYOR_TILE_CODES or (x, y) in rope_cells:
+                if code == self.SOLID_INVISIBLE_CODE or code in CONVEYOR_PHYSICS_TILE_CODES or (x, y) in rope_cells:
                     continue
                 sprite_index = self.code_to_sprite.get(code)
                 if sprite_index is None:
@@ -549,8 +550,18 @@ class RoomRenderer:
             y0 = y * 8
             draw.rectangle([x0, y0, x0 + 15, y0 + 7], fill=colour + (255,))
 
-    def _draw_grid(self, image: Image.Image) -> None:
-        draw = ImageDraw.Draw(image)
-        for y in range(ROOM_ROWS):
-            for x in range(ROOM_COLUMNS):
-                draw.rectangle([x * CELL_SIZE, y * CELL_SIZE, x * CELL_SIZE + CELL_SIZE - 1, y * CELL_SIZE + CELL_SIZE - 1], outline=(0, 0, 0, 100))
+    def _draw_grid(self, image: Image.Image, *, zoom: int = 1) -> None:
+        draw = ImageDraw.Draw(image, "RGBA")
+        cell = CELL_SIZE * max(1, int(zoom))
+        width = ROOM_COLUMNS * cell
+        height = ROOM_ROWS * cell
+        minor = (111, 143, 176, 110)
+        major = (182, 212, 240, 145)
+        for x in range(ROOM_COLUMNS + 1):
+            px = x * cell
+            colour = major if x % 4 == 0 else minor
+            draw.line((px, 0, px, height), fill=colour)
+        for y in range(ROOM_ROWS + 1):
+            py = y * cell
+            colour = major if y % 4 == 0 else minor
+            draw.line((0, py, width, py), fill=colour)
