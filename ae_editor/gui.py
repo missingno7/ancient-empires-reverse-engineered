@@ -12,6 +12,7 @@ from .constants import CELL_SIZE, ROOM_COUNT, ROOM_COLUMNS, ROOM_ROWS
 from .exporters import export_bank_sheets, export_probe_csv, export_room_previews
 from .overlay import build_room_overlay, control_ref_values, control_targets, decode_control_target
 from .coordinates import control_xy, actor_xy
+from .coordinates import platform_xy
 from .conveyors import iter_conveyor_runs
 from .project import AncientEmpiresProject
 from .renderer import RenderOptions
@@ -26,6 +27,7 @@ from .room_payload import (
     laser_crystal_table,
     PLATFORM_TRIPLET_SIZE,
     clear_runtime_triplet_slot,
+    first_free_runtime_triplet_slot,
     parse_exe_payload_directory,
     parse_platform_triplets,
     parse_conveyor_visual_records,
@@ -45,6 +47,17 @@ from .room_payload import (
 
 DIFFICULTY_LABELS = ["Explorer", "Expert"]
 COLLISION_TILE_CODE = 0x07
+PLATFORM_FOOTPRINT_CELLS = {
+    "horizontal": (6, 1),
+    "vertical": (1, 6),
+    "unknown": (1, 1),
+}
+PLATFORM_KIND_FLAGS = {
+    "horizontal_left": 0x40,
+    "horizontal_right": 0x60,
+    "vertical_down": 0x80,
+    "vertical_up": 0xA0,
+}
 
 
 @dataclass(frozen=True)
@@ -112,6 +125,7 @@ class LevelEditorApp(tk.Tk):
         self.editor_collision_var = tk.BooleanVar(value=True)
         self.belt_kind_var = tk.StringVar(value="grey")
         self.belt_length_var = tk.IntVar(value=4)
+        self.platform_kind_var = tk.StringVar(value="horizontal_left")
         self.control_kind_var = tk.StringVar(value="ceiling_button")
         self.control_targets_var = tk.StringVar(value="P0")
         self.control_state_var = tk.StringVar(value="00")
@@ -149,6 +163,7 @@ class LevelEditorApp(tk.Tk):
         self.tk_tile_images = []
         self.tk_editor_object_images = []
         self.tk_decor_images = []
+        self.tk_actor_images = []
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_window)
@@ -158,6 +173,7 @@ class LevelEditorApp(tk.Tk):
         self.redraw_tile_palette()
         self.redraw_editor_object_palette()
         self.redraw_decor_palette()
+        self.redraw_actor_palette()
         self.refresh_placeable_settings()
 
     def _build_ui(self) -> None:
@@ -359,6 +375,11 @@ class LevelEditorApp(tk.Tk):
         ttk.Checkbutton(view_row, text="Overlay", variable=self.editor_overlay_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Checkbutton(view_row, text="Collision", variable=self.editor_collision_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(8, 0))
 
+        action_row = ttk.Frame(right)
+        action_row.pack(fill=tk.X, padx=6, pady=(0, 6))
+        ttk.Button(action_row, text="Select / move", command=self.select_selection_mode).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(action_row, text="Delete selected", command=self.delete_selected_editor_object).pack(side=tk.LEFT, padx=(6, 0))
+
         ttk.Label(right, textvariable=self.palette_selection_var, wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
 
         self.placeable_settings_host = ttk.Frame(right)
@@ -410,6 +431,21 @@ class LevelEditorApp(tk.Tk):
         ttk.Label(belt_row, text="Len").pack(side=tk.LEFT, padx=(8, 0))
         ttk.Spinbox(belt_row, from_=1, to=38, textvariable=self.belt_length_var, width=4, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Label(self.belt_settings_frame, text="Belt = physics tile run + CV visual object. Select the CV afterwards to edit props/trigger links.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
+
+        self.platform_settings_frame = ttk.LabelFrame(self.placeable_settings_host, text="Platform placement")
+        platform_row = ttk.Frame(self.platform_settings_frame)
+        platform_row.pack(fill=tk.X, padx=6, pady=(6, 6))
+        ttk.Label(platform_row, text="Move").pack(side=tk.LEFT)
+        platform_kind = ttk.Combobox(
+            platform_row,
+            state="readonly",
+            textvariable=self.platform_kind_var,
+            values=["horizontal_left", "horizontal_right", "vertical_down", "vertical_up"],
+            width=16,
+        )
+        platform_kind.pack(side=tk.LEFT, padx=(4, 0))
+        platform_kind.bind("<<ComboboxSelected>>", lambda _event: self.on_palette_setting_changed())
+        ttk.Label(self.platform_settings_frame, text="Platform = runtime P slot + invisible 07 support footprint. Placement uses the first free P slot.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
 
         self.control_settings_frame = ttk.LabelFrame(self.placeable_settings_host, text="New control / trigger")
         ttk.Label(self.control_settings_frame, text="Targets").grid(row=0, column=0, sticky="e", padx=(6, 2), pady=(6, 2))
@@ -464,9 +500,11 @@ class LevelEditorApp(tk.Tk):
         tile_tab = ttk.Frame(self.editor_palettes)
         object_tab = ttk.Frame(self.editor_palettes)
         decor_tab = ttk.Frame(self.editor_palettes)
+        actor_tab = ttk.Frame(self.editor_palettes)
         self.editor_palettes.add(tile_tab, text="Tile brush")
-        self.editor_palettes.add(object_tab, text="Objects")
-        self.editor_palettes.add(decor_tab, text="Decor decals")
+        self.editor_palettes.add(object_tab, text="Mechanics")
+        self.editor_palettes.add(decor_tab, text="Decor")
+        self.editor_palettes.add(actor_tab, text="Actors")
         self.editor_palettes.bind("<<NotebookTabChanged>>", self.on_editor_palette_tab_changed)
 
         tile_frame = ttk.Frame(tile_tab)
@@ -482,10 +520,6 @@ class LevelEditorApp(tk.Tk):
 
         object_frame = ttk.Frame(object_tab)
         object_frame.pack(fill=tk.BOTH, expand=True)
-        object_actions = ttk.Frame(object_frame)
-        object_actions.pack(fill=tk.X, padx=4, pady=(4, 2))
-        ttk.Button(object_actions, text="Select / move", command=self.select_selection_mode).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(object_actions, text="Delete selected", command=self.delete_selected_editor_object).pack(side=tk.LEFT, padx=(6, 0))
         self.object_palette_canvas = tk.Canvas(object_frame, bg="#202020", width=260)
         object_scroll = ttk.Scrollbar(object_frame, orient=tk.VERTICAL, command=self.object_palette_canvas.yview)
         self.object_palette_canvas.configure(yscrollcommand=object_scroll.set)
@@ -498,7 +532,6 @@ class LevelEditorApp(tk.Tk):
         decor_settings.pack(fill=tk.X, padx=6, pady=(6, 4))
         ttk.Label(decor_settings, text="Code").pack(side=tk.LEFT)
         ttk.Entry(decor_settings, textvariable=self.decor_code_var, width=6).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(decor_settings, text="Delete selected", command=self.delete_selected_editor_object).pack(side=tk.RIGHT)
         ttk.Label(
             decor_tab,
             text="Theme decor from the room visual compact3 table. Choose a decal, click to place it, or select an existing V handle to move/delete it.",
@@ -514,6 +547,21 @@ class LevelEditorApp(tk.Tk):
         decor_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.decor_palette_canvas.bind("<Button-1>", self.decor_palette_click)
 
+        actor_actions = ttk.Frame(actor_tab)
+        actor_actions.pack(fill=tk.X, padx=6, pady=(6, 4))
+        ttk.Button(actor_actions, text="Select actor", command=self.select_actor_mode).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(
+            actor_tab,
+            text="Actor editing scaffold. Current room enemies are selectable on the canvas for inspection; placement and path editing can plug in here next.",
+            wraplength=260,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=6, pady=(0, 4))
+        self.actor_palette_canvas = tk.Canvas(actor_tab, bg="#202020", width=260)
+        actor_scroll = ttk.Scrollbar(actor_tab, orient=tk.VERTICAL, command=self.actor_palette_canvas.yview)
+        self.actor_palette_canvas.configure(yscrollcommand=actor_scroll.set)
+        self.actor_palette_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(0, 6))
+        actor_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=(0, 6))
+
     def on_editor_tool_changed(self) -> None:
         self.refresh_placeable_settings()
         self.redraw_editor_room()
@@ -526,11 +574,14 @@ class LevelEditorApp(tk.Tk):
             if self.editor_tool_var.get() != "terrain":
                 self.select_tile_brush_mode()
         elif selected == 1:
-            if self.editor_tool_var.get() not in {"select", "belt", "object"}:
+            if self.editor_tool_var.get() not in {"select", "belt", "platform", "object"}:
                 self.select_selection_mode()
         elif selected == 2:
             if self.editor_tool_var.get() != "decor":
                 self.select_decor_mode()
+        elif selected == 3:
+            if self.editor_tool_var.get() != "actor":
+                self.select_actor_mode()
 
     def select_tile_brush_mode(self) -> None:
         self.editor_tool_var.set("terrain")
@@ -560,6 +611,14 @@ class LevelEditorApp(tk.Tk):
         self.redraw_decor_palette()
         self.redraw_editor_room()
 
+    def select_actor_mode(self) -> None:
+        self.editor_tool_var.set("actor")
+        if hasattr(self, "editor_palettes"):
+            self.editor_palettes.select(3)
+        self.refresh_placeable_settings()
+        self.redraw_actor_palette()
+        self.redraw_editor_room()
+
     def refresh_placeable_settings(self) -> None:
         if not hasattr(self, "select_settings_frame"):
             return
@@ -567,6 +626,7 @@ class LevelEditorApp(tk.Tk):
             self.select_settings_frame,
             self.tile_settings_frame,
             self.belt_settings_frame,
+            self.platform_settings_frame,
             self.control_settings_frame,
             self.object_settings_frame,
         ):
@@ -578,6 +638,9 @@ class LevelEditorApp(tk.Tk):
         elif tool == "belt":
             self.belt_settings_frame.pack(fill=tk.X)
             self.palette_selection_var.set(f"Object placement: {self.belt_kind_var.get()} belt, length {self._belt_length()}")
+        elif tool == "platform":
+            self.platform_settings_frame.pack(fill=tk.X)
+            self.palette_selection_var.set(f"Mechanics: platform {self.platform_kind_var.get().replace('_', ' ')}")
         elif tool == "object":
             obj = self.editor_object_var.get().replace("_", " ")
             if self.editor_object_var.get() in {"ceiling_button", "floor_switch", "jello"}:
@@ -587,6 +650,8 @@ class LevelEditorApp(tk.Tk):
             self.palette_selection_var.set(f"Object placement: {obj}")
         elif tool == "decor":
             self.palette_selection_var.set(f"Decor decals: code {self.decor_code_var.get().upper()}")
+        elif tool == "actor":
+            self.palette_selection_var.set("Actors: select and inspect")
         else:
             self.select_settings_frame.pack(fill=tk.X)
             self.palette_selection_var.set("Object selection")
@@ -642,6 +707,7 @@ class LevelEditorApp(tk.Tk):
         self.redraw_tile_palette()
         self.redraw_editor_object_palette()
         self.redraw_decor_palette()
+        self.redraw_actor_palette()
 
     def set_level(self, index: int) -> None:
         self.level_var.set(index)
@@ -662,6 +728,7 @@ class LevelEditorApp(tk.Tk):
         self.redraw_objects_atlas()
         self.redraw_editor_object_palette()
         self.redraw_decor_palette()
+        self.redraw_actor_palette()
 
     def redraw_room(self) -> None:
         image = self.current_image()
@@ -757,6 +824,10 @@ class LevelEditorApp(tk.Tk):
             self.select_editor_object("belt_teal" if code == 0x1F else "belt_grey")
             self.status.set(f"Tile {code:02X} is conveyor physics; use the Belt tool so it stays paired with a CV visual object.")
             return
+        if code == COLLISION_TILE_CODE:
+            self.select_editor_object("platform_horizontal_left")
+            self.status.set("Tile 07 is platform/support collision; use Mechanics platform placement so it stays paired with a P slot.")
+            return
         self.editor_tool_var.set("terrain")
         self.editor_selected_ref = None
         self.editor_drag_offset = None
@@ -777,6 +848,9 @@ class LevelEditorApp(tk.Tk):
         elif value == "belt_teal":
             self.editor_tool_var.set("belt")
             self.belt_kind_var.set("teal")
+        elif value.startswith("platform_"):
+            self.editor_tool_var.set("platform")
+            self.platform_kind_var.set(value.removeprefix("platform_"))
         else:
             self.editor_tool_var.set("object")
             self.editor_object_var.set(value)
@@ -934,14 +1008,54 @@ class LevelEditorApp(tk.Tk):
                 room.set(x, y, tile_code)
                 changed = True
         return changed
+
+    def _platform_flags(self) -> int:
+        return PLATFORM_KIND_FLAGS.get(self.platform_kind_var.get(), 0x40)
+
+    def _platform_orientation_for_flags(self, flags: int) -> str:
+        return "vertical" if (flags & 0xF0) in {0x80, 0xA0} else "horizontal"
+
+    def _platform_footprint_cells(self, platform) -> set[tuple[int, int]]:
+        x_px, y_px = platform_xy(platform)
+        cols, rows = PLATFORM_FOOTPRINT_CELLS.get(platform.orientation, PLATFORM_FOOTPRINT_CELLS["unknown"])
+        start_x = max(0, min(ROOM_COLUMNS - 1, (x_px + 4) // CELL_SIZE))
+        start_y = max(0, min(ROOM_ROWS - 1, (y_px + 8) // CELL_SIZE))
+        return {
+            (x, y)
+            for y in range(start_y, min(ROOM_ROWS, start_y + rows))
+            for x in range(start_x, min(ROOM_COLUMNS, start_x + cols))
+        }
+
+    def _clear_platform_footprint(self, room, platform) -> bool:
+        changed = False
+        for x, y in self._platform_footprint_cells(platform):
+            if room.get(x, y) == COLLISION_TILE_CODE:
+                room.set(x, y, 0)
+                changed = True
+        return changed
+
+    def _write_platform_footprint(self, room, platform) -> bool:
+        changed = False
+        for x, y in self._platform_footprint_cells(platform):
+            if room.get(x, y) != COLLISION_TILE_CODE:
+                room.set(x, y, COLLISION_TILE_CODE)
+                changed = True
+        return changed
+
+    def _platforms_touching_cells(self, room, cells: set[tuple[int, int]]) -> list:
+        return [platform for platform in parse_platform_triplets(room) if platform.visible and self._platform_footprint_cells(platform) & cells]
     def _update_editor_info(self) -> None:
         tool = self.editor_tool_var.get()
         if tool == "terrain":
             self.editor_info.set(f"tile {self.tile_value_var.get().upper()}  brush {self._brush_size()}x{self._brush_size()}  {self._tile_brush_mode()}")
         elif tool == "belt":
             self.editor_info.set(f"belt {self.belt_kind_var.get()} {self._belt_tile_code():02X}  len {self._belt_length()}  (click place/replace; select+Del removes)")
+        elif tool == "platform":
+            self.editor_info.set(f"platform {self.platform_kind_var.get().replace('_', ' ')}  (P slot + 07 footprint)")
         elif tool == "decor":
             self.editor_info.set(f"decor decal {self.decor_code_var.get().upper()}")
+        elif tool == "actor":
+            self.editor_info.set("actors inspect/select")
         elif tool == "select":
             if self.editor_selected_ref is None:
                 self.editor_info.set("select")
@@ -1350,7 +1464,13 @@ class LevelEditorApp(tk.Tk):
                     self.status.set(f"P{slot} target slot is fixed. Edit control target lists instead; position/flags were not changed.")
                     self.refresh_property_panel()
                     return
+                old_platforms = [p for p in parse_platform_triplets(room) if p.index == slot]
+                if old_platforms:
+                    self._clear_platform_footprint(room, old_platforms[0])
                 room.set_trailing_bytes(slot * PLATFORM_TRIPLET_SIZE, [flags, x_raw, y_raw])
+                new_platforms = [p for p in parse_platform_triplets(room) if p.index == slot]
+                if new_platforms:
+                    self._write_platform_footprint(room, new_platforms[0])
                 self.status.set(f"Updated P{slot}: flags={flags:02X} x={x_raw} y={y_raw}")
             elif kind == "control":
                 idx = ref[1]
@@ -1461,6 +1581,10 @@ class LevelEditorApp(tk.Tk):
         elif tool == "belt":
             text = f"Belt {self.belt_kind_var.get()} x{self._belt_length()}"
             self.editor_canvas.create_rectangle(8, 8, 134, 34, fill="#111111", outline="#d8e8ff", stipple="gray50")
+            self.editor_canvas.create_text(14, 14, anchor="nw", text=text, fill="#ffffff", font=("Segoe UI", 9))
+        elif tool == "platform":
+            text = f"Platform {self.platform_kind_var.get().replace('_', ' ')}"
+            self.editor_canvas.create_rectangle(8, 8, 176, 34, fill="#111111", outline="#d8e8ff", stipple="gray50")
             self.editor_canvas.create_text(14, 14, anchor="nw", text=text, fill="#ffffff", font=("Segoe UI", 9))
         elif tool == "select":
             text = "Select" if self.editor_selected_ref is None else self.editor_info.get()
@@ -1590,6 +1714,10 @@ class LevelEditorApp(tk.Tk):
             self.select_editor_object("belt_teal" if value == 0x1F else "belt_grey")
             self.status.set(f"Tile {value:02X} is conveyor physics. Switched to Belt placement to keep the CV visual object and physics footprint together.")
             return
+        if value == COLLISION_TILE_CODE:
+            self.select_editor_object("platform_horizontal_left")
+            self.status.set("Tile 07 is platform/support collision. Switched to Mechanics platform placement to keep it paired with a P slot.")
+            return
         cx, cy = cell
         room = self.current_room()
         mode = self._tile_brush_mode()
@@ -1614,7 +1742,15 @@ class LevelEditorApp(tk.Tk):
         touched_belts = self._belt_runs_touching_cells(room, cells)
         for belt in touched_belts:
             changed = self._clear_belt_run(room, belt) or changed
+        touched_platforms = self._platforms_touching_cells(room, cells)
+        for platform in touched_platforms:
+            changed = self._clear_platform_footprint(room, platform) or changed
+            clear_runtime_triplet_slot(room, platform.index)
+            changed = True
         if (touched_belts or touched_cvs) and self.editor_selected_ref and self.editor_selected_ref[0] in {"belt", "conveyor"}:
+            self.editor_selected_ref = None
+            self.editor_drag_offset = None
+        if touched_platforms and self.editor_selected_ref and self.editor_selected_ref[0] == "platform":
             self.editor_selected_ref = None
             self.editor_drag_offset = None
 
@@ -1668,8 +1804,9 @@ class LevelEditorApp(tk.Tk):
             return
         self._set_dirty()
         self.redraw_room()
-        if touched_belts or touched_cvs:
-            self.status.set(f"Painted tile {value:02X}; removed {len(touched_belts) + len(touched_cvs)} belt/CV object(s) that overlapped the brush.")
+        removed = len(touched_belts) + len(touched_cvs) + len(touched_platforms)
+        if removed:
+            self.status.set(f"Painted tile {value:02X}; removed {removed} mechanics object(s) that overlapped the brush.")
         elif mode != "exact":
             self.status.set(f"Painted {mode} brush at x={cx} y={cy}.")
 
@@ -1705,6 +1842,30 @@ class LevelEditorApp(tk.Tk):
         self.redraw_room()
         action = "Replaced" if replaced_cvs or replaced_tiles else "Placed"
         self.status.set(f"{action} {self.belt_kind_var.get()} belt CV{cv_index} + physics tile {value:02X} at x={start_x} y={y} len={actual_length}")
+
+    def place_editor_platform(self, event) -> None:
+        x, y = self._screen_xy_from_event(event, self.editor_canvas)
+        if not (0 <= x < ROOM_COLUMNS * CELL_SIZE and 0 <= y < ROOM_ROWS * CELL_SIZE):
+            return
+        room = self.current_room()
+        slot = first_free_runtime_triplet_slot(room)
+        if slot is None:
+            self.status.set("No free P slot for a new platform.")
+            return
+        flags = self._platform_flags()
+        x_raw = self._clamp_byte(round(x / 2))
+        y_raw = self._clamp_byte(y)
+        room.set_trailing_bytes(slot * PLATFORM_TRIPLET_SIZE, [flags, x_raw, y_raw])
+        platforms = [p for p in parse_platform_triplets(room) if p.index == slot]
+        if platforms:
+            self._write_platform_footprint(room, platforms[0])
+        self.editor_selected_ref = ("platform", slot)
+        self.editor_drag_offset = None
+        self._set_dirty()
+        self.redraw_room()
+        self.redraw_editor_object_palette()
+        self.status.set(f"Placed P{slot} platform flags={flags:02X} + 07 footprint at x={x} y={y}")
+
     def find_editor_handle(self, event) -> EditorHandle | None:
         x, y = self._screen_xy_from_event(event, self.editor_canvas)
         part = self.current_level().part(self.part_var.get())
@@ -1733,6 +1894,14 @@ class LevelEditorApp(tk.Tk):
             slot = handle.ref[1] if len(handle.ref) > 1 else None
             if kind == "artifact" and slot is not None:
                 self.editor_object_var.set(f"artifact_{slot}")
+            elif kind == "platform" and slot is not None:
+                platforms = [p for p in parse_platform_triplets(self.current_room()) if p.index == slot]
+                if platforms:
+                    flag_to_kind = {0x40: "horizontal_left", 0x60: "horizontal_right", 0x80: "vertical_down", 0xA0: "vertical_up"}
+                    self.platform_kind_var.set(flag_to_kind.get(platforms[0].flags & 0xF0, self.platform_kind_var.get()))
+                    self.editor_tool_var.set("platform")
+                    if hasattr(self, "editor_palettes"):
+                        self.editor_palettes.select(1)
             elif kind == "decor" and slot is not None:
                 entry = self._decor_from_ref(self.current_room(), handle.ref)
                 if entry is not None:
@@ -1744,6 +1913,7 @@ class LevelEditorApp(tk.Tk):
                 self.editor_object_var.set(kind)
             self.status.set(f"Selected {handle.label}")
         self.redraw_editor_object_palette()
+        self.redraw_actor_palette()
         self.redraw_editor_room()
 
     def move_selected_editor_object(self, event) -> None:
@@ -1773,8 +1943,14 @@ class LevelEditorApp(tk.Tk):
         elif kind == "artifact" and slot is not None:
             part.set_artifact_slot(slot, room.index, self._clamp_byte(round(x / 2)), self._clamp_byte(y))
         elif kind == "platform" and slot is not None:
+            platforms = [p for p in parse_platform_triplets(room) if p.index == slot]
+            if platforms:
+                self._clear_platform_footprint(room, platforms[0])
             off = slot * PLATFORM_TRIPLET_SIZE
             room.set_trailing_bytes(off + 1, [self._clamp_byte(round(x / 2)), self._clamp_byte(y)])
+            platforms = [p for p in parse_platform_triplets(room) if p.index == slot]
+            if platforms:
+                self._write_platform_footprint(room, platforms[0])
         elif kind == "control" and slot is not None:
             cmds = [cmd for cmd in control_commands(room) if cmd.record.index == slot]
             if not cmds:
@@ -1867,12 +2043,20 @@ class LevelEditorApp(tk.Tk):
             self.paint_editor_tile(event)
         elif tool == "belt":
             self.place_editor_belt(event)
+        elif tool == "platform":
+            handle = self.find_editor_handle(event)
+            if handle is not None and handle.ref[0] == "platform":
+                self.select_editor_handle(event)
+            else:
+                self.place_editor_platform(event)
         elif tool == "decor":
             handle = self.find_editor_handle(event)
             if handle is not None and handle.ref[0] == "decor":
                 self.select_editor_handle(event)
             else:
                 self.place_editor_decor(event)
+        elif tool == "actor":
+            self.select_editor_handle(event)
         else:
             self.place_editor_object(event)
 
@@ -1882,6 +2066,8 @@ class LevelEditorApp(tk.Tk):
             self.move_selected_editor_object(event)
         elif tool == "terrain":
             self.paint_editor_tile(event)
+        elif tool == "platform" and self.editor_selected_ref is not None and self.editor_selected_ref[0] == "platform":
+            self.move_selected_editor_object(event)
         elif tool == "decor" and self.editor_selected_ref is not None and self.editor_selected_ref[0] == "decor":
             self.move_selected_editor_object(event)
 
@@ -1897,6 +2083,14 @@ class LevelEditorApp(tk.Tk):
             slot = handle.ref[1] if len(handle.ref) > 1 else None
             if kind == "artifact" and slot is not None:
                 self.editor_object_var.set(f"artifact_{slot}")
+            elif kind == "platform" and slot is not None:
+                platforms = [p for p in parse_platform_triplets(self.current_room()) if p.index == slot]
+                if platforms:
+                    flag_to_kind = {0x40: "horizontal_left", 0x60: "horizontal_right", 0x80: "vertical_down", 0xA0: "vertical_up"}
+                    self.platform_kind_var.set(flag_to_kind.get(platforms[0].flags & 0xF0, self.platform_kind_var.get()))
+                    self.editor_tool_var.set("platform")
+                    if hasattr(self, "editor_palettes"):
+                        self.editor_palettes.select(1)
             elif kind == "decor" and slot is not None:
                 entry = self._decor_from_ref(self.current_room(), handle.ref)
                 if entry is not None:
@@ -2011,6 +2205,9 @@ class LevelEditorApp(tk.Tk):
             part.clear_artifact_slot(slot)
         elif kind == "platform":
             room = self.current_room()
+            platforms = [p for p in parse_platform_triplets(room) if p.index == slot]
+            if platforms:
+                self._clear_platform_footprint(room, platforms[0])
             clear_runtime_triplet_slot(room, slot)
         elif kind == "conveyor":
             room = self.current_room()
@@ -2289,8 +2486,10 @@ class LevelEditorApp(tk.Tk):
             (
                 "Movement objects",
                 [
-                    ("Horizontal platform", "AE000", 47, 0, "platform flags 40/60"),
-                    ("Vertical platform", "AE000", 48, 0, "platform flags 80/A0"),
+                    ("Platform left", "AE000", 47, 0, "platform horizontal_left"),
+                    ("Platform right", "AE000", 47, 0, "platform horizontal_right"),
+                    ("Platform down", "AE000", 48, 0, "platform vertical_down"),
+                    ("Platform up", "AE000", 48, 0, "platform vertical_up"),
                     ("Conveyor grey", "AE000", 38, 0, "terrain 0F, frame 0"),
                     ("Conveyor teal", "AE000", 38, 12, "terrain 1F, frame 0"),
                 ],
@@ -2390,6 +2589,8 @@ class LevelEditorApp(tk.Tk):
             return f"tile_{self.tile_value_var.get().upper()}"
         if self.editor_tool_var.get() == "belt":
             return f"belt_{self.belt_kind_var.get()}"
+        if self.editor_tool_var.get() == "platform":
+            return f"platform_{self.platform_kind_var.get()}"
         if self.editor_tool_var.get() == "object":
             return self.editor_object_var.get()
         if self.editor_tool_var.get() == "decor":
@@ -2408,6 +2609,10 @@ class LevelEditorApp(tk.Tk):
                     return None
                 return f"artifact_{slot}" if 0 <= slot < 6 else None
             return None
+        lower_note = note.lower()
+        if lower_note.startswith("platform "):
+            kind = lower_note.removeprefix("platform ").strip()
+            return f"platform_{kind}" if kind in PLATFORM_KIND_FLAGS else None
         for value, _label, a, rid, si in self.editor_object_specs():
             if (archive, resource_id, sprite_index) == (a, rid, si):
                 return value
@@ -2502,7 +2707,7 @@ class LevelEditorApp(tk.Tk):
         part = self.current_level().part(self.part_var.get())
         theme = part.theme
         normal_codes = sorted(self.project.renderer.code_to_sprite.keys())
-        special_codes = [0x07, 0x90, 0xA0, 0xB0, 0xC0]
+        special_codes = [0x90, 0xA0, 0xB0, 0xC0]
         codes = []
         for code in normal_codes + special_codes:
             if code not in codes:
@@ -2620,6 +2825,10 @@ class LevelEditorApp(tk.Tk):
             ("jello", "Jello / light trigger", "AE000", 41, 0),
             ("belt_grey", "Conveyor grey", "AE000", 38, 0),
             ("belt_teal", "Conveyor teal", "AE000", 38, 12),
+            ("platform_horizontal_left", "Platform left", "AE000", 47, 0),
+            ("platform_horizontal_right", "Platform right", "AE000", 47, 0),
+            ("platform_vertical_down", "Platform down", "AE000", 48, 0),
+            ("platform_vertical_up", "Platform up", "AE000", 48, 0),
             *[(f"artifact_{i}", f"D{i} artifact", "AE000", 44, 0) for i in range(6)],
         ]
 
@@ -2637,7 +2846,7 @@ class LevelEditorApp(tk.Tk):
         row_h = 58
         width = 238
 
-        self.object_palette_canvas.create_text(8, y, anchor="nw", text="Placeable objects", fill="#ffffff", font=category_font)
+        self.object_palette_canvas.create_text(8, y, anchor="nw", text="Mechanics and gameplay objects", fill="#ffffff", font=category_font)
         y += 24
         for title, items in self.atlas_categories():
             if title.startswith("Current room:"):
@@ -2684,6 +2893,42 @@ class LevelEditorApp(tk.Tk):
                 self.select_editor_object(value)
                 self.status.set(f"Selected {value.replace('_', ' ')}. Click in the editor to place it.")
                 return
+
+    def redraw_actor_palette(self) -> None:
+        if not hasattr(self, "actor_palette_canvas"):
+            return
+        self.actor_palette_canvas.delete("all")
+        self.tk_actor_images = []
+        part = self.current_level().part(self.part_var.get())
+        room = self.current_room()
+        actors = actor_records_for_room(part, room.index)
+        y = 8
+        title_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+        item_font = tkfont.Font(family="Segoe UI", size=9)
+        note_font = tkfont.Font(family="Segoe UI", size=8)
+        self.actor_palette_canvas.create_text(8, y, anchor="nw", text="Current room actors", fill="#ffffff", font=title_font)
+        y += 26
+        if not actors:
+            self.actor_palette_canvas.create_text(8, y, anchor="nw", text="No actors in this room.", fill="#c8c8c8", font=item_font)
+            y += 28
+        for actor in actors:
+            fill = "#4f6f8f" if self.editor_selected_ref == ("actor", actor.index) else "#343434"
+            outline = "#9ed0ff" if not actor.hidden else "#777777"
+            self.actor_palette_canvas.create_rectangle(8, y, 246, y + 52, outline=outline, fill=fill)
+            sprite = self.project.graphics.sprite("AE000", self._actor_resource_id(actor.frame), self._actor_sprite_index(actor.frame))
+            if sprite is not None:
+                thumb = sprite.copy()
+                scale = min(2, max(1, 32 // max(1, max(thumb.size))))
+                thumb = thumb.resize((max(1, thumb.width * scale), max(1, thumb.height * scale)), Image.Resampling.NEAREST)
+                tk_img = ImageTk.PhotoImage(thumb)
+                self.tk_actor_images.append(tk_img)
+                self.actor_palette_canvas.create_image(30, y + 25, image=tk_img)
+            name = actor.confirmed_name or "actor"
+            self.actor_palette_canvas.create_text(56, y + 7, anchor="nw", text=f"A{actor.index} {name}", fill="#ffffff", font=item_font)
+            note = f"frame={actor.frame:02X} var={actor.frame_variant:02X} hidden={actor.hidden}"
+            self.actor_palette_canvas.create_text(56, y + 27, anchor="nw", text=note, fill="#c8c8c8", font=note_font)
+            y += 58
+        self.actor_palette_canvas.config(scrollregion=(0, 0, 260, y + 8))
 
     def redraw_bank_sheet(self) -> None:
         rid = self.bank_var.get() or next(iter(self.project.graphics.banks.keys()), "AE001:021")
