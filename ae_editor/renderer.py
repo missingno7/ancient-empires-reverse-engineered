@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import ClassVar
-
 from PIL import Image, ImageDraw
 
 from .constants import (
@@ -97,6 +96,7 @@ from .room_payload import (
     visual_compact3_table,
     laser_crystal_table,
     room_tail_marker,
+    room_apple_marker,
     header_object_candidates,
     header_exit_door,
     header_player_start,
@@ -146,16 +146,14 @@ class RoomRenderer:
     ROPE_X_BIAS = 4
     SOLID_INVISIBLE_CODE = 0x07
 
-    # Some pickups are visually confirmed but their exact storage schema has
-    # not been proven yet. Keep them centralized and data-driven for now.
-    # Apples likely belong to the same broad collectible family as diamonds,
-    # but the general parser hook still needs to be found in the room data/EXE.
-    KNOWN_EXTRA_PICKUPS: ClassVar[dict[tuple[int, int, int], list[KnownExtraPickup]]] = {
-        # These apples are visually verified from real-game screenshots, but
-        # their original storage schema is not decoded yet.  Keep them explicit
-        # so they render and expose editor handles instead of disappearing.
-        (1, 0, 1): [KnownExtraPickup("AE000", 45, 0, 196, 99)],
-        (18, 0, 0): [KnownExtraPickup("AE000", 45, 0, 83, 46)],
+    # Real red apple pickups are encoded by the room-tail marker.  A few stock
+    # rooms in the shipped data use the same EXE marker but with level-global
+    # room ids that the editor does not yet normalize; keep those as fallback
+    # decoded apples so existing levels remain editable.  New placements always
+    # write the room-tail marker, never a fake compact3 sprite.
+    KNOWN_LEGACY_APPLES: ClassVar[dict[tuple[int, int, int], KnownExtraPickup]] = {
+        (1, 0, 1): KnownExtraPickup("AE000", 45, 0, 196, 99),
+        (18, 0, 0): KnownExtraPickup("AE000", 45, 0, 83, 46),
     }
 
     def render_room(self, level: Level, room_index: int, options: RenderOptions | None = None) -> Image.Image:
@@ -490,11 +488,23 @@ class RoomRenderer:
         self._blit(image, sprite, x, y)
 
     def _draw_known_extra_pickups(self, image: Image.Image, room: Room) -> None:
+        apple = room_apple_marker(room)
+        sprite = self.graphics.sprite("AE000", 45, 0)
+        if sprite is None:
+            return
+        if apple is not None:
+            self._blit(image, sprite, apple.x_raw * 2, apple.y_raw)
+            return
+        # Fallback for original shipped apples whose room id byte is not yet
+        # normalized by the editor.  If the marker was explicitly cleared, do
+        # not resurrect the fallback.
+        tail = room_tail_marker(room)
+        if tail is None:
+            return
         key = (getattr(self, "_current_level_index", -1) + 1, room.part_index, room.index)
-        for pickup in self.KNOWN_EXTRA_PICKUPS.get(key, []):
-            sprite = self.graphics.sprite(pickup.archive, pickup.resource_id, pickup.sprite_index)
-            if sprite is not None:
-                self._blit(image, sprite, pickup.x, pickup.y)
+        pickup = self.KNOWN_LEGACY_APPLES.get(key)
+        if pickup is not None:
+            self._blit(image, sprite, pickup.x, pickup.y)
 
     def _draw_actors(self, image: Image.Image, part, room: Room, *, include_hidden: bool) -> None:
         for actor in actor_records_for_room(part, room.index):

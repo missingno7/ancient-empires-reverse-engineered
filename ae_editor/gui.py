@@ -15,7 +15,7 @@ from .coordinates import control_xy, actor_xy
 from .coordinates import platform_xy
 from .conveyors import iter_conveyor_runs
 from .project import AncientEmpiresProject
-from .renderer import RenderOptions
+from .renderer import RenderOptions, KnownExtraPickup
 from .object_mapping import visual_sprite_ref
 from .tile_mapping import AUTO_SOLID_TILE_CODES, CONVEYOR_PHYSICS_TILE_CODES, ROPE_TILE_CODES
 from .room_payload import (
@@ -25,6 +25,9 @@ from .room_payload import (
     header_object_candidates,
     header_player_start,
     laser_crystal_table,
+    room_apple_marker,
+    set_room_apple_marker,
+    clear_room_apple_marker,
     PLATFORM_TRIPLET_SIZE,
     clear_runtime_triplet_slot,
     first_free_runtime_triplet_slot,
@@ -476,7 +479,7 @@ class LevelEditorApp(tk.Tk):
         self.control_settings_frame.columnconfigure(1, weight=1)
         ttk.Label(
             self.control_settings_frame,
-            text="Targets use typed ids: P0 = platform, CV0 = belt, M0 = mirror/reflector-like target. One control can target multiple items, e.g. P0,CV0.",
+            text="Targets use typed ids: P0 = platform, CV0 = belt, R0 = reflector. One control can target multiple items, e.g. P1,P2,R0,R2.",
             wraplength=260,
             justify=tk.LEFT,
         ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
@@ -1125,10 +1128,10 @@ class LevelEditorApp(tk.Tk):
                 if not 0 <= idx < 16:
                     raise ValueError(f"platform target index must be 0..15, got {idx}")
                 value = idx
-            elif upper.startswith("M"):
+            elif upper.startswith("R") or upper.startswith("M"):
                 idx = self._parse_int_property(part[1:], default=0)
                 if not 0 <= idx < 16:
-                    raise ValueError(f"mirror target index must be 0..15, got {idx}")
+                    raise ValueError(f"reflector target index must be 0..15, got {idx}")
                 value = 0x40 + idx
             else:
                 value = self._parse_int_property(part, default=0) & 0xFF
@@ -1307,7 +1310,7 @@ class LevelEditorApp(tk.Tk):
             self.property_props_var.set(cmd.body.hex(" "))
             state = cmd.body[3] if len(cmd.body) >= 4 else None
             state_text = "n/a" if state is None else f"{state:02X}"
-            self.property_note_var.set("Friendly model: body = type, x, y, state/subtype, target0, target1...  Targets are typed bytes: P0=00, CV0=10, M0=40. One button can control multiple things, e.g. P0,CV0. State/subtype is preserved as raw byte " + state_text + ".")
+            self.property_note_var.set("Friendly model: body = type, x, y, state/subtype, target0, target1...  Targets are typed bytes: P0=00, CV0=10, R0=40. One button can control multiple things, e.g. P1,P2,R0,R2. State/subtype is preserved as raw byte " + state_text + ".")
         elif kind == "decor":
             entry = self._decor_from_ref(room, ref)
             if entry is None:
@@ -1408,28 +1411,27 @@ class LevelEditorApp(tk.Tk):
             self.property_len_var.set(f"{entry.code:02X}")
             self.property_code_var.set(str(entry.code & 0x3F))
             self.property_props_var.set(controlled_by)
-            self.property_note_var.set("Section_c laser/reflector entry. Controls point here with M0/M1/...; edit links on the selected button/switch Targets field. High bits in code are preserved as raw state/flags; a reflector with no incoming control may be autonomous or state-driven elsewhere.")
+            self.property_note_var.set("Section_c laser/reflector entry. Controls point here with R0/R1/... target bytes. code bits: 0..4=orientation/frame, 0x40=reverse rotation, 0x80=auto-rotate. Edit links on the selected button/switch Targets field.")
         elif kind == "known_pickup":
             idx = ref[1]
             pickups = self._known_extra_pickups_for_room(self.current_level().part(self.part_var.get()), room)
             if idx is None or not 0 <= idx < len(pickups):
-                self.property_title_var.set("Selected pickup no longer exists")
+                self.property_title_var.set("Selected apple no longer exists")
                 self._clear_property_values()
                 self._layout_property_panel()
                 return
             pickup = pickups[idx]
-            self._layout_property_panel(rows=(True, True, False), apply=False)
-            name = "Apple" if pickup.resource_id == 45 else "Known pickup"
-            self.property_title_var.set(name)
-            self.property_label_x_var.set("x")
+            self._layout_property_panel(rows=(True, True, False), apply=True)
+            self.property_title_var.set("Apple")
+            self.property_label_x_var.set("raw x")
             self.property_label_y_var.set("y")
-            self.property_label_len_var.set("source")
+            self.property_label_len_var.set("storage")
             self.property_label_code_var.set("sprite")
-            self.property_x_var.set(str(pickup.x))
-            self.property_y_var.set(str(pickup.y))
-            self.property_len_var.set("verified screenshot")
-            self.property_code_var.set(f"{pickup.archive}:{pickup.resource_id:03d}:{pickup.sprite_index}")
-            self.property_note_var.set("Read-only verified apple marker. Its original gameplay storage is still unknown, so the editor no longer writes fake apple compact3 records that break the real game.")
+            self.property_x_var.set(str(self._clamp_byte(round(pickup.x / 2))))
+            self.property_y_var.set(str(self._clamp_byte(pickup.y)))
+            self.property_len_var.set("room tail")
+            self.property_code_var.set("AE000:045:0")
+            self.property_note_var.set("Real red apple pickup. New/moved apples are written to the final 3 bytes of this room record: x_raw, y, room+1. The game supports one such apple marker per room.")
         elif kind in {"exit_door", "player_start", "artifact"}:
             self._layout_property_panel(rows=(True, True, False), apply=True)
             self.property_label_x_var.set("raw x")
@@ -1593,6 +1595,11 @@ class LevelEditorApp(tk.Tk):
                 room_index = max(0, min(ROOM_COUNT - 1, self._parse_int_property(self.property_len_var.get(), default=room.index)))
                 part.set_artifact_slot(slot, room_index, x_raw, y_raw)
                 self.status.set(f"Updated artifact {slot}: room={room_index} x={x_raw} y={y_raw}")
+            elif kind == "known_pickup":
+                x_raw = self._parse_int_property(self.property_x_var.get(), default=0) & 0xFF
+                y_raw = self._parse_int_property(self.property_y_var.get(), default=0) & 0xFF
+                set_room_apple_marker(room, x_raw=x_raw, y=y_raw)
+                self.status.set(f"Updated apple: x={x_raw * 2} y={y_raw}")
             else:
                 self.status.set("Properties are editable for CV belts, platforms, controls and header objects for now.")
                 return
@@ -1701,11 +1708,18 @@ class LevelEditorApp(tk.Tk):
 
 
     def _known_extra_pickups_for_room(self, part, room):
-        # Renderer keeps visually verified pickups whose original storage schema
-        # is still unknown.  Expose them in the editor as read-only handles so
-        # they are visible/selectable instead of silently looking like terrain.
+        apple = room_apple_marker(room)
+        if apple is not None:
+            return [KnownExtraPickup("AE000", 45, 0, apple.x_raw * 2, apple.y_raw)]
+        # Keep stock apples selectable even before they are moved/re-saved into
+        # the normalized tail marker.  If the tail marker was explicitly cleared
+        # by Delete, hide the fallback.
+        from .room_payload import room_tail_marker
+        if room_tail_marker(room) is None:
+            return []
         key = (self.current_level().index + 1, part.index, room.index)
-        return list(getattr(self.project.renderer, "KNOWN_EXTRA_PICKUPS", {}).get(key, []))
+        pickup = getattr(self.project.renderer, "KNOWN_LEGACY_APPLES", {}).get(key)
+        return [] if pickup is None else [pickup]
 
     def _draw_editor_handle(self, handle: EditorHandle) -> None:
         zoom = self.zoom_var.get()
@@ -2033,6 +2047,8 @@ class LevelEditorApp(tk.Tk):
             part.set_player_start(self._clamp_byte(round(x / 2)), self._clamp_byte(y))
         elif kind == "artifact" and slot is not None:
             part.set_artifact_slot(slot, room.index, self._clamp_byte(round(x / 2)), self._clamp_byte(y))
+        elif kind == "known_pickup":
+            set_room_apple_marker(room, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y))
         elif kind == "platform" and slot is not None:
             platforms = [p for p in parse_platform_triplets(room) if p.index == slot]
             if platforms:
@@ -2264,8 +2280,12 @@ class LevelEditorApp(tk.Tk):
             y_raw = self._clamp_byte(y + 16)
             part.set_artifact_slot(slot, room.index, x_raw, y_raw)
         elif obj == "apple":
-            self.status.set("Apple placement is disabled for now: the previous 0xFD marker was only an editor preview and appears as garbage in the real game. Existing verified apples stay visible/read-only until the gameplay storage is decoded.")
-            return
+            x_raw = self._clamp_byte(round(x / 2))
+            y_raw = self._clamp_byte(y)
+            set_room_apple_marker(room, x_raw=x_raw, y=y_raw)
+            self.editor_selected_ref = ("known_pickup", 0)
+            self.editor_drag_offset = None
+            self.status.set(f"Placed apple at x={x_raw * 2} y={y_raw}. The game supports one red apple marker per room; placing it again moves/replaces it.")
         elif obj.startswith("reflector_"):
             try:
                 sprite_index = int(obj.split("_", 1)[1]) & 0x3F
@@ -2279,7 +2299,7 @@ class LevelEditorApp(tk.Tk):
                 return
             self.editor_selected_ref = ("crystal", idx)
             self.editor_drag_offset = None
-            self.status.set(f"Placed reflector R{idx} sprite={sprite_index} at x={x} y={y}. Use M{idx} in a control Targets field to rotate/control it.")
+            self.status.set(f"Placed reflector R{idx} sprite={sprite_index} at x={x} y={y}. Use R{idx} in a control Targets field to rotate/control it.")
         elif obj in {"ceiling_button", "floor_switch", "jello"}:
             command_by_object = {"ceiling_button": 0x00, "floor_switch": 0x01, "jello": 0x02}
             command = command_by_object[obj]
@@ -2355,8 +2375,8 @@ class LevelEditorApp(tk.Tk):
             self.status.set("Actor deletion is intentionally disabled for now; use properties to inspect actor fields.")
             return "break"
         elif kind == "known_pickup":
-            self.status.set("This is a read-only verified apple marker; original apple storage is still unknown.")
-            return "break"
+            room = self.current_room()
+            clear_room_apple_marker(room)
         else:
             self.status.set(DELETE_SELECTION_HINT)
             return "break"
@@ -2577,7 +2597,7 @@ class LevelEditorApp(tk.Tk):
                 "Pickups",
                 [
                     *[(f"D{i} artifact", "AE000", 44, 0, f"artifact slot {i}") for i in range(6)],
-                    ("Apple", "AE000", 45, 0, "verified collectible, schema still WIP"),
+                    ("Apple", "AE000", 45, 0, "real room-tail pickup"),
                 ],
             ),
             (
@@ -2681,7 +2701,7 @@ class LevelEditorApp(tk.Tk):
                 pickups.append((f"D{cand.index} artifact", "AE000", 44, 0, f"x={cand.x_raw} y={cand.y_raw}"))
         for pickup in self._known_extra_pickups_for_room(part, room):
             label = "Apple" if pickup.resource_id == 45 else "Known pickup"
-            pickups.append((label, pickup.archive, pickup.resource_id, pickup.sprite_index, f"x={pickup.x} y={pickup.y} verified/screenshot"))
+            pickups.append((label, pickup.archive, pickup.resource_id, pickup.sprite_index, f"x={pickup.x} y={pickup.y} room-tail marker"))
         if pickups:
             dynamic.append(("Current room: pickups", pickups))
 
@@ -2961,7 +2981,7 @@ class LevelEditorApp(tk.Tk):
             ("ceiling_button", "Ceiling button", "AE000", 39, 0),
             ("floor_switch", "Floor switch", "AE000", 40, 0),
             ("jello", "Jello / light trigger", "AE000", 41, 0),
-            ("apple", "Apple (read-only / storage WIP)", "AE000", 45, 0),
+            ("apple", "Apple", "AE000", 45, 0),
             ("reflector_0", "Reflector 0", "AE000", 19, 0),
             ("reflector_2", "Reflector 2", "AE000", 19, 2),
             ("reflector_4", "Reflector 4", "AE000", 19, 4),

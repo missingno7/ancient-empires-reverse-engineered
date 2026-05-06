@@ -823,9 +823,13 @@ def delete_visual_compact3_entry(room: Room, index: int) -> None:
 
 
 def laser_crystal_table(room: Room) -> Compact3Table | None:
-    """Return the section currently matching rotating triangular laser crystals."""
+    """Return section_c, the rotating laser crystal / reflector table.
+
+    A valid empty table (count=0) is still editable: adding the first reflector
+    should grow this table instead of treating the room as unsupported.
+    """
     directory = parse_exe_payload_directory(room)
-    if directory and directory.sections and directory.sections.section_c and directory.sections.section_c.count:
+    if directory and directory.sections and directory.sections.section_c is not None:
         return directory.sections.section_c
     return None
 
@@ -834,9 +838,8 @@ class RoomTailMarker:
     """Three-byte room-gated marker at the very end of the 1000-byte record.
 
     AEPROG around 0x2e89 checks record[0x3e7] against current_room+1 and,
-    when it matches, draws a small global sprite using record[0x3e5] and
-    record[0x3e6] as coordinates.  The exact gameplay meaning is still under
-    research, so the renderer exposes it only in payload_debug for now.
+    when it matches, draws the red apple pickup (AE000:045) using record[0x3e5]
+    and record[0x3e6] as coordinates, and registers gameplay pickup id 7.
     """
 
     x_raw: int
@@ -858,6 +861,34 @@ def room_tail_marker(room: Room) -> RoomTailMarker | None:
     x_raw, y_raw, room_plus_one = room.trailing[-3], room.trailing[-2], room.trailing[-1]
     marker = RoomTailMarker(x_raw, y_raw, room_plus_one)
     return marker if marker.active else None
+
+
+def room_apple_marker(room: Room) -> RoomTailMarker | None:
+    """Return the real red apple pickup marker for this room, if present.
+
+    The EXE draws AE000:045 and registers pickup id 7 when the last byte of
+    the room record equals current_room + 1.  The preceding two bytes are the
+    x_raw/y coordinates.  Other non-zero room ids are markers for a different
+    room and should not be rendered/editable here.
+    """
+    marker = room_tail_marker(room)
+    if marker is None or marker.room_plus_one != room.index + 1:
+        return None
+    return marker
+
+
+def set_room_apple_marker(room: Room, *, x_raw: int, y: int) -> None:
+    """Create or move the one real red apple pickup in this room."""
+    if len(room.trailing) < 3:
+        raise ValueError("room trailing payload is too short for an apple marker")
+    room.set_trailing_bytes(len(room.trailing) - 3, [x_raw & 0xFF, y & 0xFF, (room.index + 1) & 0xFF])
+
+
+def clear_room_apple_marker(room: Room) -> None:
+    """Remove the real red apple pickup from this room."""
+    if len(room.trailing) < 3:
+        raise ValueError("room trailing payload is too short for an apple marker")
+    room.set_trailing_bytes(len(room.trailing) - 3, [0, 0, 0])
 
 
 @dataclass(frozen=True)

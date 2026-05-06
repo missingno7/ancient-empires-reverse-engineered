@@ -74,7 +74,7 @@ class ControlTarget:
         if self.kind == "conveyor":
             return f"CV{self.index}"
         if self.kind == "mirror":
-            return f"M{self.index}"
+            return f"R{self.index}"
         return f"?{self.raw:02X}"
 
 
@@ -136,7 +136,7 @@ def decode_control_target(value: int) -> ControlTarget:
     Current reverse-engineering model:
       * 00..0F -> runtime platform slots P0..P15
       * 10..1F -> conveyor/CV slots CV0..CV15
-      * 40..4F -> mirror/reflector-like slots M0..M15
+      * 40..4F -> reflector slots R0..R15
 
     The exact high-nibble classes may still grow, but keeping the raw byte while
     exposing the class makes trigger editing much less ambiguous than a flat
@@ -171,20 +171,8 @@ def control_ref_values(cmd: ControlCommand) -> list[int]:
     return [target.raw for target in control_targets(cmd)]
 
 
-# Visually confirmed mirror/reflector target overrides.  Mirror target bytes do
-# not behave as a plain section_c array index in every room.  For example, in
-# level 18 explorer room 8 the left ceiling button uses target byte 0x41 and
-# rotates the two left reflectors R0 and R2, while R1 appears autonomous.
-KNOWN_MIRROR_TARGET_OVERRIDES: dict[tuple[int, int, int], dict[int, list[int]]] = {
-    (18, 0, 8): {1: [0, 2]},
-}
-
-
 def mirror_target_indices(level, part, room: Room, target_index: int) -> list[int]:
-    key = (getattr(level, "index", -1), getattr(part, "index", -1), room.index)
-    override = KNOWN_MIRROR_TARGET_OVERRIDES.get(key, {})
-    if target_index in override:
-        return list(override[target_index])
+    # Static analysis confirms target byte 0x40|n rotates section_c entry n.
     return [target_index]
 
 
