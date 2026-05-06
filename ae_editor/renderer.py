@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 from PIL import Image, ImageDraw
 
@@ -12,11 +13,77 @@ from .constants import (
     ROOM_SCREEN_HEIGHT_PX,
     ROOM_SCREEN_WIDTH_PX,
 )
-from .coordinates import TERRAIN_ANCHOR, actor_xy, compact3_xy, control_xy, header_object_xy, platform_xy
+from .coordinates import (
+    TERRAIN_ANCHOR,
+    BACKGROUND_COMPACT3_DELTA,
+    FOREGROUND_COMPACT3_DELTA,
+    LASER_CRYSTAL_DELTA,
+    actor_xy,
+    compact3_xy,
+    control_xy,
+    header_object_xy,
+    platform_xy,
+)
 from .conveyors import ConveyorSpec, compose_conveyor
 from .graphics import GraphicsSet
 from .level_format import Level, Room
 from .object_mapping import visual_render_layer, visual_sprite_ref
+
+
+def _record12_panel_xy(rec: bytes) -> tuple[int, int] | None:
+    if len(rec) < 4:
+        return None
+    # Observed layout family: byte1 behaves as half-x, byte3 as y.
+    return rec[1] * 2 - 4, rec[3] + 8
+
+
+def _record12_sequence_values(rec: bytes) -> list[int]:
+    if len(rec) < 9:
+        return []
+    return [value for value in rec[5:9] if value]
+
+
+def _invisible_clusters(room: Room) -> list[tuple[int, int, int, int]]:
+    cells = {(x, y) for y in range(ROOM_ROWS) for x in range(ROOM_COLUMNS) if room.get(x, y) == 0x07}
+    clusters: list[tuple[int, int, int, int]] = []
+    while cells:
+        seed = next(iter(cells))
+        stack = [seed]
+        cluster = set()
+        cells.remove(seed)
+        while stack:
+            cx, cy = stack.pop()
+            cluster.add((cx, cy))
+            for nx, ny in ((cx-1, cy), (cx+1, cy), (cx, cy-1), (cx, cy+1)):
+                if (nx, ny) in cells:
+                    cells.remove((nx, ny))
+                    stack.append((nx, ny))
+        xs = [x for x, _ in cluster]
+        ys = [y for _, y in cluster]
+        clusters.append((min(xs) * CELL_SIZE, min(ys) * CELL_SIZE, (max(xs) - min(xs) + 1) * CELL_SIZE, (max(ys) - min(ys) + 1) * CELL_SIZE))
+    clusters.sort(key=lambda r: (r[1], r[0]))
+    return clusters
+
+
+def _draw_sequence_on_panel(graphics, panel: Image.Image, seq_values: list[int]) -> Image.Image:
+    if not seq_values:
+        return panel
+    out = panel.copy()
+    symbols = []
+    for value in seq_values[:4]:
+        sprite = graphics.sprite("AE000", 9 + value, 0)
+        if sprite is not None:
+            symbols.append(sprite)
+    if not symbols:
+        return out
+    total_w = sum(s.width for s in symbols) + max(0, len(symbols) - 1) * 1
+    x = max(0, (out.width - total_w) // 2)
+    for sprite in symbols:
+        y = max(0, (out.height - sprite.height) // 2)
+        out.alpha_composite(sprite, (x, y))
+        x += sprite.width + 1
+    return out
+
 from .room_payload import (
     ObjectTableEntry,
     ActorTableRecord,
@@ -30,6 +97,15 @@ from .room_payload import (
     header_object_candidates,
     header_player_start,
 )
+
+
+@dataclass(frozen=True)
+class KnownExtraPickup:
+    archive: str
+    resource_id: int
+    sprite_index: int
+    x: int
+    y: int
 
 
 @dataclass
@@ -66,6 +142,14 @@ class RoomRenderer:
     ROPE_X_BIAS = 4
     SOLID_INVISIBLE_CODE = 0x07
 
+    # Some pickups are visually confirmed but their exact storage schema has
+    # not been proven yet. Keep them centralized and data-driven for now.
+    # Apples likely belong to the same broad collectible family as diamonds,
+    # but the general parser hook still needs to be found in the room data/EXE.
+    KNOWN_EXTRA_PICKUPS: ClassVar[dict[tuple[int, int, int], list[KnownExtraPickup]]] = {
+        (18, 0, 0): [KnownExtraPickup("AE000", 45, 0, 83, 46)],
+    }
+
     def render_room(self, level: Level, room_index: int, options: RenderOptions | None = None) -> Image.Image:
         options = options or RenderOptions()
         part = level.part(options.part_index)
@@ -80,9 +164,9 @@ class RoomRenderer:
         elif options.mode == "trailing_hex":
             self._render_trailing_probe(image, draw, room)
         else:
-            # EXE-style order: background, high-bit visual entries, terrain,
-            # then foreground/control/low-bit visual entries. This fixes many
-            # cases where wall decorations were painted over solid geometry.
+            # Render order: background pass first, then terrain/gameplay, then
+            # the foreground pass.  Moving platforms intentionally sit above
+            # background decor but below foreground decor.
             self._draw_background(image, part.theme)
             if options.mode == "game":
                 self._draw_visual_objects(image, room, layer="background")
@@ -94,10 +178,11 @@ class RoomRenderer:
                 self._draw_platforms(image, room)
                 self._draw_control_records(image, room)
                 self._draw_puzzle_markers(image, room)
-                self._draw_record12_puzzle_panels(image, room)
                 self._draw_laser_crystals(image, room)
                 self._draw_visual_objects(image, room, layer="foreground")
+                self._draw_record12_puzzle_panels(image, room)
                 self._draw_header_objects(image, room, part.header)
+                self._draw_known_extra_pickups(image, room)
                 self._draw_actors(image, part, room, include_hidden=False)
                 self._draw_player_start(image, room, part.header)
             elif options.mode == "collision":
@@ -108,10 +193,11 @@ class RoomRenderer:
                 self._draw_platforms(image, room)
                 self._draw_control_records(image, room)
                 self._draw_puzzle_markers(image, room)
-                self._draw_record12_puzzle_panels(image, room)
                 self._draw_laser_crystals(image, room)
                 self._draw_visual_objects(image, room, layer="foreground")
+                self._draw_record12_puzzle_panels(image, room)
                 self._draw_header_objects(image, room, part.header)
+                self._draw_known_extra_pickups(image, room)
                 self._draw_actors(image, part, room, include_hidden=True)
                 self._draw_player_start(image, room, part.header)
                 self._draw_actor_probes(image, room, part.header)
@@ -175,7 +261,7 @@ class RoomRenderer:
         frames and two colour/direction families; static previews use frame 0.
         """
         parts = [self.graphics.sprite("AE000", 38, i) for i in range(24)]
-        y_bias = -8
+        y_bias = -6
         x_bias = -4
         for y in range(ROOM_ROWS):
             x = 0
@@ -283,13 +369,23 @@ class RoomRenderer:
         panel = self.graphics.sprite("AE000", 17, 0)
         if panel is None:
             return
+        invisible_regions = _invisible_clusters(room)
+        draw = ImageDraw.Draw(image)
         for i, rec in enumerate(directory.sections.section_b_records):
-            if len(rec) < 4:
+            xy = _record12_panel_xy(rec)
+            if xy is None:
                 continue
-            # Observed layout family: byte1 behaves as half-x, byte3 as y.
-            x = rec[1] * 2 - 4
-            y = rec[3] + 8
-            self._blit(image, panel, x, y)
+            x, y = xy
+            seq_values = _record12_sequence_values(rec)
+            panel_img = _draw_sequence_on_panel(self.graphics, panel, seq_values)
+            self._blit(image, panel_img, x, y)
+            if i < len(invisible_regions):
+                dx, dy, dw, dh = invisible_regions[i]
+                ghost = _draw_sequence_on_panel(self.graphics, panel, seq_values).copy()
+                alpha = ghost.getchannel("A").point(lambda a: min(a, 96))
+                ghost.putalpha(alpha)
+                self._blit(image, ghost, dx, dy)
+                draw.line((x + panel.width // 2, y + panel.height // 2, dx + dw // 2, dy + dh // 2), fill=(255, 216, 77, 220), width=2)
 
     def _draw_laser_crystals(self, image: Image.Image, room: Room) -> None:
         table = laser_crystal_table(room)
@@ -304,7 +400,7 @@ class RoomRenderer:
             sprite = self.graphics.sprite("AE000", 19, sprite_index)
             if sprite is None:
                 continue
-            x, y = compact3_xy(entry, sprite, "screen_exe")
+            x, y = compact3_xy(entry, sprite, "screen_exe", delta=LASER_CRYSTAL_DELTA)
             self._blit(image, sprite, x, y)
 
     def _draw_visual_objects(self, image: Image.Image, room: Room, *, layer: str = "all") -> None:
@@ -323,7 +419,19 @@ class RoomRenderer:
             sprite = self._sprite_for_visual_entry(entry, room)
             if sprite is None:
                 continue
-            x, y = compact3_xy(entry, sprite, "screen_exe")
+            delta = BACKGROUND_COMPACT3_DELTA if entry_layer == "background" else FOREGROUND_COMPACT3_DELTA
+            ref = visual_sprite_ref(
+                entry,
+                theme=getattr(self, "_current_theme", 0),
+                level_index=getattr(self, "_current_level_index", None),
+                room_index=room.index,
+                page_index=room.page_index,
+            )
+            # Large statue/sarcophagus artwork sits a little lower than the
+            # generic foreground decor anchor.
+            if ref.archive == "AE001" and ref.resource_id == 26 and ref.sprite_index in {24, 25}:
+                delta = (delta[0], delta[1] + 2)
+            x, y = compact3_xy(entry, sprite, "screen_exe", delta=delta)
             self._blit(image, sprite, x, y)
 
     def _sprite_for_visual_entry(self, entry: ObjectTableEntry, room: Room) -> Image.Image | None:
@@ -364,9 +472,16 @@ class RoomRenderer:
             x, y = header_object_xy(cand.x_raw, cand.y_raw)
             self._blit(image, diamond, x, y)
 
+    def _draw_known_extra_pickups(self, image: Image.Image, room: Room) -> None:
+        key = (getattr(self, "_current_level_index", -1) + 1, room.page_index, room.index)
+        for pickup in self.KNOWN_EXTRA_PICKUPS.get(key, []):
+            sprite = self.graphics.sprite(pickup.archive, pickup.resource_id, pickup.sprite_index)
+            if sprite is not None:
+                self._blit(image, sprite, pickup.x, pickup.y)
+
     def _draw_actors(self, image: Image.Image, part, room: Room, *, include_hidden: bool) -> None:
         for actor in actor_records_for_room(part, room.index):
-            x, y = actor_xy(actor.x, actor.y)
+            x, y = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
             if actor.hidden and not include_hidden:
                 continue
             sprite = self._sprite_for_actor_record(actor)
@@ -381,7 +496,10 @@ class RoomRenderer:
     def _sprite_for_actor_record(self, actor: ActorTableRecord) -> Image.Image | None:
         for frame_start, count, resource_id in self.ACTOR_FRAME_RUNS:
             if frame_start <= actor.frame < frame_start + count:
-                return self.graphics.sprite("AE000", resource_id, actor.frame - frame_start)
+                sprite = self.graphics.sprite("AE000", resource_id, actor.frame - frame_start)
+                if sprite is not None and (actor.frame_variant & 0x01):
+                    sprite = sprite.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+                return sprite
         return None
 
     def _draw_player_start(self, image: Image.Image, room: Room, header: bytes) -> None:

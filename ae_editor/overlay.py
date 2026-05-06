@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .coordinates import actor_xy, control_xy, header_object_xy, platform_xy
+from .coordinates import actor_origin, actor_xy, control_xy, header_object_xy, platform_xy, platform_motion_delta
+from .constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS, ROOM_SCREEN_HEIGHT_PX as ROOM_HEIGHT_PX, ROOM_SCREEN_WIDTH_PX as ROOM_WIDTH_PX
 from .level_format import Room
+from .actor_scripts import actor_script_bytes, decode_actor_script
 from .room_payload import (
-    ACTOR_TABLE_OFFSET,
     ActorTableRecord,
     ControlCommand,
     actor_records_for_room,
     control_commands,
     header_object_candidates,
     laser_crystal_table,
+    parse_exe_payload_directory,
     parse_platform_triplets,
     transition_links_for_room,
 )
@@ -59,11 +61,16 @@ class OverlayLine:
 @dataclass(frozen=True)
 class RoomOverlay:
     platforms: list[OverlayRect]
+    conveyors: list[OverlayRect]
+    puzzle_blocks: list[OverlayRect]
+    puzzle_destinations: list[OverlayRect]
     controls: list[OverlayPoint]
     actors: list[OverlayRect]
     pickups: list[OverlayPoint]
     crystals: list[OverlayPoint]
     links: list[OverlayLine]
+    actor_paths: list[OverlayLine]
+    platform_paths: list[OverlayLine]
     exits: list[OverlayLine]
 
 
@@ -74,12 +81,42 @@ PLATFORM_SIZE = {
 }
 
 
-def actor_script_bytes(part, actor: ActorTableRecord, limit: int = 12) -> bytes:
-    raw = getattr(part, "raw", b"")
-    start = ACTOR_TABLE_OFFSET + actor.script_offset
-    if start < 0 or start >= len(raw):
-        return b""
-    return bytes(raw[start:start + limit])
+def _conveyor_runs(room: Room) -> list[tuple[int, int, int, int]]:
+    runs: list[tuple[int, int, int, int]] = []
+    for y in range(ROOM_ROWS):
+        x = 0
+        while x < ROOM_COLUMNS:
+            code = room.get(x, y)
+            if code not in {0x0F, 0x1F}:
+                x += 1
+                continue
+            start = x
+            while x < ROOM_COLUMNS and room.get(x, y) == code:
+                x += 1
+            runs.append((len(runs), start * CELL_SIZE - 4, y * CELL_SIZE - 6, max(8, (x - start + 1) * CELL_SIZE)))
+    return runs
+
+
+def _invisible_clusters(room: Room) -> list[tuple[int, int, int, int]]:
+    cells = {(x, y) for y in range(ROOM_ROWS) for x in range(ROOM_COLUMNS) if room.get(x, y) == 0x07}
+    clusters: list[tuple[int, int, int, int]] = []
+    while cells:
+        seed = next(iter(cells))
+        stack = [seed]
+        cluster = set()
+        cells.remove(seed)
+        while stack:
+            cx, cy = stack.pop()
+            cluster.add((cx, cy))
+            for nx, ny in ((cx-1, cy), (cx+1, cy), (cx, cy-1), (cx, cy+1)):
+                if (nx, ny) in cells:
+                    cells.remove((nx, ny))
+                    stack.append((nx, ny))
+        xs = [x for x, _ in cluster]
+        ys = [y for _, y in cluster]
+        clusters.append((min(xs) * CELL_SIZE, min(ys) * CELL_SIZE, (max(xs) - min(xs) + 1) * CELL_SIZE, (max(ys) - min(ys) + 1) * CELL_SIZE))
+    clusters.sort(key=lambda r: (r[1], r[0]))
+    return clusters
 
 
 def control_link_ids(cmd: ControlCommand, platform_ids: set[int]) -> list[int]:
@@ -112,16 +149,71 @@ def control_ref_values(cmd: ControlCommand) -> list[int]:
     return out
 
 
+def _is_projectile_actor(actor: ActorTableRecord) -> bool:
+    name = actor.confirmed_name or ""
+    projectile_names = {"Pill Projectile", "Energy Orb", "Fireball", "Sparkles"}
+    return actor.actor_type == 1 or name in projectile_names
+
+
+def _looks_like_projectile_source(actor: ActorTableRecord) -> bool:
+    name = actor.confirmed_name or ""
+    return name in {"Praying Mantis", "Scorpion"} or name.endswith("Mantis") or name.endswith("Scorpion")
+
+
+def _match_projectile_source(actor: ActorTableRecord, actor_rects: list[tuple[ActorTableRecord, OverlayRect]]) -> OverlayRect | None:
+    preferred = [(a, r) for a, r in actor_rects if a.index != actor.index and _looks_like_projectile_source(a)]
+    candidates = preferred or [(a, r) for a, r in actor_rects if a.index != actor.index and not _is_projectile_actor(a)]
+    best_rect: OverlayRect | None = None
+    best_dist: int | None = None
+    for candidate_actor, candidate_rect in candidates:
+        dx = candidate_actor.x - actor.x
+        dy = candidate_actor.y - actor.y
+        dist = dx * dx + dy * dy
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_rect = candidate_rect
+    return best_rect
+
+
+def _sequence_label_from_record(rec: bytes, markers) -> str:
+    if len(rec) < 9 or not markers:
+        return ""
+    seq_vals = [value for value in rec[5:9] if value]
+    if not seq_vals:
+        return ""
+    parts: list[str] = []
+    for value in seq_vals:
+        marker = next((m for m in markers if ((m[1].code & 0x07) + 1) == value), None)
+        if marker is None:
+            parts.append(str(value))
+        else:
+            idx, entry = marker
+            parts.append(f"M{idx}")
+    return " -> ".join(parts)
+
+
 def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False) -> RoomOverlay:
     platforms: list[OverlayRect] = []
+    conveyors: list[OverlayRect] = []
     controls: list[OverlayPoint] = []
+    puzzle_blocks: list[OverlayRect] = []
+    puzzle_destinations: list[OverlayRect] = []
     actors: list[OverlayRect] = []
     pickups: list[OverlayPoint] = []
     crystals: list[OverlayPoint] = []
     links: list[OverlayLine] = []
+    actor_paths: list[OverlayLine] = []
+    platform_paths: list[OverlayLine] = []
     exits: list[OverlayLine] = []
+    actor_rects: list[tuple[ActorTableRecord, OverlayRect]] = []
 
     platform_by_index: dict[int, OverlayRect] = {}
+    conveyor_by_index: dict[int, OverlayRect] = {}
+    for cid, x, y, width in _conveyor_runs(room):
+        rect = OverlayRect("conveyor", f"CV{cid}", x, y, width, 16, f"CV{cid}", "#4aa8ff")
+        conveyors.append(rect)
+        conveyor_by_index[cid] = rect
+
     for platform in parse_platform_triplets(room):
         x, y = platform_xy(platform)
         width, height = PLATFORM_SIZE[platform.orientation]
@@ -137,6 +229,21 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
         )
         platforms.append(rect)
         platform_by_index[platform.index] = rect
+        dx, dy = platform_motion_delta(platform)
+        if dx or dy:
+            start = rect.center
+            end = (start[0] + dx, start[1] + dy)
+            platform_paths.append(
+                OverlayLine(
+                    "platform_path",
+                    f"{rect.ident}m",
+                    start,
+                    end,
+                    f"{rect.ident} Δ{dx:+d},{dy:+d}",
+                    "#ffb000",
+                    dashed=True,
+                )
+            )
 
     for cmd in control_commands(room):
         if cmd.command is None or cmd.x_raw is None or cmd.y_raw is None:
@@ -160,8 +267,9 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
         label += f" @{cmd.record.source_offset:02X}"
         point = OverlayPoint("control", f"{kind}{cmd.record.index}", x + 8, y + 8, label, "#00e0ff")
         controls.append(point)
-        for target_id in control_link_ids(cmd, set(platform_by_index)):
-            target = platform_by_index.get(target_id)
+        refs = control_ref_values(cmd)
+        for target_id in refs:
+            target = platform_by_index.get(target_id) or conveyor_by_index.get(target_id)
             if target is None:
                 continue
             links.append(
@@ -180,24 +288,111 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
         hidden = bool(actor.hidden)
         if hidden and not include_hidden:
             continue
-        x, y = actor_xy(actor.x, actor.y)
-        script = actor_script_bytes(part, actor)
+        x, y = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
+        _, script = actor_script_bytes(part, actor, limit=12)
+        decoded = decode_actor_script(part, actor, max_bytes=96, max_segments=8)
         script_hex = " ".join(f"{value:02X}" for value in script[:8])
         name = actor.confirmed_name or f"frame {actor.frame:02X}"
-        label = f"A{actor.index} {name} scr={actor.script_offset:04X} [{script_hex}]"
-        actors.append(
-            OverlayRect(
-                "actor",
-                f"A{actor.index}",
-                x,
-                y,
-                24,
-                16,
-                label,
-                "#7cff6b" if not hidden else "#7a7a7a",
-                hidden=hidden,
+        label = f"A{actor.index} {name} d={actor.delay} scr={actor.script_offset:04X} [{script_hex}]"
+        if decoded.segments:
+            label += f" segs={len(decoded.segments)}"
+        rect = OverlayRect(
+            "actor",
+            f"A{actor.index}",
+            x,
+            y,
+            24,
+            16,
+            label,
+            "#7cff6b" if not hidden else "#7a7a7a",
+            hidden=hidden,
+        )
+        actors.append(rect)
+        actor_rects.append((actor, rect))
+        if decoded.segments and len(decoded.points) >= 2:
+            ox, oy = actor_origin(actor.frame_min)
+            visible_points = [
+                (max(-64, min(ROOM_WIDTH_PX + 64, px)), max(-64, min(ROOM_HEIGHT_PX + 64, py)))
+                for px, py in decoded.points
+            ]
+            for idx, (start_pt, end_pt) in enumerate(zip(visible_points, visible_points[1:])):
+                actor_paths.append(
+                    OverlayLine(
+                        "actor_path",
+                        f"A{actor.index}p{idx}",
+                        start_pt,
+                        end_pt,
+                        f"A{actor.index}.{idx} {decoded.segments[idx].dx:+d},{decoded.segments[idx].dy:+d}×{decoded.segments[idx].duration}",
+                        "#7cff6b" if not hidden else "#7a7a7a",
+                        dashed=hidden,
+                    )
+                )
+
+    for actor, rect in actor_rects:
+        if not _is_projectile_actor(actor):
+            continue
+        source_rect = _match_projectile_source(actor, actor_rects)
+        if source_rect is None:
+            continue
+        links.append(
+            OverlayLine(
+                "projectile",
+                f"{source_rect.ident}->{rect.ident}",
+                source_rect.center,
+                rect.center,
+                f"{source_rect.ident}->{rect.ident} projectile",
+                "#ff7a00",
+                dashed=bool(actor.hidden),
             )
         )
+
+    directory = parse_exe_payload_directory(room)
+    if directory and directory.sections and directory.sections.section_a and directory.sections.section_a.entries:
+        markers = list(enumerate(directory.sections.section_a.entries))
+        panel_centers: list[tuple[int, int]] = []
+        if directory.sections.section_b_records:
+            invisible_regions = _invisible_clusters(room)
+            for rec_index, rec in enumerate(directory.sections.section_b_records):
+                if len(rec) < 4:
+                    continue
+                panel_x = rec[1] * 2 - 4
+                panel_y = rec[3] + 8
+                panel_centers.append((panel_x + 28, panel_y + 8))
+                seq_label = _sequence_label_from_record(rec, markers)
+                block_rect = OverlayRect(
+                    "puzzle_block",
+                    f"PB{rec_index}",
+                    panel_x,
+                    panel_y,
+                    56,
+                    16,
+                    f"PB{rec_index}" + (f" seq={seq_label}" if seq_label else ""),
+                    "#ffd84d",
+                )
+                puzzle_blocks.append(block_rect)
+                if seq_label:
+                    controls.append(OverlayPoint("puzzle_panel", f"PB{rec_index}", panel_x + 28, panel_y + 8, f"PB{rec_index} seq={seq_label}", "#ffd84d"))
+                if rec_index < len(invisible_regions):
+                    dx, dy, dw, dh = invisible_regions[rec_index]
+                    dest = OverlayRect("puzzle_dest", f"PD{rec_index}", dx, dy, dw, dh, f"PD{rec_index}", "#ffd84d", hidden=True)
+                    puzzle_destinations.append(dest)
+                    links.append(OverlayLine("puzzle_move", f"{block_rect.ident}->{dest.ident}", block_rect.center, dest.center, f"{block_rect.ident}->{dest.ident}", "#ffd84d", dashed=True))
+        for marker_index, entry in markers:
+            mx = entry.x_raw * 2
+            my = entry.y
+            controls.append(OverlayPoint("puzzle_marker", f"M{marker_index}", mx, my, f"M{marker_index} code={entry.code}", "#ffd84d"))
+            for panel_index, center in enumerate(panel_centers):
+                links.append(
+                    OverlayLine(
+                        "puzzle_link",
+                        f"M{marker_index}->PB{panel_index}",
+                        (mx, my),
+                        center,
+                        f"M{marker_index}->PB{panel_index}",
+                        "#ffd84d",
+                        dashed=True,
+                    )
+                )
 
     for cand in header_object_candidates(part.header):
         if cand.room_plus_one != room.index + 1:
@@ -243,4 +438,4 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
                 )
             )
 
-    return RoomOverlay(platforms, controls, actors, pickups, crystals, links, exits)
+    return RoomOverlay(platforms, conveyors, puzzle_blocks, puzzle_destinations, controls, actors, pickups, crystals, links, actor_paths, platform_paths, exits)

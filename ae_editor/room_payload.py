@@ -33,13 +33,33 @@ ACTOR_TABLE_OFFSET = 0x2754
 ACTOR_TABLE_SIZE = 0x0BB8
 ACTOR_RECORD_SIZE = 0x20
 CONFIRMED_ACTOR_FRAME_NAMES = {
-    0x00: "ant",
-    0x08: "bat",
-    0x0F: "green_spitter",
-    0x2B: "ladybug",
-    0x32: "scorpion_shooter",
-    0x37: "spider",
-    0x3F: "snake",
+    0x00: "Ant",
+    0x02: "Pill Projectile",
+    0x08: "Bat",
+    0x0F: "Praying Mantis",
+    0x17: "Energy Orb",
+    0x1B: "Fireball",
+    0x20: "Pegasus Frog",
+    0x2B: "Ladybug",
+    0x2D: "Scarab",
+    0x32: "Scorpion",
+    0x37: "Spider",
+    0x3B: "Neon Spider",
+    0x3F: "Snake",
+    0x42: "Flea",
+    0x4A: "Caterpillar",
+    0x50: "Sparkles",
+}
+
+# Exact-frame labels for secondary actors / projectiles.
+# These are separate from the stable frame-range names above because they are
+# often spawned as independent actor records (typically actor_type=1).
+CONFIRMED_ACTOR_FRAME_LABELS = {
+    0x02: "Pill Projectile",  # AE000:020:2
+    0x07: "Pill Projectile",  # AE000:020:7
+    0x17: "Energy Orb",       # AE000:021:0
+    0x1B: "Fireball",         # AE000:021:4
+    0x50: "Sparkles",         # AE000:022:37
 }
 
 PlatformOrientation = Literal["horizontal", "vertical", "unknown"]
@@ -231,7 +251,7 @@ class ActorTableRecord:
 
     @property
     def confirmed_name(self) -> str | None:
-        return CONFIRMED_ACTOR_FRAME_NAMES.get(self.frame_min)
+        return CONFIRMED_ACTOR_FRAME_LABELS.get(self.frame) or CONFIRMED_ACTOR_FRAME_NAMES.get(self.frame_min)
 
 
 def parse_actor_table(part) -> list[ActorTableRecord]:
