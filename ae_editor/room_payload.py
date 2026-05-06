@@ -215,6 +215,82 @@ def set_control_command_body(room: Room, index: int, body: bytes) -> None:
     room.set_trailing_bytes(record.source_offset + 1, list(body))
 
 
+def _control_count_selector_offset(data: bytes) -> int | None:
+    base = PAYLOAD_DIRECTORY_OFFSET
+    if base >= len(data):
+        return None
+    selector_offset = base + data[base] * 4 + 1
+    if selector_offset >= len(data):
+        return None
+    return selector_offset
+
+
+def add_control_command(room: Room, body: bytes) -> int:
+    """Append a length-prefixed control/trigger command.
+
+    The room format stores a selected count byte before the variable-length
+    records.  Appending is safer than inserting in the middle because existing
+    target slot references do not need to be renumbered.  The fixed 314-byte
+    payload is preserved by consuming zero padding after the structured payload.
+    """
+    if not 1 <= len(body) <= 0xFE:
+        raise ValueError("control body must be 1..254 bytes")
+    directory = parse_exe_payload_directory(room)
+    if directory is None:
+        raise ValueError("room has no parseable payload directory")
+    data = bytearray(room.trailing)
+    selector_offset = _control_count_selector_offset(data)
+    if selector_offset is None:
+        raise ValueError("room has no control-count selector")
+    count = data[selector_offset]
+    records_end = directory.sections.records_end if directory.sections else None
+    if records_end is None:
+        # Fall back to walking the records again. This still allows controls to
+        # be added to rooms that have no following compact sections.
+        records_end, _records = _skip_length_prefixed_records(data, directory.variable_start, count)
+    if records_end is None:
+        raise ValueError("cannot find end of control record list")
+    raw = bytes([len(body) + 1]) + bytes(body)
+    if len(raw) > 255:
+        raise ValueError("control record too long")
+    insert_at = records_end
+    original_len = len(room.trailing)
+    padding_start = _payload_padding_start(room)
+    data[selector_offset] = (count + 1) & 0xFF
+    data[insert_at:insert_at] = raw
+    shifted_padding_start = padding_start + len(raw) if padding_start >= insert_at else padding_start
+    _delete_padding_bytes_after_insert(data, shifted_padding_start, len(raw), original_len)
+    _replace_trailing(room, data)
+    return count
+
+
+def delete_control_command(room: Room, index: int) -> None:
+    """Delete one control command and keep the fixed room payload size.
+
+    This renumbers following C indices, so the GUI currently exposes it mainly
+    for newly-added mistakes rather than as a default workflow.
+    """
+    directory = parse_exe_payload_directory(room)
+    if directory is None or not 0 <= index < len(directory.control_records):
+        raise ValueError(f"control record out of range: {index}")
+    data = bytearray(room.trailing)
+    selector_offset = _control_count_selector_offset(data)
+    if selector_offset is None:
+        raise ValueError("room has no control-count selector")
+    record = directory.control_records[index]
+    original_len = len(room.trailing)
+    del data[record.source_offset:record.source_offset + record.length]
+    data[selector_offset] = max(0, data[selector_offset] - 1)
+    old_trailing = room.trailing
+    room.trailing = bytes(data[:original_len - record.length])
+    padding_start = _payload_padding_start(room)
+    room.trailing = old_trailing
+    padding_start = max(0, min(len(data), padding_start))
+    data[padding_start:padding_start] = bytes(record.length)
+    del data[original_len:]
+    room.trailing = bytes(data)
+
+
 @dataclass
 class PayloadSections:
     records_end: int

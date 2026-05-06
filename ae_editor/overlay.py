@@ -62,6 +62,23 @@ class OverlayLine:
 
 
 @dataclass(frozen=True)
+class ControlTarget:
+    raw: int
+    kind: str
+    index: int
+
+    @property
+    def label(self) -> str:
+        if self.kind == "platform":
+            return f"P{self.index}"
+        if self.kind == "conveyor":
+            return f"CV{self.index}"
+        if self.kind == "mirror":
+            return f"M{self.index}"
+        return f"?{self.raw:02X}"
+
+
+@dataclass(frozen=True)
 class RoomOverlay:
     platforms: list[OverlayRect]
     conveyors: list[OverlayRect]
@@ -113,28 +130,45 @@ def _invisible_clusters(room: Room) -> list[tuple[int, int, int, int]]:
     return clusters
 
 
-def control_ref_values(cmd: ControlCommand) -> list[int]:
-    """Return platform/CV target slot ids referenced by a control command.
+def decode_control_target(value: int) -> ControlTarget:
+    """Decode one target byte used by button/switch/jello commands.
 
-    In confirmed rooms such as L01 R03 Explorer the command body is:
+    Current reverse-engineering model:
+      * 00..0F -> runtime platform slots P0..P15
+      * 10..1F -> conveyor/CV slots CV0..CV15
+      * 40..4F -> mirror/reflector-like slots M0..M15
 
-        cmd, x, y, state/subtype, target0, target1, ...
-
-    The byte after y is therefore not a platform id.  It is commonly 00 and
-    changing it can make the object appear to break.  Every following byte is a
-    target slot id (P0/P1/P2/CV0/...) and one button may reference multiple
-    targets.  Keep only small slot ids here; larger values are preserved in raw
-    data but are not drawn as trigger links yet.
+    The exact high-nibble classes may still grow, but keeping the raw byte while
+    exposing the class makes trigger editing much less ambiguous than a flat
+    numeric id.
     """
-    values: list[int] = []
-    body = cmd.body
-    if len(body) >= 5:
-        values.extend(value for value in body[4:] if value < 0x10)
-    out: list[int] = []
-    for value in values:
-        if value not in out:
-            out.append(value)
+    value &= 0xFF
+    if value < 0x10:
+        return ControlTarget(value, "platform", value)
+    if 0x10 <= value < 0x20:
+        return ControlTarget(value, "conveyor", value - 0x10)
+    if 0x40 <= value < 0x50:
+        return ControlTarget(value, "mirror", value - 0x40)
+    return ControlTarget(value, "unknown", value)
+
+
+def control_targets(cmd: ControlCommand) -> list[ControlTarget]:
+    """Return decoded control targets from body bytes after type/x/y/state."""
+    if len(cmd.body) < 5:
+        return []
+    out: list[ControlTarget] = []
+    seen: set[int] = set()
+    for raw in cmd.body[4:]:
+        if raw in seen:
+            continue
+        seen.add(raw)
+        out.append(decode_control_target(raw))
     return out
+
+
+def control_ref_values(cmd: ControlCommand) -> list[int]:
+    """Backward-compatible raw target byte list."""
+    return [target.raw for target in control_targets(cmd)]
 
 
 def _is_projectile_actor(actor: ActorTableRecord) -> bool:
@@ -252,15 +286,19 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
             kind = "J"
         x, y = control_xy(cmd, mode=mode)
         label = f"{kind}{cmd.record.index} cmd={cmd.command:02X}"
-        refs = control_ref_values(cmd)
-        if refs:
-            label += " refs=" + ",".join(str(value) for value in refs)
+        targets = control_targets(cmd)
+        if targets:
+            label += " refs=" + ",".join(target.label for target in targets)
         label += f" @{cmd.record.source_offset:02X}"
         point = OverlayPoint("control", f"{kind}{cmd.record.index}", x + 8, y + 8, label, "#00e0ff")
         controls.append(point)
-        refs = control_ref_values(cmd)
-        for target_id in refs:
-            target = platform_by_index.get(target_id) or conveyor_by_index.get(target_id)
+        for target_ref in targets:
+            if target_ref.kind == "platform":
+                target = platform_by_index.get(target_ref.index)
+            elif target_ref.kind == "conveyor":
+                target = conveyor_by_index.get(target_ref.index)
+            else:
+                target = None
             if target is None:
                 continue
             links.append(

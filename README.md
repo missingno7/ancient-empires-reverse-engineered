@@ -143,3 +143,13 @@ docs/
 The renderer is conservative by design: confirmed structures are drawn normally,
 while uncertain data stays visible through overlay/debug tooling instead of
 being promoted to guessed gameplay objects.
+
+## Trigger/control refactor notes
+
+The editor now models buttons/switches/jello as control commands with typed targets:
+
+- `P0`, `P1`, ... target runtime platform slots.
+- `CV0`, `CV1`, ... target visible conveyor/belt records.
+- `M0`, `M1`, ... are reserved for mirror/reflector-like targets observed in raw rooms.
+
+A control can target multiple objects, for example `P0,CV0`. The raw body is still shown for reverse-engineering, but normal editing should use the typed target field where possible.
