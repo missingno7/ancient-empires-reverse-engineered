@@ -4,14 +4,23 @@ from dataclasses import dataclass, field
 
 from PIL import Image, ImageDraw
 
-from .constants import CELL_SIZE, DEFAULT_TERRAIN_CODE_TO_SPRITE, ROOM_COLUMNS, ROOM_ROWS
-from .coordinates import TERRAIN_ANCHOR, compact3_xy, control_xy, platform_xy
+from .constants import (
+    CELL_SIZE,
+    DEFAULT_TERRAIN_CODE_TO_SPRITE,
+    ROOM_COLUMNS,
+    ROOM_ROWS,
+    ROOM_SCREEN_HEIGHT_PX,
+    ROOM_SCREEN_WIDTH_PX,
+)
+from .coordinates import TERRAIN_ANCHOR, actor_xy, compact3_xy, control_xy, header_object_xy, platform_xy
 from .conveyors import ConveyorSpec, compose_conveyor
 from .graphics import GraphicsSet
 from .level_format import Level, Room
 from .object_mapping import visual_render_layer, visual_sprite_ref
 from .room_payload import (
     ObjectTableEntry,
+    ActorTableRecord,
+    actor_records_for_room,
     control_commands,
     parse_exe_payload_directory,
     parse_platform_triplets,
@@ -19,6 +28,7 @@ from .room_payload import (
     laser_crystal_table,
     room_tail_marker,
     header_object_candidates,
+    header_player_start,
 )
 
 
@@ -27,7 +37,7 @@ class RenderOptions:
     """Rendering options exposed by the cleaned-up viewer."""
 
     mode: str = "game"  # game, collision, payload_debug, codes_hex, trailing_hex
-    zoom: int = 2
+    zoom: int = 3
     grid: bool = False
     part_index: int = 0  # 0 = Explorer, 1 = Expert
 
@@ -46,6 +56,11 @@ class RoomRenderer:
 
     ROPE_CODES = {0x80, 0x90, 0xA0, 0xB0, 0xC0}
     CONVEYOR_TILE_CODES = {0x0F: "grey", 0x1F: "teal"}
+    ACTOR_FRAME_RUNS = [
+        (0x00, 0x17, 0x14),
+        (0x17, 0x14, 0x15),
+        (0x2B, 0x29, 0x16),
+    ]
     # Rope markers sit on the left edge of the 8×8 grid cell, but the visible
     # rope art is slightly right of that logical column in the captured game.
     ROPE_X_BIAS = 4
@@ -55,7 +70,7 @@ class RoomRenderer:
         options = options or RenderOptions()
         part = level.part(options.part_index)
         room = part.room(room_index)
-        image = Image.new("RGBA", (ROOM_COLUMNS * CELL_SIZE, ROOM_ROWS * CELL_SIZE), (0, 0, 0, 255))
+        image = Image.new("RGBA", (ROOM_SCREEN_WIDTH_PX, ROOM_SCREEN_HEIGHT_PX), (0, 0, 0, 255))
         draw = ImageDraw.Draw(image)
         self._current_theme = part.theme
         self._current_level_index = level.index
@@ -70,29 +85,35 @@ class RoomRenderer:
             # cases where wall decorations were painted over solid geometry.
             self._draw_background(image, part.theme)
             if options.mode == "game":
-                self._draw_visual_objects(image, room, labels=False, layer="background")
+                self._draw_visual_objects(image, room, layer="background")
             self._draw_terrain_tiles(image, room, part.theme)
             self._render_rope(image, room)
 
             if options.mode == "game":
                 self._draw_conveyor_tiles(image, room)
                 self._draw_platforms(image, room)
-                self._draw_control_records(image, room, labels=False)
-                self._draw_puzzle_markers(image, room, labels=False)
-                self._draw_record12_puzzle_panels(image, room, labels=False)
-                self._draw_laser_crystals(image, room, labels=False)
-                self._draw_visual_objects(image, room, labels=False, layer="foreground")
+                self._draw_control_records(image, room)
+                self._draw_puzzle_markers(image, room)
+                self._draw_record12_puzzle_panels(image, room)
+                self._draw_laser_crystals(image, room)
+                self._draw_visual_objects(image, room, layer="foreground")
+                self._draw_header_objects(image, room, part.header)
+                self._draw_actors(image, part, room, include_hidden=False)
+                self._draw_player_start(image, room, part.header)
             elif options.mode == "collision":
                 self._draw_collision_debug(image, room)
             elif options.mode == "payload_debug":
-                self._draw_visual_objects(image, room, labels=True, layer="background")
+                self._draw_visual_objects(image, room, layer="background")
                 self._draw_conveyor_tiles(image, room)
                 self._draw_platforms(image, room)
-                self._draw_control_records(image, room, labels=True)
-                self._draw_puzzle_markers(image, room, labels=True)
-                self._draw_record12_puzzle_panels(image, room, labels=True)
-                self._draw_laser_crystals(image, room, labels=True)
-                self._draw_visual_objects(image, room, labels=True, layer="foreground")
+                self._draw_control_records(image, room)
+                self._draw_puzzle_markers(image, room)
+                self._draw_record12_puzzle_panels(image, room)
+                self._draw_laser_crystals(image, room)
+                self._draw_visual_objects(image, room, layer="foreground")
+                self._draw_header_objects(image, room, part.header)
+                self._draw_actors(image, part, room, include_hidden=True)
+                self._draw_player_start(image, room, part.header)
                 self._draw_actor_probes(image, room, part.header)
                 self._draw_payload_debug(image, room)
 
@@ -185,12 +206,11 @@ class RoomRenderer:
             elif triplet.orientation == "horizontal" and horizontal is not None:
                 self._blit(image, horizontal, x, y)
 
-    def _draw_control_records(self, image: Image.Image, room: Room, *, labels: bool) -> None:
-        draw = ImageDraw.Draw(image)
+    def _draw_control_records(self, image: Image.Image, room: Room) -> None:
         ceiling_button = self.graphics.sprite("AE000", 39, 0)
+        ceiling_pressed = self.graphics.sprite("AE000", 42, 0)
         floor_button = self.graphics.sprite("AE000", 40, 0)
-        pressed_button = self.graphics.sprite("AE000", 42, 0)
-        ant = self.graphics.sprite("AE000", 20, 0)
+        floor_pressed = self.graphics.sprite("AE000", 43, 0)
         for cmd in control_commands(room):
             if cmd.command is None or cmd.x_raw is None or cmd.y_raw is None:
                 continue
@@ -205,36 +225,30 @@ class RoomRenderer:
             sprite = None
             mode = "button"
             if command == 0x00:
-                # Button command family, v38 cleanup:
-                #   command 0 => ceiling button
-                #   command 1 => floor switch
-                #
-                # Previous builds tried to infer floor/ceiling from arg_b or y.
-                # L1 Expert room 3 disproves that: all three records are command
-                # 0 ceiling buttons, including a record with arg_b == 0x02.  The
-                # arg/extra bytes are trigger-link metadata for platform logic,
-                # not visual sprite ids.
-                sprite = ceiling_button
+                # Command byte, not position, selects the switch family:
+                #   0 => ceiling button
+                #   1 => floor switch
+                # The remaining bytes are trigger/link/state metadata.  Bit 0x40
+                # in arg_b is the first confirmed initial-state bit: use the
+                # pressed artwork but do not reinterpret it as a different type.
+                sprite = ceiling_pressed if (arg_b & 0x40) and ceiling_pressed is not None else ceiling_button
                 mode = "ceiling_button"
             elif command == 0x01:
-                # Floor switch/control trigger family.  Variants/pressed state are
-                # still unresolved; render the neutral floor switch for now and
-                # keep all arg bytes available in payload_debug labels.
-                sprite = floor_button
+                sprite = floor_pressed if (arg_b & 0x40) and floor_pressed is not None else floor_button
                 mode = "floor_switch"
-            elif command == 0x02 and arg_a == 0 and arg_b in (0, 1):
-                # Actor/control record. Confirmed ant/spider-like family in a
-                # few rooms; the full actor table is still unsolved.
-                sprite = ant
-                mode = "actor"
+            elif command == 0x02:
+                # Command 2 goes through the visible trigger renderer in
+                # AEPROG.  Its metadata links it to platforms/lasers; enemies
+                # are initialized later into the separate runtime actor table.
+                sprite = self.graphics.sprite("AE000", 41, 0)
+                mode = "laser_trigger"
 
             if sprite is not None:
                 x, y = control_xy(cmd, mode=mode)
                 self._blit(image, sprite, x, y)
-                if labels:
-                    self._label(draw, x, y, cmd.label)
 
-    def _draw_puzzle_markers(self, image: Image.Image, room: Room, *, labels: bool) -> None:
+
+    def _draw_puzzle_markers(self, image: Image.Image, room: Room) -> None:
         """Draw symbol buttons from section_a.
 
         The base marker is AE000:009.  Its symbol is a separate one-sprite bank
@@ -248,7 +262,6 @@ class RoomRenderer:
         base = self.graphics.sprite("AE000", 9, 0)
         if base is None:
             return
-        draw = ImageDraw.Draw(image)
         for entry in directory.sections.section_a.entries:
             x = entry.x_raw * 2 - base.width // 2
             y = entry.y - base.height // 2
@@ -256,10 +269,8 @@ class RoomRenderer:
             symbol = self.graphics.sprite("AE000", 10 + (entry.code & 0x07), 0)
             if symbol is not None:
                 self._blit(image, symbol, x + (base.width - symbol.width) // 2, y)
-            if labels:
-                self._label(draw, x, y, f"puzzle {entry.label}")
 
-    def _draw_record12_puzzle_panels(self, image: Image.Image, room: Room, *, labels: bool) -> None:
+    def _draw_record12_puzzle_panels(self, image: Image.Image, room: Room) -> None:
         """Draw the puzzle progress block from the 12-byte section when present.
 
         This is still a partial model, but it is much cleaner than hard-coding
@@ -272,7 +283,6 @@ class RoomRenderer:
         panel = self.graphics.sprite("AE000", 17, 0)
         if panel is None:
             return
-        draw = ImageDraw.Draw(image)
         for i, rec in enumerate(directory.sections.section_b_records):
             if len(rec) < 4:
                 continue
@@ -280,28 +290,27 @@ class RoomRenderer:
             x = rec[1] * 2 - 4
             y = rec[3] + 8
             self._blit(image, panel, x, y)
-            if labels:
-                self._label(draw, x, y, f"rec12[{i}] {rec.hex(' ')}")
 
-    def _draw_laser_crystals(self, image: Image.Image, room: Room, *, labels: bool) -> None:
+    def _draw_laser_crystals(self, image: Image.Image, room: Room) -> None:
         table = laser_crystal_table(room)
         if not table:
             return
-        draw = ImageDraw.Draw(image)
         for entry in table.entries:
-            sprite = self.graphics.sprite("AE000", 19, entry.code)
+            # AEPROG masks compact3 visual codes with 0x3F before indexing the
+            # object sprite pointer table.  Laser reflector tables use the same
+            # high-bit flags; treating the raw byte as the sprite index hid
+            # entries like 0x8A/0x8B/0x8D/0xCA and left only low-valued crystals.
+            sprite_index = entry.code & 0x3F
+            sprite = self.graphics.sprite("AE000", 19, sprite_index)
             if sprite is None:
                 continue
             x, y = compact3_xy(entry, sprite, "screen_exe")
             self._blit(image, sprite, x, y)
-            if labels:
-                self._label(draw, x, y, f"crystal @{table.offset:02X} {entry.label}")
 
-    def _draw_visual_objects(self, image: Image.Image, room: Room, *, labels: bool, layer: str = "all") -> None:
+    def _draw_visual_objects(self, image: Image.Image, room: Room, *, layer: str = "all") -> None:
         table = visual_compact3_table(room)
         if not table:
             return
-        draw = ImageDraw.Draw(image)
         for entry in table.entries:
             entry_layer = visual_render_layer(
                 entry,
@@ -313,15 +322,9 @@ class RoomRenderer:
                 continue
             sprite = self._sprite_for_visual_entry(entry, room)
             if sprite is None:
-                if labels:
-                    x, y = entry.x_raw * 2, entry.y
-                    draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=(255, 0, 255, 255))
-                    draw.text((x + 4, y - 6), f"@{table.offset:02X} {entry.label}", fill=(255, 255, 0, 255))
                 continue
             x, y = compact3_xy(entry, sprite, "screen_exe")
             self._blit(image, sprite, x, y)
-            if labels:
-                self._label(draw, x, y, f"{entry_layer} @{table.offset:02X} {entry.label}")
 
     def _sprite_for_visual_entry(self, entry: ObjectTableEntry, room: Room) -> Image.Image | None:
         ref = visual_sprite_ref(
@@ -339,11 +342,9 @@ class RoomRenderer:
     def _draw_actor_probes(self, image: Image.Image, room: Room, header: bytes) -> None:
         """Debug-only overlay for actor/item storage that is not solved yet.
 
-        Static analysis of AEPROG shows at least two additional object paths
-        after the terrain/decor renderer: a six-slot room-gated global array
-        and a three-byte marker at the end of the room record.  They are exposed
-        here as probes so screenshots can be compared without polluting the
-        normal game renderer with guesses.
+        The six-slot diamond/artifact array is now rendered normally.  The
+        three-byte marker at the end of the room record is still exposed here
+        as a probe until its sprite/meaning is confirmed.
         """
         draw = ImageDraw.Draw(image)
         tail = room_tail_marker(room)
@@ -352,33 +353,57 @@ class RoomRenderer:
             y = tail.y_raw
             colour = (0, 255, 255, 255) if tail.room_plus_one == room.index + 1 else (80, 120, 120, 180)
             draw.rectangle([x - 3, y - 3, x + 3, y + 3], outline=colour, width=1)
-            self._label(draw, x + 4, y - 6, tail.label)
 
+    def _draw_header_objects(self, image: Image.Image, room: Room, header: bytes) -> None:
+        diamond = self.graphics.sprite("AE000", 44, 0)
+        if diamond is None:
+            return
         for cand in header_object_candidates(header):
             if cand.room_plus_one != room.index + 1:
                 continue
-            x = cand.x_raw * 2
-            y = cand.y_raw
-            draw.ellipse([x - 4, y - 4, x + 4, y + 4], outline=(255, 128, 0, 255), width=1)
-            self._label(draw, x + 5, y - 6, cand.label)
+            x, y = header_object_xy(cand.x_raw, cand.y_raw)
+            self._blit(image, diamond, x, y)
+
+    def _draw_actors(self, image: Image.Image, part, room: Room, *, include_hidden: bool) -> None:
+        for actor in actor_records_for_room(part, room.index):
+            x, y = actor_xy(actor.x, actor.y)
+            if actor.hidden and not include_hidden:
+                continue
+            sprite = self._sprite_for_actor_record(actor)
+            if sprite is None:
+                continue
+            if actor.hidden:
+                sprite = sprite.copy()
+                alpha = sprite.getchannel("A").point(lambda value: value // 3)
+                sprite.putalpha(alpha)
+            self._blit(image, sprite, x, y)
+
+    def _sprite_for_actor_record(self, actor: ActorTableRecord) -> Image.Image | None:
+        for frame_start, count, resource_id in self.ACTOR_FRAME_RUNS:
+            if frame_start <= actor.frame < frame_start + count:
+                return self.graphics.sprite("AE000", resource_id, actor.frame - frame_start)
+        return None
+
+    def _draw_player_start(self, image: Image.Image, room: Room, header: bytes) -> None:
+        # Static room previews draw the configured start only in room 0.  Runtime
+        # player position can of course be elsewhere after movement.
+        if room.index != 0:
+            return
+        start = header_player_start(header)
+        if start is None:
+            return
+        sprite = self.graphics.sprite("AE000", 4, 0)
+        if sprite is None:
+            return
+        x = start.x_raw * 2 - 4
+        y = start.y_raw - 16
+        self._blit(image, sprite, x, y)
 
     def _draw_payload_debug(self, image: Image.Image, room: Room) -> None:
         draw = ImageDraw.Draw(image)
         for triplet in parse_platform_triplets(room):
             x, y = platform_xy(triplet)
             draw.rectangle([x, y, x + 10, y + 10], outline=(255, 180, 0, 255), width=1)
-            draw.text((x + 2, y - 8), triplet.label, fill=(255, 180, 0, 255))
-        directory = parse_exe_payload_directory(room)
-        if directory and directory.sections:
-            y = 2
-            lines = [
-                f"dir@{directory.base_offset:02X} count={directory.directory_count} selected={directory.selected_visual_index}",
-                f"records={len(directory.control_records)} visual={None if directory.sections.visual is None else hex(directory.sections.visual.offset)}",
-            ]
-            for line in lines:
-                draw.rectangle([0, y, 240, y + 10], fill=(0, 0, 0, 180))
-                draw.text((2, y), line, fill=(255, 255, 255, 255))
-                y += 11
 
     def _draw_collision_debug(self, image: Image.Image, room: Room) -> None:
         draw = ImageDraw.Draw(image)
@@ -398,8 +423,6 @@ class RoomRenderer:
                 x0 = x * CELL_SIZE
                 y0 = y * CELL_SIZE
                 draw.rectangle([x0, y0, x0 + CELL_SIZE - 1, y0 + CELL_SIZE - 1], fill=colour + (255,))
-                if value:
-                    draw.text((x0, y0 - 1), f"{value:02X}", fill=(255, 255, 255, 255))
 
     def _render_trailing_probe(self, image: Image.Image, draw: ImageDraw.ImageDraw, room: Room) -> None:
         draw.rectangle([0, 0, image.width, image.height], fill=(20, 20, 20, 255))
@@ -411,16 +434,9 @@ class RoomRenderer:
             x0 = x * 16
             y0 = y * 8
             draw.rectangle([x0, y0, x0 + 15, y0 + 7], fill=colour + (255,))
-            if value:
-                draw.text((x0, y0 - 1), f"{value:02X}", fill=(255, 255, 255, 255))
 
     def _draw_grid(self, image: Image.Image) -> None:
         draw = ImageDraw.Draw(image)
         for y in range(ROOM_ROWS):
             for x in range(ROOM_COLUMNS):
                 draw.rectangle([x * CELL_SIZE, y * CELL_SIZE, x * CELL_SIZE + CELL_SIZE - 1, y * CELL_SIZE + CELL_SIZE - 1], outline=(0, 0, 0, 100))
-
-    @staticmethod
-    def _label(draw: ImageDraw.ImageDraw, x: int, y: int, text: str) -> None:
-        draw.rectangle([x, y, x + max(60, len(text) * 5), y + 10], fill=(0, 0, 0, 180))
-        draw.text((x + 1, y), text, fill=(255, 255, 0, 255))

@@ -43,10 +43,6 @@ def visual_sprite_ref(entry: ObjectTableEntry, *, theme: int, level_index: int |
     # rooms use low visual codes as ordinary theme decorations; actors appear
     # to live in control/actor records, not in the main theme visual table.
 
-    # Laser trigger / red pudding-looking trigger in level 2 Expert room 0.
-    if code == 0x80 and level_index == 1 and page_index == 1 and room_index == 0:
-        return SpriteRef("AE000", 41, 0, "laser trigger")
-
     # Default EXE-style visual decor: current theme bank AE001:025..028 and
     # code masked to six bits. Bit 0x40 behaves as a horizontal mirror flag for
     # at least the paired statue/lion decorations (for example code 0x45 is the
@@ -63,7 +59,5 @@ def visual_render_layer(entry: ObjectTableEntry, *, level_index: int | None = No
     """
     code = entry.code
     if code in {0x7D, 0x8E}:
-        return "foreground"
-    if code == 0x80 and level_index == 1 and page_index == 1 and room_index == 0:
         return "foreground"
     return "background" if code >= 0x80 else "foreground"

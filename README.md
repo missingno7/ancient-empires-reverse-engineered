@@ -137,6 +137,7 @@ See `docs/level_format_v29.md` for the current handoff notes.
 - `Page A/B` is now treated as `Explorer/Expert`.
 - Visual compact3 payloads are drawn in EXE order: high-bit entries before terrain, low-bit entries after terrain.
 - Platform triplets with `0x80/0xA0` are rendered as vertical platforms; `0x40/0x60` as horizontal.
+- Platform triplets use the same anchor correction as other screen-space objects (`x*2-12, y-12`), replacing the old `x*2-4, y` preview bias.
 - Puzzle buttons use `AE000:009` plus symbols from `AE000:010..016`; the progress block uses `AE000:017`.
 - Old alignment/crop experiments have been removed; terrain anchor `(-4,-4)` is part of the renderer.
 
@@ -184,3 +185,29 @@ ceiling buttons, floor switches, and link metadata without using the old
 ## v38 note
 
 Switch rendering was cleaned up: command `0` records are ceiling buttons, command `1` records are floor switches. The remaining command bytes are kept as trigger/link metadata rather than sprite IDs.
+
+
+## v39 notes
+
+- Switches are now decoded by command byte, with `arg_b & 0x40` treated as initial pressed state.
+- Command 2 is isolated as an actor/control family. Confirmed preview mappings include spider (`AE000:022:12`), snake/crawler (`AE000:022:20`), and ant/crawler (`AE000:020:0`).
+- Unknown command-2 subtypes are not drawn as decorations; use `payload_debug` to inspect them.
+- See `docs/level_format_v39.md`.
+
+## v40 notes
+
+- Command 2 is now rendered as the visible laser-trigger/jello family (`AE000:041`); enemies are no longer inferred from these room payload records.
+- Visual compact3 code `0x80` is no longer special-cased as laser jello; in Level 2 room 0 that was a false second trigger.
+- The six header slots at `0x08/0x0e/0x14` are rendered as room-gated diamonds/artifacts (`AE000:044`).
+- Runtime actor records are parsed from the part actor table at `0x2754`, with normal room enemies mapped through the gameplay frame runs `AE000:020..022`.
+- Room exit links are decoded from the four 10-byte transition arrays; self-links explain rooms that wrap back into themselves.
+- Static room renders use the visible 38x18 tile viewport again; actor/header object coordinates are converted through their sprite-anchor transform and clipped at the room edge.
+- Actor record byte `0x08` is treated as hidden/start-state: normal game previews skip hidden actors, while `payload_debug` still shows them faintly.
+- Confirmed enemy labels are now tied to actor frame ranges: ant, bat, green spitter, ladybug, scorpion shooter, spider, and snake.
+
+## v41 notes
+
+- The editor now defaults to 3x zoom for the DOS pixel-art viewport.
+- Debug labels and relationship hints are drawn as native Tk canvas overlay items, not baked into the scaled pixel bitmap.
+- Overlay layers show platform ids, trigger/control ids, raw trigger-to-platform links, actor start boxes, actor script offsets/byte previews, pickups, laser crystals, and room exit links.
+- Pixel-renderer labels were removed. `codes_hex` and `trailing_hex` render coloured debug grids in the bitmap and draw readable hex values as native canvas text.

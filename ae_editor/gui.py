@@ -2,15 +2,24 @@ from __future__ import annotations
 
 from pathlib import Path
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, ttk
 
 from PIL import ImageTk
 
 from .constants import CELL_SIZE, ROOM_COUNT, ROOM_COLUMNS, ROOM_ROWS
 from .exporters import export_bank_sheets, export_probe_csv, export_room_previews
+from .overlay import build_room_overlay
 from .project import AncientEmpiresProject
 from .renderer import RenderOptions
-from .room_payload import parse_exe_payload_directory, parse_platform_triplets, visual_compact3_table, laser_crystal_table
+from .room_payload import (
+    actor_records_for_room,
+    laser_crystal_table,
+    parse_exe_payload_directory,
+    parse_platform_triplets,
+    transition_links_for_room,
+    visual_compact3_table,
+)
 
 DIFFICULTY_LABELS = ["Explorer", "Expert"]
 
@@ -19,15 +28,19 @@ class LevelEditorApp(tk.Tk):
     def __init__(self, project: AncientEmpiresProject):
         super().__init__()
         self.project = project
-        self.title("Ancient Empires Level Editor - v34 visual cleanup")
+        self.title("Ancient Empires Level Editor - v41 overlay editor")
         self.geometry("1220x840")
 
         self.level_var = tk.IntVar(value=0)
         self.room_var = tk.IntVar(value=0)
         self.part_var = tk.IntVar(value=0)
-        self.zoom_var = tk.IntVar(value=2)
+        self.zoom_var = tk.IntVar(value=3)
         self.mode_var = tk.StringVar(value="game")
         self.grid_var = tk.BooleanVar(value=False)
+        self.overlay_var = tk.BooleanVar(value=True)
+        self.overlay_labels_var = tk.BooleanVar(value=True)
+        self.overlay_links_var = tk.BooleanVar(value=True)
+        self.overlay_hidden_var = tk.BooleanVar(value=False)
         first_bank = next(iter(project.graphics.banks.keys()), "AE001:021")
         self.bank_var = tk.StringVar(value=first_bank)
         self.status = tk.StringVar(value="")
@@ -73,6 +86,10 @@ class LevelEditorApp(tk.Tk):
         mode.bind("<<ComboboxSelected>>", lambda _event: self.redraw_room())
 
         ttk.Checkbutton(top, text="grid", variable=self.grid_var, command=self.redraw_room).pack(side=tk.LEFT, padx=6)
+        ttk.Checkbutton(top, text="overlay", variable=self.overlay_var, command=self.redraw_room).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(top, text="labels", variable=self.overlay_labels_var, command=self.redraw_room).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(top, text="links", variable=self.overlay_links_var, command=self.redraw_room).pack(side=tk.LEFT, padx=4)
+        ttk.Checkbutton(top, text="hidden", variable=self.overlay_hidden_var, command=self.redraw_room).pack(side=tk.LEFT, padx=4)
 
         ttk.Label(top, text="Zoom").pack(side=tk.LEFT)
         zoom = ttk.Combobox(top, textvariable=self.zoom_var, state="readonly", width=3, values=[1, 2, 3, 4])
@@ -165,6 +182,8 @@ class LevelEditorApp(tk.Tk):
         directory = parse_exe_payload_directory(room)
         visual = visual_compact3_table(room)
         crystals = laser_crystal_table(room)
+        actors = actor_records_for_room(part, room.index)
+        links = transition_links_for_room(part, room.index)
         controls = 0 if directory is None else len(directory.control_records)
         visual_txt = "none" if visual is None else f"@{visual.offset:02X} n={visual.count}"
         crystal_txt = "none" if crystals is None else f"@{crystals.offset:02X} n={crystals.count}"
@@ -172,9 +191,153 @@ class LevelEditorApp(tk.Tk):
         self.status.set(
             f"level={level.index + 1} difficulty={DIFFICULTY_LABELS[part.index]} room={room.index} theme={part.theme} "
             f"room_quality={room.quality_label} terrain_off=0x{room.terrain_offset:04X} preamble={room.preamble.hex(' ')} "
-            f"platforms=[{platforms}] controls={controls} crystals={crystal_txt} visual={visual_txt} "
+            f"platforms=[{platforms}] controls={controls} actors={len(actors)} links={links.label if links else 'none'} "
+            f"crystals={crystal_txt} visual={visual_txt} "
             f"unique_tiles={unique} footer={part.footer.hex(' ')}"
         )
+        if self.mode_var.get() == "codes_hex":
+            self.draw_codes_overlay(room)
+        elif self.mode_var.get() == "trailing_hex":
+            self.draw_trailing_overlay(room)
+        elif self.overlay_var.get():
+            self.draw_room_overlay(level, part, room)
+
+    def draw_codes_overlay(self, room) -> None:
+        if not self.overlay_labels_var.get():
+            return
+        zoom = self.zoom_var.get()
+        cell = CELL_SIZE * zoom
+        font = tkfont.Font(family="Consolas", size=max(7, min(10, cell // 3)))
+        for y in range(ROOM_ROWS):
+            for x in range(ROOM_COLUMNS):
+                value = room.get(x, y)
+                cx = x * cell + cell // 2
+                cy = y * cell + cell // 2
+                text = f"{value:02X}"
+                fill = "#ffffff" if value else "#c8c8c8"
+                self.canvas.create_text(cx + 1, cy + 1, text=text, fill="#000000", font=font)
+                self.canvas.create_text(cx, cy, text=text, fill=fill, font=font)
+
+    def draw_trailing_overlay(self, room) -> None:
+        if not self.overlay_labels_var.get():
+            return
+        zoom = self.zoom_var.get()
+        cols = 19
+        cell_w = 16 * zoom
+        cell_h = 8 * zoom
+        font = tkfont.Font(family="Consolas", size=max(7, min(10, cell_h - 2)))
+        for i, value in enumerate(room.trailing[:cols * ROOM_ROWS]):
+            x = i % cols
+            y = i // cols
+            cx = x * cell_w + cell_w // 2
+            cy = y * cell_h + cell_h // 2
+            fill = "#ffffff" if value else "#9a9a9a"
+            text = f"{value:02X}"
+            self.canvas.create_text(cx + 1, cy + 1, text=text, fill="#000000", font=font)
+            self.canvas.create_text(cx, cy, text=text, fill=fill, font=font)
+
+    def draw_room_overlay(self, level, part, room) -> None:
+        overlay = build_room_overlay(level, part, room, include_hidden=self.overlay_hidden_var.get())
+        zoom = self.zoom_var.get()
+        label_font = tkfont.Font(family="Segoe UI", size=9)
+
+        def sx(value: int) -> int:
+            return int(value * zoom)
+
+        def label(x: int, y: int, value: str, colour: str) -> None:
+            if not self.overlay_labels_var.get():
+                return
+            item = self.canvas.create_text(
+                sx(x) + 4,
+                sx(y) - 16,
+                anchor="nw",
+                text=value,
+                fill=colour,
+                font=label_font,
+            )
+            box = self.canvas.bbox(item)
+            if box:
+                pad = 2
+                bg = self.canvas.create_rectangle(
+                    box[0] - pad,
+                    box[1] - pad,
+                    box[2] + pad,
+                    box[3] + pad,
+                    fill="#111111",
+                    outline=colour,
+                    stipple="gray50",
+                )
+                self.canvas.tag_lower(bg, item)
+
+        for rect in overlay.platforms:
+            self.canvas.create_rectangle(
+                sx(rect.x),
+                sx(rect.y),
+                sx(rect.x + rect.width),
+                sx(rect.y + rect.height),
+                outline=rect.colour,
+                width=2,
+            )
+            label(rect.x, rect.y, rect.label, rect.colour)
+
+        for point in overlay.controls:
+            radius = 5
+            self.canvas.create_oval(
+                sx(point.x) - radius,
+                sx(point.y) - radius,
+                sx(point.x) + radius,
+                sx(point.y) + radius,
+                outline=point.colour,
+                width=2,
+            )
+            label(point.x, point.y, point.label, point.colour)
+
+        for point in overlay.pickups + overlay.crystals:
+            radius = 6
+            self.canvas.create_polygon(
+                sx(point.x),
+                sx(point.y) - radius,
+                sx(point.x) + radius,
+                sx(point.y),
+                sx(point.x),
+                sx(point.y) + radius,
+                sx(point.x) - radius,
+                sx(point.y),
+                outline=point.colour,
+                fill="",
+                width=2,
+            )
+            label(point.x, point.y, point.label, point.colour)
+
+        for rect in overlay.actors:
+            dash = (4, 3) if rect.hidden else None
+            self.canvas.create_rectangle(
+                sx(rect.x),
+                sx(rect.y),
+                sx(rect.x + rect.width),
+                sx(rect.y + rect.height),
+                outline=rect.colour,
+                width=2,
+                dash=dash,
+            )
+            cx, cy = rect.center
+            self.canvas.create_line(sx(cx - 10), sx(cy), sx(cx + 10), sx(cy), fill=rect.colour, width=2, dash=(3, 3))
+            label(rect.x, rect.y, rect.label, rect.colour)
+
+        if self.overlay_links_var.get():
+            for line in overlay.links + overlay.exits:
+                dash = (5, 4) if line.dashed else None
+                self.canvas.create_line(
+                    sx(line.start[0]),
+                    sx(line.start[1]),
+                    sx(line.end[0]),
+                    sx(line.end[1]),
+                    fill=line.colour,
+                    width=2,
+                    dash=dash,
+                    arrow=tk.LAST,
+                )
+                label((line.start[0] + line.end[0]) // 2, (line.start[1] + line.end[1]) // 2, line.label, line.colour)
 
     def redraw_bank_sheet(self) -> None:
         rid = self.bank_var.get() or next(iter(self.project.graphics.banks.keys()), "AE001:021")
@@ -186,10 +349,20 @@ class LevelEditorApp(tk.Tk):
 
     def click_room(self, event) -> None:
         zoom = self.zoom_var.get()
+        if self.mode_var.get() == "trailing_hex":
+            cols = 19
+            x = int(self.canvas.canvasx(event.x) // (16 * zoom))
+            y = int(self.canvas.canvasy(event.y) // (8 * zoom))
+            idx = y * cols + x
+            room = self.current_level().part(self.part_var.get()).room(self.room_var.get())
+            if 0 <= idx < len(room.trailing):
+                value = room.trailing[idx]
+                self.status.set(self.status.get() + f" | trailing[{idx:03X}]={value:02X}/{value}")
+            return
         x = int(self.canvas.canvasx(event.x) // (CELL_SIZE * zoom))
         y = int(self.canvas.canvasy(event.y) // (CELL_SIZE * zoom))
         if 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS:
-            value = self.current_level().room(self.room_var.get(), self.part_var.get()).get(x, y)
+            value = self.current_level().part(self.part_var.get()).room(self.room_var.get()).get(x, y)
             self.status.set(self.status.get() + f" | click x={x} y={y} tile={value:02X}/{value}")
 
     def export_current(self) -> None:

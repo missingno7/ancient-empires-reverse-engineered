@@ -19,6 +19,12 @@ ROOM_TILE_COUNT = ROOM_COLUMNS * ROOM_ROWS
 ROOM_TRAILING_DATA_SIZE = ROOM_RECORD_SIZE - ROOM_TERRAIN_OFFSET - ROOM_TILE_COUNT
 CELL_SIZE = 8
 
+# The visible room viewport is the 38x18 tile grid. Runtime object coordinates
+# can point slightly outside it; the final blit is clipped by the image bounds,
+# matching what is visible in the game capture.
+ROOM_SCREEN_WIDTH_PX = ROOM_COLUMNS * CELL_SIZE
+ROOM_SCREEN_HEIGHT_PX = ROOM_ROWS * CELL_SIZE
+
 # Kept for compatibility in docs/tools.
 LEVEL_HEADER_SIZE = LEVEL_PART_HEADER_SIZE
 

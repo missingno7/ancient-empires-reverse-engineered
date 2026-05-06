@@ -43,11 +43,12 @@ def platform_xy(p: PlatformTriplet) -> tuple[int, int]:
     """EXE-derived moving platform/control coordinate conversion.
 
     The first payload area stores visible platform/control records. The x byte
-    is in half-pixel-ish units, while y is already a screen-space pixel
-    coordinate. Keep this transform boring and centralized; orientation and
-    sprite choice are *not* inferred from collision tile 0x07.
+    uses the same doubled screen-space coordinate family as other room payload
+    objects, while y is already a screen-space pixel coordinate. The stored
+    point is an object anchor, not bitmap top-left; orientation and sprite
+    choice are *not* inferred from collision tile 0x07.
     """
-    return p.x_raw * 2 - 4, p.y
+    return p.x_raw * 2 - 12, p.y - 12
 
 
 def compact3_xy(entry: ObjectTableEntry, sprite: Image.Image, mode: AnchorMode = "screen_exe") -> tuple[int, int]:
@@ -70,14 +71,28 @@ def control_xy(cmd: ControlCommand, *, mode: str = "button") -> tuple[int, int]:
     Control commands are not one coordinate family:
     * ceiling buttons are anchored by the hanging cord/trigger point;
     * floor switches are anchored close to their base on the floor;
-    * actors still use a separate, partially unsolved runtime transform.
+    * runtime actors are stored in the part actor table and use direct x/y words.
     """
     x_raw = cmd.x_raw or 0
     y_raw = cmd.y_raw or 0
     if mode == "actor":
-        return x_raw * 4 - 4, y_raw - 12
+        # Kept for old debug overlays.  Normal enemy rendering now reads the
+        # actor table at part+0x2754 instead of command-2 control records.
+        return x_raw * 2 - 12, y_raw - 28
+    if mode == "laser_trigger":
+        return x_raw * 2 - 12, y_raw - 12
     if mode == "ceiling_button":
-        return x_raw * 2 - 12, y_raw - 46
+        return x_raw * 2 - 12, y_raw - 20
     if mode == "floor_switch":
         return x_raw * 2 - 12, y_raw - 12
     return x_raw * 2 - 12, y_raw - 16
+
+
+def actor_xy(x: int, y: int) -> tuple[int, int]:
+    """Convert actor-table screen coordinates to sprite top-left coordinates."""
+    return x - 12, y - 12
+
+
+def header_object_xy(x_raw: int, y_raw: int) -> tuple[int, int]:
+    """Convert six-slot header object coordinates to sprite top-left coordinates."""
+    return x_raw * 2 - 12, y_raw - 12
