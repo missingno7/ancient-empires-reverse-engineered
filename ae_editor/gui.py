@@ -19,6 +19,7 @@ from .room_payload import (
     header_object_candidates,
     header_player_start,
     laser_crystal_table,
+    PLATFORM_TRIPLET_SIZE,
     parse_exe_payload_directory,
     parse_platform_triplets,
     transition_links_for_room,
@@ -26,6 +27,7 @@ from .room_payload import (
 )
 
 DIFFICULTY_LABELS = ["Explorer", "Expert"]
+COLLISION_TILE_CODE = 0x07
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,15 @@ class OverlayOptionSpec:
     minimal: bool
     logic: bool
     debug: bool
+
+
+@dataclass(frozen=True)
+class EditorHandle:
+    ref: tuple[str, int | None]
+    x: int
+    y: int
+    label: str
+    colour: str
 
 
 OVERLAY_OPTION_SPECS = (
@@ -71,18 +82,23 @@ class LevelEditorApp(tk.Tk):
         self.zoom_var = tk.IntVar(value=3)
         self.mode_var = tk.StringVar(value="game")
         self.grid_var = tk.BooleanVar(value=False)
+        self.show_collision_var = tk.BooleanVar(value=False)
         self.overlay_var = tk.BooleanVar(value=True)
         self.overlay_labels_var = tk.BooleanVar(value=True)
         self.overlay_links_var = tk.BooleanVar(value=True)
         self.overlay_hidden_var = tk.BooleanVar(value=False)
-        self.edit_enabled_var = tk.BooleanVar(value=False)
         self.tile_value_var = tk.StringVar(value="00")
-        self.editor_tool_var = tk.StringVar(value="terrain")
+        self.editor_tool_var = tk.StringVar(value="select")
         self.editor_object_var = tk.StringVar(value="exit_door")
         self.editor_grid_var = tk.BooleanVar(value=True)
         self.editor_overlay_var = tk.BooleanVar(value=True)
+        self.editor_collision_var = tk.BooleanVar(value=True)
+        self.belt_kind_var = tk.StringVar(value="grey")
+        self.belt_length_var = tk.IntVar(value=4)
         self.brush_size_var = tk.IntVar(value=1)
         self.editor_info = tk.StringVar(value="")
+        self.editor_selected_ref: tuple[str, int | None] | None = None
+        self.editor_drag_offset: tuple[int, int] | None = None
 
         for spec in OVERLAY_OPTION_SPECS:
             setattr(self, spec.var_name, tk.BooleanVar(value=spec.default))
@@ -134,7 +150,7 @@ class LevelEditorApp(tk.Tk):
         ttk.Button(top, text="Next", command=lambda: self.set_room((self.room_var.get() + 1) % ROOM_COUNT)).pack(side=tk.LEFT)
 
         ttk.Label(top, text="Mode").pack(side=tk.LEFT, padx=(10, 0))
-        mode = ttk.Combobox(top, textvariable=self.mode_var, state="readonly", width=13, values=["game", "collision", "payload_debug", "codes_hex", "trailing_hex"])
+        mode = ttk.Combobox(top, textvariable=self.mode_var, state="readonly", width=13, values=["game", "payload_debug", "codes_hex", "trailing_hex"])
         mode.pack(side=tk.LEFT)
         mode.bind("<<ComboboxSelected>>", lambda _event: self.redraw_room())
 
@@ -188,6 +204,7 @@ class LevelEditorApp(tk.Tk):
         ttk.Checkbutton(general, text="Labels", variable=self.overlay_labels_var, command=self.redraw_room).grid(row=0, column=1, sticky="w", padx=(10, 0))
         ttk.Checkbutton(general, text="Master lines", variable=self.overlay_links_var, command=self.redraw_room).grid(row=0, column=2, sticky="w", padx=(10, 0))
         ttk.Checkbutton(general, text="Hidden actors", variable=self.overlay_hidden_var, command=self.redraw_room).grid(row=1, column=0, sticky="w")
+        ttk.Checkbutton(general, text="Collision 07", variable=self.show_collision_var, command=self.redraw_room).grid(row=1, column=1, sticky="w", padx=(10, 0))
 
         preset_bar = ttk.Frame(overlay_frame)
         preset_bar.pack(fill=tk.X, padx=6, pady=(0, 4))
@@ -288,20 +305,28 @@ class LevelEditorApp(tk.Tk):
         self.editor_canvas.bind("<Button-1>", self.editor_click)
         self.editor_canvas.bind("<B1-Motion>", self.editor_drag)
         self.editor_canvas.bind("<Button-3>", self.editor_pick_tile)
+        self.editor_canvas.bind("<Delete>", self.delete_selected_editor_object)
+        self.editor_canvas.bind("<BackSpace>", self.delete_selected_editor_object)
 
-        toolbar = ttk.Frame(right)
-        toolbar.pack(fill=tk.X, padx=6, pady=6)
-        ttk.Radiobutton(toolbar, text="Tiles", variable=self.editor_tool_var, value="terrain").pack(side=tk.LEFT)
-        ttk.Radiobutton(toolbar, text="Objects", variable=self.editor_tool_var, value="object").pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Checkbutton(toolbar, text="Grid", variable=self.editor_grid_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(12, 0))
-        ttk.Checkbutton(toolbar, text="Overlay", variable=self.editor_overlay_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(8, 0))
+        tools_row = ttk.Frame(right)
+        tools_row.pack(fill=tk.X, padx=6, pady=(6, 2))
+        ttk.Radiobutton(tools_row, text="Select", variable=self.editor_tool_var, value="select", command=self.redraw_editor_room).pack(side=tk.LEFT)
+        ttk.Radiobutton(tools_row, text="Tiles", variable=self.editor_tool_var, value="terrain", command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Radiobutton(tools_row, text="Belts", variable=self.editor_tool_var, value="belt", command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Radiobutton(tools_row, text="Objects", variable=self.editor_tool_var, value="object", command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(4, 0))
+
+        view_row = ttk.Frame(right)
+        view_row.pack(fill=tk.X, padx=6, pady=(0, 6))
+        ttk.Checkbutton(view_row, text="Grid", variable=self.editor_grid_var, command=self.redraw_editor_room).pack(side=tk.LEFT)
+        ttk.Checkbutton(view_row, text="Overlay", variable=self.editor_overlay_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Checkbutton(view_row, text="Collision", variable=self.editor_collision_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(8, 0))
 
         ttk.Label(right, text="Tile").pack(anchor="w", padx=6)
         tile_row = ttk.Frame(right)
         tile_row.pack(fill=tk.X, padx=6, pady=(0, 6))
         ttk.Entry(tile_row, textvariable=self.tile_value_var, width=6).pack(side=tk.LEFT)
         ttk.Button(tile_row, text="00", width=3, command=lambda: self.select_tile_code(0x00)).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(tile_row, text="07", width=3, command=lambda: self.select_tile_code(0x07)).pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(tile_row, text="07", width=3, command=lambda: self.select_tile_code(COLLISION_TILE_CODE)).pack(side=tk.LEFT, padx=(2, 0))
         ttk.Button(tile_row, text="0F", width=3, command=lambda: self.select_tile_code(0x0F)).pack(side=tk.LEFT, padx=(2, 0))
 
         brush_row = ttk.Frame(right)
@@ -309,6 +334,21 @@ class LevelEditorApp(tk.Tk):
         ttk.Label(brush_row, text="Brush").pack(side=tk.LEFT)
         ttk.Spinbox(brush_row, from_=1, to=5, textvariable=self.brush_size_var, width=4).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Label(brush_row, textvariable=self.editor_info, justify=tk.LEFT).pack(side=tk.LEFT, padx=(10, 0))
+
+        belt_row = ttk.Frame(right)
+        belt_row.pack(fill=tk.X, padx=6, pady=(0, 6))
+        ttk.Label(belt_row, text="Belt").pack(side=tk.LEFT)
+        belt_kind = ttk.Combobox(
+            belt_row,
+            state="readonly",
+            textvariable=self.belt_kind_var,
+            values=["grey", "teal"],
+            width=6,
+        )
+        belt_kind.pack(side=tk.LEFT, padx=(4, 0))
+        belt_kind.bind("<<ComboboxSelected>>", lambda _event: self.redraw_editor_room())
+        ttk.Label(belt_row, text="Len").pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Spinbox(belt_row, from_=1, to=38, textvariable=self.belt_length_var, width=4, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(4, 0))
 
         palettes = ttk.Notebook(right)
         palettes.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
@@ -340,8 +380,8 @@ class LevelEditorApp(tk.Tk):
             width=18,
         )
         self.object_combo.pack(side=tk.LEFT)
-        self.object_combo.bind("<<ComboboxSelected>>", lambda _event: self.redraw_editor_object_palette())
-        ttk.Button(object_controls, text="Delete slot", command=self.delete_selected_header_object).pack(side=tk.LEFT, padx=(6, 0))
+        self.object_combo.bind("<<ComboboxSelected>>", lambda _event: self.select_editor_object(self.editor_object_var.get()))
+        ttk.Button(object_controls, text="Delete", command=self.delete_selected_header_object).pack(side=tk.LEFT, padx=(6, 0))
 
         self.object_palette_canvas = tk.Canvas(object_tab, bg="#202020", width=260)
         self.object_palette_canvas.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
@@ -383,6 +423,8 @@ class LevelEditorApp(tk.Tk):
     def set_part(self, index: int) -> None:
         self.part_var.set(index)
         self.part_combo.current(index)
+        self.editor_selected_ref = None
+        self.editor_drag_offset = None
         self.refresh_room_labels()
         self.redraw_room()
         self.redraw_objects_atlas()
@@ -391,6 +433,8 @@ class LevelEditorApp(tk.Tk):
 
     def set_level(self, index: int) -> None:
         self.level_var.set(index)
+        self.editor_selected_ref = None
+        self.editor_drag_offset = None
         self.refresh_room_labels()
         self.redraw_room()
         self.redraw_objects_atlas()
@@ -400,6 +444,8 @@ class LevelEditorApp(tk.Tk):
     def set_room(self, index: int) -> None:
         self.room_var.set(index)
         self.room_combo.current(index)
+        self.editor_selected_ref = None
+        self.editor_drag_offset = None
         self.redraw_room()
         self.redraw_objects_atlas()
         self.redraw_editor_object_palette()
@@ -433,6 +479,8 @@ class LevelEditorApp(tk.Tk):
             f"exit_door={door_txt} crystals={crystal_txt} visual={visual_txt} "
             f"unique_tiles={unique} footer={part.footer.hex(' ')}"
         )
+        if self.show_collision_var.get() and self.mode_var.get() != "trailing_hex":
+            self.draw_collision_overlay(self.canvas, room)
         if self.mode_var.get() == "codes_hex":
             self.draw_codes_overlay(room)
         elif self.mode_var.get() == "trailing_hex":
@@ -468,15 +516,19 @@ class LevelEditorApp(tk.Tk):
 
     def select_tile_code(self, code: int) -> None:
         self.editor_tool_var.set("terrain")
+        self.editor_selected_ref = None
+        self.editor_drag_offset = None
         self.tile_value_var.set(f"{code & 0xFF:02X}")
         self.redraw_tile_palette()
-        self._update_editor_info()
+        self.redraw_editor_room()
 
     def select_editor_object(self, value: str) -> None:
         self.editor_tool_var.set("object")
+        self.editor_selected_ref = None
+        self.editor_drag_offset = None
         self.editor_object_var.set(value)
         self.redraw_editor_object_palette()
-        self._update_editor_info()
+        self.redraw_editor_room()
 
     def _brush_size(self) -> int:
         try:
@@ -487,9 +539,31 @@ class LevelEditorApp(tk.Tk):
         self.brush_size_var.set(value)
         return value
 
+    def _belt_length(self) -> int:
+        try:
+            value = int(self.belt_length_var.get())
+        except (tk.TclError, ValueError):
+            value = 4
+        value = max(1, min(ROOM_COLUMNS, value))
+        self.belt_length_var.set(value)
+        return value
+
+    def _belt_tile_code(self) -> int:
+        return 0x1F if self.belt_kind_var.get() == "teal" else 0x0F
+
     def _update_editor_info(self) -> None:
-        if self.editor_tool_var.get() == "terrain":
+        tool = self.editor_tool_var.get()
+        if tool == "terrain":
             self.editor_info.set(f"tile {self.tile_value_var.get().upper()}  brush {self._brush_size()}x{self._brush_size()}")
+        elif tool == "belt":
+            self.editor_info.set(f"belt {self.belt_kind_var.get()} {self._belt_tile_code():02X}  len {self._belt_length()}")
+        elif tool == "select":
+            if self.editor_selected_ref is None:
+                self.editor_info.set("select")
+            else:
+                kind, slot = self.editor_selected_ref
+                suffix = "" if slot is None else f" {slot}"
+                self.editor_info.set(f"selected {kind.replace('_', ' ')}{suffix}")
         else:
             self.editor_info.set(self.editor_object_var.get().replace("_", " "))
 
@@ -513,21 +587,6 @@ class LevelEditorApp(tk.Tk):
         suffix = " *" if self.project.dirty else ""
         self.title(f"Ancient Empires Level Editor{suffix}")
 
-    def paint_room(self, event) -> None:
-        if not self.edit_enabled_var.get() or self.mode_var.get() == "trailing_hex":
-            return
-        cell = self._cell_from_event(event, self.canvas)
-        value = self._parse_tile_value()
-        if cell is None or value is None:
-            return
-        x, y = cell
-        room = self.current_room()
-        if room.get(x, y) == value:
-            return
-        room.set(x, y, value)
-        self._set_dirty()
-        self.redraw_room()
-
     def redraw_editor_room(self) -> None:
         if not hasattr(self, "editor_canvas"):
             return
@@ -540,18 +599,20 @@ class LevelEditorApp(tk.Tk):
         self.editor_canvas.delete("all")
         self.editor_canvas.create_image(0, 0, anchor="nw", image=self.tk_editor_image)
         self.editor_canvas.config(scrollregion=(0, 0, image.width, image.height))
+        self._update_editor_info()
+        if self.editor_collision_var.get():
+            self.draw_collision_overlay(self.editor_canvas, self.current_room())
         self.draw_editor_selection_preview()
-        if self.editor_overlay_var.get():
-            level = self.current_level()
-            part = level.part(self.part_var.get())
+        if self.editor_overlay_var.get() or self.editor_tool_var.get() == "select":
+            part = self.current_level().part(self.part_var.get())
             room = part.room(self.room_var.get())
-            self.draw_editor_object_handles(level, part, room)
+            self.draw_editor_object_handles(part, room)
         if self.editor_grid_var.get():
             self.draw_editor_grid()
-        self._update_editor_info()
 
     def draw_editor_selection_preview(self) -> None:
-        if self.editor_tool_var.get() == "terrain":
+        tool = self.editor_tool_var.get()
+        if tool == "terrain":
             value = self._parse_selected_tile_silent()
             if value is None:
                 return
@@ -561,9 +622,40 @@ class LevelEditorApp(tk.Tk):
             self.editor_canvas.create_rectangle(x, y, x + 78, y + 42, fill="#111111", outline="#d8e8ff", stipple="gray50")
             self.editor_canvas.create_text(x + 38, y + 7, text=f"Tile {value:02X}", fill="#ffffff", font=("Consolas", 10))
             self.editor_canvas.create_rectangle(x + 10, y + 24, x + 10 + size, y + 24 + 8, outline="#d8e8ff", fill="")
+        elif tool == "belt":
+            text = f"Belt {self.belt_kind_var.get()} x{self._belt_length()}"
+            self.editor_canvas.create_rectangle(8, 8, 134, 34, fill="#111111", outline="#d8e8ff", stipple="gray50")
+            self.editor_canvas.create_text(14, 14, anchor="nw", text=text, fill="#ffffff", font=("Segoe UI", 9))
+        elif tool == "select":
+            text = "Select" if self.editor_selected_ref is None else self.editor_info.get()
+            self.editor_canvas.create_rectangle(8, 8, 132, 34, fill="#111111", outline="#d8e8ff", stipple="gray50")
+            self.editor_canvas.create_text(14, 14, anchor="nw", text=text, fill="#ffffff", font=("Segoe UI", 9))
         else:
             self.editor_canvas.create_rectangle(8, 8, 132, 34, fill="#111111", outline="#d8e8ff", stipple="gray50")
             self.editor_canvas.create_text(14, 14, anchor="nw", text=self.editor_object_var.get().replace("_", " "), fill="#ffffff", font=("Segoe UI", 9))
+
+    def draw_collision_overlay(self, canvas: tk.Canvas, room) -> None:
+        zoom = self.zoom_var.get()
+        cell = CELL_SIZE * zoom
+        for y in range(ROOM_ROWS):
+            for x in range(ROOM_COLUMNS):
+                if room.get(x, y) != COLLISION_TILE_CODE:
+                    continue
+                x0 = x * cell
+                y0 = y * cell
+                x1 = x0 + cell - 1
+                y1 = y0 + cell - 1
+                canvas.create_rectangle(
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    outline="#ff66dd",
+                    fill="#ff66dd",
+                    stipple="gray75",
+                    width=1,
+                )
+                canvas.create_line(x0 + 2, y0 + 2, x1 - 2, y1 - 2, fill="#ffd6f6", width=1)
 
     def draw_editor_grid(self) -> None:
         zoom = self.zoom_var.get()
@@ -580,24 +672,35 @@ class LevelEditorApp(tk.Tk):
             colour = major if y % 4 == 0 else minor
             self.editor_canvas.create_line(0, py, width, py, fill=colour, stipple="gray75")
 
-    def _draw_editor_handle(self, x: int, y: int, label: str, colour: str) -> None:
+    def _draw_editor_handle(self, handle: EditorHandle) -> None:
         zoom = self.zoom_var.get()
-        sx = x * zoom
-        sy = y * zoom
-        r = 5
-        self.editor_canvas.create_oval(sx - r, sy - r, sx + r, sy + r, outline=colour, fill="", width=2)
-        self.editor_canvas.create_text(sx + 7, sy - 8, anchor="nw", text=label, fill=colour, font=("Segoe UI", 8))
+        sx = handle.x * zoom
+        sy = handle.y * zoom
+        selected = handle.ref == self.editor_selected_ref
+        r = 7 if selected else 5
+        width = 3 if selected else 2
+        fill = "#111111" if selected else ""
+        self.editor_canvas.create_oval(sx - r, sy - r, sx + r, sy + r, outline=handle.colour, fill=fill, width=width)
+        self.editor_canvas.create_text(sx + 8, sy - 9, anchor="nw", text=handle.label, fill=handle.colour, font=("Segoe UI", 8))
 
-    def draw_editor_object_handles(self, level, part, room) -> None:
+    def editor_object_handles(self, part, room) -> list[EditorHandle]:
+        handles: list[EditorHandle] = []
         door = header_exit_door(part.header)
         if door and door.room_index == room.index:
-            self._draw_editor_handle(door.x_raw * 2, door.y_raw, "Exit", "#ffffff")
+            handles.append(EditorHandle(("exit_door", None), door.x_raw * 2, door.y_raw, "Exit", "#ffffff"))
         start = header_player_start(part.header)
         if start and room.index == 0:
-            self._draw_editor_handle(start.x_raw * 2, start.y_raw, "Start", "#7cff6b")
+            handles.append(EditorHandle(("player_start", None), start.x_raw * 2, start.y_raw, "Start", "#7cff6b"))
         for cand in header_object_candidates(part.header):
             if cand.room_plus_one == room.index + 1:
-                self._draw_editor_handle(cand.x_raw * 2, cand.y_raw, f"A{cand.index}", "#ff40ff")
+                handles.append(EditorHandle(("artifact", cand.index), cand.x_raw * 2, cand.y_raw, f"A{cand.index}", "#ff40ff"))
+        for platform in parse_platform_triplets(room):
+            handles.append(EditorHandle(("platform", platform.index), platform.x_raw * 2, platform.y, f"P{platform.index}", "#ffb000"))
+        return handles
+
+    def draw_editor_object_handles(self, part, room) -> None:
+        for handle in self.editor_object_handles(part, room):
+            self._draw_editor_handle(handle)
 
     def paint_editor_tile(self, event) -> None:
         cell = self._cell_from_event(event, self.editor_canvas)
@@ -622,14 +725,115 @@ class LevelEditorApp(tk.Tk):
         self._set_dirty()
         self.redraw_room()
 
+    def place_editor_belt(self, event) -> None:
+        cell = self._cell_from_event(event, self.editor_canvas)
+        if cell is None:
+            return
+        start_x, y = cell
+        room = self.current_room()
+        value = self._belt_tile_code()
+        length = self._belt_length()
+        changed = False
+        for x in range(start_x, min(ROOM_COLUMNS, start_x + length)):
+            if room.get(x, y) == value:
+                continue
+            room.set(x, y, value)
+            changed = True
+        if not changed:
+            return
+        self._set_dirty()
+        self.redraw_room()
+        self.status.set(f"Placed {self.belt_kind_var.get()} belt tile {value:02X} at x={start_x} y={y} len={length}")
+
+    def find_editor_handle(self, event) -> EditorHandle | None:
+        x, y = self._screen_xy_from_event(event, self.editor_canvas)
+        part = self.current_level().part(self.part_var.get())
+        room = self.current_room()
+        best: tuple[int, EditorHandle] | None = None
+        for handle in self.editor_object_handles(part, room):
+            dx = handle.x - x
+            dy = handle.y - y
+            dist2 = dx * dx + dy * dy
+            if dist2 > 12 * 12:
+                continue
+            if best is None or dist2 < best[0]:
+                best = (dist2, handle)
+        return None if best is None else best[1]
+
+    def select_editor_handle(self, event) -> None:
+        handle = self.find_editor_handle(event)
+        self.editor_selected_ref = None if handle is None else handle.ref
+        self.editor_drag_offset = None
+        if handle is None:
+            self.status.set("No editable object handle under cursor.")
+        else:
+            x, y = self._screen_xy_from_event(event, self.editor_canvas)
+            self.editor_drag_offset = (handle.x - x, handle.y - y)
+            kind, slot = handle.ref
+            if kind == "artifact" and slot is not None:
+                self.editor_object_var.set(f"artifact_{slot}")
+            else:
+                self.editor_object_var.set(kind)
+            self.status.set(f"Selected {handle.label}")
+        self.redraw_editor_object_palette()
+        self.redraw_editor_room()
+
+    def move_selected_editor_object(self, event) -> None:
+        if self.editor_selected_ref is None:
+            return
+        x, y = self._screen_xy_from_event(event, self.editor_canvas)
+        if self.editor_drag_offset is not None:
+            x += self.editor_drag_offset[0]
+            y += self.editor_drag_offset[1]
+        x = max(0, min(ROOM_COLUMNS * CELL_SIZE - 1, x))
+        y = max(0, min(ROOM_ROWS * CELL_SIZE - 1, y))
+        part = self.current_level().part(self.part_var.get())
+        room = self.current_room()
+        kind, slot = self.editor_selected_ref
+        before_header = part.header
+        before_trailing = room.trailing
+
+        if kind == "exit_door":
+            part.set_exit_door(room.index, self._clamp_byte(round(x / 2)), self._clamp_byte(y))
+        elif kind == "player_start":
+            if room.index != 0:
+                self.status.set("Player start belongs to room 0 in the current header model.")
+                return
+            part.set_player_start(self._clamp_byte(round(x / 2)), self._clamp_byte(y))
+        elif kind == "artifact" and slot is not None:
+            part.set_artifact_slot(slot, room.index, self._clamp_byte(round(x / 2)), self._clamp_byte(y))
+        elif kind == "platform" and slot is not None:
+            off = slot * PLATFORM_TRIPLET_SIZE
+            room.set_trailing_bytes(off + 1, [self._clamp_byte(round(x / 2)), self._clamp_byte(y)])
+        else:
+            return
+
+        if part.header == before_header and room.trailing == before_trailing:
+            return
+        self._set_dirty()
+        self.redraw_room()
+        self.redraw_editor_object_palette()
+        label = kind.replace("_", " ")
+        suffix = "" if slot is None else f" {slot}"
+        self.status.set(f"Moved {label}{suffix} to x={x} y={y}")
+
     def editor_click(self, event) -> None:
-        if self.editor_tool_var.get() == "terrain":
+        self.editor_canvas.focus_set()
+        tool = self.editor_tool_var.get()
+        if tool == "select":
+            self.select_editor_handle(event)
+        elif tool == "terrain":
             self.paint_editor_tile(event)
+        elif tool == "belt":
+            self.place_editor_belt(event)
         else:
             self.place_editor_object(event)
 
     def editor_drag(self, event) -> None:
-        if self.editor_tool_var.get() == "terrain":
+        tool = self.editor_tool_var.get()
+        if tool == "select":
+            self.move_selected_editor_object(event)
+        elif tool == "terrain":
             self.paint_editor_tile(event)
 
     def editor_pick_tile(self, event) -> None:
@@ -674,26 +878,35 @@ class LevelEditorApp(tk.Tk):
         self.status.set(f"Placed {obj} at x={x} y={y}")
 
     def delete_selected_header_object(self) -> None:
-        obj = self.editor_object_var.get()
-        if not obj.startswith("artifact_"):
-            self.status.set("Only artifact slots can be deleted in this MVP.")
-            return
-        slot = int(obj.split("_", 1)[1])
-        part = self.current_level().part(self.part_var.get())
-        part.clear_artifact_slot(slot)
+        self.delete_selected_editor_object()
+
+    def delete_selected_editor_object(self, _event=None):
+        ref = self.editor_selected_ref
+        if ref is None:
+            obj = self.editor_object_var.get()
+            if obj.startswith("artifact_"):
+                ref = ("artifact", int(obj.split("_", 1)[1]))
+        if ref is None or ref[1] is None:
+            self.status.set("Only artifact and platform slots can be deleted in this MVP.")
+            return "break"
+        kind, slot = ref
+        if kind == "artifact":
+            part = self.current_level().part(self.part_var.get())
+            part.clear_artifact_slot(slot)
+        elif kind == "platform":
+            room = self.current_room()
+            room.set_trailing_bytes(slot * PLATFORM_TRIPLET_SIZE, [0, 0, 0])
+        else:
+            self.status.set("Only artifact and platform slots can be deleted in this MVP.")
+            return "break"
+        if self.editor_selected_ref == ref:
+            self.editor_selected_ref = None
+            self.editor_drag_offset = None
         self._set_dirty()
         self.redraw_room()
         self.redraw_editor_object_palette()
-        self.status.set(f"Deleted artifact slot {slot}")
-
-    def pick_tile(self, event) -> None:
-        cell = self._cell_from_event(event)
-        if cell is None:
-            return
-        x, y = cell
-        value = self.current_room().get(x, y)
-        self.tile_value_var.set(f"{value:02X}")
-        self.status.set(self.status.get() + f" | picked tile={value:02X} at x={x} y={y}")
+        self.status.set(f"Deleted {kind} slot {slot}")
+        return "break"
 
     def draw_codes_overlay(self, room) -> None:
         if not self.overlay_labels_var.get():
@@ -1193,9 +1406,6 @@ class LevelEditorApp(tk.Tk):
         self.bank_canvas.config(scrollregion=(0, 0, sheet.width, sheet.height))
 
     def click_room(self, event) -> None:
-        if self.edit_enabled_var.get() and self.mode_var.get() != "trailing_hex":
-            self.paint_room(event)
-            return
         zoom = self.zoom_var.get()
         if self.mode_var.get() == "trailing_hex":
             cols = 19

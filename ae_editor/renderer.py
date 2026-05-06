@@ -114,7 +114,7 @@ class KnownExtraPickup:
 class RenderOptions:
     """Rendering options exposed by the cleaned-up viewer."""
 
-    mode: str = "game"  # game, collision, payload_debug, codes_hex, trailing_hex
+    mode: str = "game"  # game, payload_debug, codes_hex, trailing_hex
     zoom: int = 3
     grid: bool = False
     part_index: int = 0  # 0 = Explorer, 1 = Expert
@@ -188,8 +188,6 @@ class RoomRenderer:
                 self._draw_known_extra_pickups(image, room)
                 self._draw_actors(image, part, room, include_hidden=False)
                 self._draw_player_start(image, room, part.header)
-            elif options.mode == "collision":
-                self._draw_collision_debug(image, room)
             elif options.mode == "payload_debug":
                 self._draw_visual_objects(image, room, layer="background")
                 self._draw_conveyor_tiles(image, room)
@@ -536,16 +534,6 @@ class RoomRenderer:
         for triplet in parse_platform_triplets(room):
             x, y = platform_xy(triplet)
             draw.rectangle([x, y, x + 10, y + 10], outline=(255, 180, 0, 255), width=1)
-
-    def _draw_collision_debug(self, image: Image.Image, room: Room) -> None:
-        draw = ImageDraw.Draw(image)
-        for y in range(ROOM_ROWS):
-            for x in range(ROOM_COLUMNS):
-                if room.get(x, y) == self.SOLID_INVISIBLE_CODE:
-                    x0 = x * CELL_SIZE
-                    y0 = y * CELL_SIZE
-                    draw.rectangle([x0, y0, x0 + CELL_SIZE - 1, y0 + CELL_SIZE - 1], outline=(255, 0, 255, 180))
-                    draw.line([x0, y0, x0 + CELL_SIZE - 1, y0 + CELL_SIZE - 1], fill=(255, 0, 255, 120))
 
     def _render_codes(self, image: Image.Image, draw: ImageDraw.ImageDraw, room: Room) -> None:
         for y in range(ROOM_ROWS):

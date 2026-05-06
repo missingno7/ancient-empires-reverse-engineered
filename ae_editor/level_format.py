@@ -35,6 +35,14 @@ class Room:
     def set(self, x: int, y: int, value: int) -> None:
         self.tiles[y * ROOM_COLUMNS + x] = value & 0xFF
 
+    def set_trailing_bytes(self, offset: int, values: list[int]) -> None:
+        if offset < 0 or offset + len(values) > len(self.trailing):
+            raise ValueError(f"room trailing write out of range: offset={offset} len={len(values)}")
+        data = bytearray(self.trailing)
+        for i, value in enumerate(values):
+            data[offset + i] = value & 0xFF
+        self.trailing = bytes(data)
+
     @property
     def nonzero_tile_count(self) -> int:
         return sum(1 for value in self.tiles if value)
@@ -218,6 +226,8 @@ class Level:
             for room in part.rooms:
                 start = room.terrain_offset
                 data[start:start + ROOM_TILE_COUNT] = bytes(room.tiles)
+                tail_start = start + ROOM_TILE_COUNT
+                data[tail_start:tail_start + len(room.trailing)] = room.trailing
         return bytes(data)
 
 

@@ -93,12 +93,14 @@ format notes.
 - Terrain, background, ropes, conveyors, moving platforms, controls, puzzle
   markers, crystals, pickups, conditional exit doors, actors, player start and
   room exits.
-- Native Tk overlay labels and relationship lines, separate from the scaled
-  room bitmap.
+- Native Tk overlay labels, relationship lines and optional collision tile `07`
+  overlay, separate from the scaled room bitmap.
 - Overlay presets for minimal, logic and debug views.
-- Editor tab with tile atlas painting plus first header-object placement for
-  player start, exit door and artifact slots. The editor view has a toggleable
-  soft grid, object handles and brush sizes.
+- Editor tab with tile atlas painting, brush sizes, click-to-insert conveyor
+  belts, toggleable soft grid/collision overlays, and first header-object
+  placement for player start, exit door and artifact slots.
+- Select tool for header object and moving-platform handles, including
+  drag-to-move and Delete for editable slots.
 - Object atlas for recognized actors, pickups, controls, puzzle objects and
   movement objects.
 - Graphics-bank viewer and sheet exporter.

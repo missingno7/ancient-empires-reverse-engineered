@@ -9,9 +9,11 @@ labels for the currently understood gameplay objects.
 
 The editor is not yet a safe full level writer. Treat rendering and overlays as
 the canonical read path. MVP1 write-back edits the 38x18 room tile bytes plus
-the known header object slots for player start, exit door and artifacts. Changed
-level resources are stored back into `AE001.DAT` as plain uncompressed
-resources.
+the known header object slots for player start, exit door and artifacts. The
+Editor tab can also place conveyor belts as runs of terrain tiles `0x0F`/`0x1F`
+and move/delete the editable header object handles plus moving-platform
+triplets. Changed level resources are stored back into `AE001.DAT` as plain
+uncompressed resources.
 
 ## Start Here
 
@@ -54,7 +56,12 @@ Useful smoke rooms:
   records.
 - Buttons and floor switches come from length-prefixed control commands.
 - Conveyors are terrain special tiles `0x0F` and `0x1F`.
+- Moving platforms are the ten leading 3-byte room trailing payload triplets.
+  The editor can move/delete these slots, but it still preserves the existing
+  flag byte instead of inventing new path semantics.
 - Tile code `0x07` is invisible support/collision, not visible platform art.
+  It is shown through optional canvas overlays in both the viewer and Editor
+  tab rather than as a separate renderer mode.
 - The two level parts are Explorer and Expert difficulties.
 - The conditional exit door is stored in header bytes `0x05..0x07` and rendered
   from the current theme terrain bank sprite 0.
@@ -70,6 +77,8 @@ Useful smoke rooms:
 - Convert the current room model into an explicit editable data model.
 - Add guarded write-back for more object families before broader payload
   editing.
-- Extend editing beyond terrain only after the corresponding payload parser is
-  proven and round-trip tested.
+- Add actor/enemy placement and path editing once the actor table write-back is
+  covered by round-trip tests.
+- Extend editing to controls, compact3 objects and room exits only after the
+  corresponding payload parser is proven and round-trip tested.
 - Decode more actor script opcodes and connect movement/path overlays to them.

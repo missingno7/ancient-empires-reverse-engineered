@@ -208,5 +208,14 @@ header[0x05..0x07]  exit door
 header[0x08..0x19]  six artifact slots
 ```
 
-Payload editing is intentionally deferred until those structures have stronger
-round-trip coverage.
+The first payload write path covers only the leading moving-platform triplets:
+
+```text
+room trailing[slot * 3 + 0]  existing platform flags
+room trailing[slot * 3 + 1]  platform x raw
+room trailing[slot * 3 + 2]  platform y
+```
+
+The editor can move a platform by updating x/y, or delete it by clearing the
+three-byte slot. Other payload families are intentionally deferred until those
+structures have stronger round-trip coverage.
