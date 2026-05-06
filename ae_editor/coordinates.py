@@ -126,9 +126,9 @@ def control_xy(cmd: ControlCommand, *, mode: str = "button") -> tuple[int, int]:
         # Trigger pads were consistently a little too low in captured rooms.
         return x_raw * 2 - 8, y_raw - 18
     if mode == "ceiling_button":
-        return x_raw * 2 - 12, y_raw - 20
+        return x_raw * 2 - 12, y_raw - 14
     if mode == "floor_switch":
-        return x_raw * 2 - 12, y_raw - 12
+        return x_raw * 2 - 12, y_raw - 16
     return x_raw * 2 - 12, y_raw - 16
 
 
@@ -144,7 +144,7 @@ ACTOR_ORIGIN_BY_FRAME_MIN: dict[int, tuple[int, int]] = {
     0x2B: (12, 14),  # ladybug - slightly too low with the generic anchor
     0x32: (12, 12),  # scorpion shooter
     0x37: (12, 12),  # spider
-    0x3F: (12, 14),  # snake - slightly too low with the generic anchor
+    0x3F: (12, 20),  # snake
 }
 
 
@@ -168,3 +168,8 @@ def header_object_xy(x_raw: int, y_raw: int) -> tuple[int, int]:
     """Convert six-slot header object coordinates to sprite top-left coordinates."""
     # Collectibles sat a touch low compared with real screenshots.
     return x_raw * 2 - 8, y_raw - 16
+
+
+def header_exit_door_xy(x_raw: int, y_raw: int, sprite: Image.Image) -> tuple[int, int]:
+    """Convert the header exit-door anchor to sprite top-left coordinates."""
+    return x_raw * 2 - 12, y_raw - 16

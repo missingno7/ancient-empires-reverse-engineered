@@ -20,6 +20,7 @@ from .coordinates import (
     LASER_CRYSTAL_DELTA,
     actor_xy,
     compact3_xy,
+    header_exit_door_xy,
     control_xy,
     header_object_xy,
     platform_xy,
@@ -95,6 +96,7 @@ from .room_payload import (
     laser_crystal_table,
     room_tail_marker,
     header_object_candidates,
+    header_exit_door,
     header_player_start,
 )
 
@@ -182,6 +184,7 @@ class RoomRenderer:
                 self._draw_visual_objects(image, room, layer="foreground")
                 self._draw_record12_puzzle_panels(image, room)
                 self._draw_header_objects(image, room, part.header)
+                self._draw_exit_door(image, room, part.header, part.theme)
                 self._draw_known_extra_pickups(image, room)
                 self._draw_actors(image, part, room, include_hidden=False)
                 self._draw_player_start(image, room, part.header)
@@ -197,6 +200,7 @@ class RoomRenderer:
                 self._draw_visual_objects(image, room, layer="foreground")
                 self._draw_record12_puzzle_panels(image, room)
                 self._draw_header_objects(image, room, part.header)
+                self._draw_exit_door(image, room, part.header, part.theme)
                 self._draw_known_extra_pickups(image, room)
                 self._draw_actors(image, part, room, include_hidden=True)
                 self._draw_player_start(image, room, part.header)
@@ -471,6 +475,16 @@ class RoomRenderer:
                 continue
             x, y = header_object_xy(cand.x_raw, cand.y_raw)
             self._blit(image, diamond, x, y)
+
+    def _draw_exit_door(self, image: Image.Image, room: Room, header: bytes, theme: int) -> None:
+        door = header_exit_door(header)
+        if door is None or door.room_index != room.index:
+            return
+        sprite = self.graphics.sprite("AE001", 21 + theme, 0)
+        if sprite is None:
+            return
+        x, y = header_exit_door_xy(door.x_raw, door.y_raw, sprite)
+        self._blit(image, sprite, x, y)
 
     def _draw_known_extra_pickups(self, image: Image.Image, room: Room) -> None:
         key = (getattr(self, "_current_level_index", -1) + 1, room.part_index, room.index)

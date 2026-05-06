@@ -91,7 +91,8 @@ format notes.
 - Explorer/Expert difficulty browsing.
 - Pixel-art room preview at 1x through 4x zoom.
 - Terrain, background, ropes, conveyors, moving platforms, controls, puzzle
-  markers, crystals, pickups, actors, player start and room exits.
+  markers, crystals, pickups, conditional exit doors, actors, player start and
+  room exits.
 - Native Tk overlay labels and relationship lines, separate from the scaled
   room bitmap.
 - Overlay presets for minimal, logic and debug views.

@@ -39,6 +39,11 @@ two difficulty parts: Explorer and Expert. Each part has a 0x40-byte header,
 The room terrain grid is 38 by 18 cells. Rendering uses 8 px cells, producing a
 304 by 144 px static room viewport before zoom.
 
+Header bytes `0x05..0x07` store the conditional exit door that appears after
+all artifacts are collected. It uses sprite 0 from the current theme terrain
+bank (`AE001:021..024`) and the same doubled-x screen-space coordinate family
+as several payload objects.
+
 ## Partially Solved
 
 ### Terrain Mapping
@@ -85,6 +90,7 @@ segments when the current subset recognizes them.
 - Full trigger graph behavior.
 - Complete actor script instruction set.
 - Full collectible/item storage schema.
+- EXE-derived anchor/origin tables for all rendered object families.
 - Safe write-back rules for non-terrain payload edits.
 
 ## Suggested Continuation

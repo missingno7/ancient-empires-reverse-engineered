@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from .constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS
+from .constants import CELL_SIZE, ROOM_COLUMNS, ROOM_COUNT, ROOM_ROWS
 from .level_format import Room
 
 PAYLOAD_DIRECTORY_OFFSET = 0x1E
@@ -529,6 +529,37 @@ def header_object_candidates(header: bytes) -> list[HeaderRoomObjectCandidate]:
         if room_id:
             out.append(HeaderRoomObjectCandidate(i, room_id, x, y))
     return out
+
+
+@dataclass(frozen=True)
+class HeaderExitDoor:
+    """Conditional exit door shown after all artifacts are collected.
+
+    Header bytes 0x05..0x07 form a room-gated door slot:
+      * 0x05 = zero-based room index
+      * 0x06 = half-screen x anchor
+      * 0x07 = bottom y anchor
+
+    The artwork is theme-specific terrain-bank sprite 0, i.e.
+    AE001:(021 + theme):0.
+    """
+
+    room_index: int
+    x_raw: int
+    y_raw: int
+
+    @property
+    def label(self) -> str:
+        return f"exit_door room={self.room_index} x={self.x_raw:02X} y={self.y_raw:02X}"
+
+
+def header_exit_door(header: bytes) -> HeaderExitDoor | None:
+    if len(header) < 8:
+        return None
+    room_index, x_raw, y_raw = header[5], header[6], header[7]
+    if room_index >= ROOM_COUNT:
+        return None
+    return HeaderExitDoor(room_index, x_raw, y_raw)
 
 
 @dataclass(frozen=True)

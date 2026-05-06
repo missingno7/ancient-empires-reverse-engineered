@@ -15,7 +15,8 @@ data is proven.
 
 - `ae_editor/level_format.py` parses levels, difficulty parts and room records.
 - `ae_editor/room_payload.py` parses platform triplets, controls, compact3
-  tables, actor records, room links, header pickups and player start data.
+  tables, actor records, room links, header pickups, exit door and player start
+  data.
 - `ae_editor/renderer.py` is the static room renderer.
 - `ae_editor/overlay.py` builds editor overlay geometry and relationship lines.
 - `ae_editor/gui.py` wires the Tk UI, tabs, object atlas and overlay presets.
@@ -51,6 +52,8 @@ Useful smoke rooms:
 - Conveyors are terrain special tiles `0x0F` and `0x1F`.
 - Tile code `0x07` is invisible support/collision, not visible platform art.
 - The two level parts are Explorer and Expert difficulties.
+- The conditional exit door is stored in header bytes `0x05..0x07` and rendered
+  from the current theme terrain bank sprite 0.
 - Use the custom palette from `AEPROG.EXE`; standard VGA palettes do not match.
 - Type47 logical colour `0` is transparent for sprites.
 
@@ -58,6 +61,8 @@ Useful smoke rooms:
 
 - Add binary fixture tests around parser invariants.
 - Recover the full terrain/object lookup tables from `AEPROG.EXE`.
+- Recover EXE-derived sprite anchor/origin tables and replace remaining
+  screenshot-tuned offsets.
 - Convert the current room model into an explicit editable data model.
 - Add guarded write-back for terrain-only edits before broader payload editing.
 - Decode more actor script opcodes and connect movement/path overlays to them.

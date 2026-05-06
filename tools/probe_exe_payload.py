@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 
 from ae_editor.project import AncientEmpiresProject
-from ae_editor.room_payload import control_commands, parse_exe_payload_directory, parse_platform_triplets, visual_compact3_table, laser_crystal_table
+from ae_editor.room_payload import control_commands, header_exit_door, parse_exe_payload_directory, parse_platform_triplets, visual_compact3_table, laser_crystal_table
 
 
 def main() -> None:
@@ -19,9 +19,12 @@ def main() -> None:
 
     part_index = 1 if args.difficulty == "Expert" else 0
     project = AncientEmpiresProject(Path(args.exe), [Path(x) for x in args.dat])
-    room = project.levels[args.level - 1].part(part_index).room(args.room)
+    part = project.levels[args.level - 1].part(part_index)
+    room = part.room(args.room)
 
     print(f"level={args.level} difficulty={args.difficulty} room={args.room}")
+    door = header_exit_door(part.header)
+    print(f"exit door: {'<none>' if door is None else door.label}")
     print("platform/control triplets:")
     for p in parse_platform_triplets(room):
         print(f"  @{p.source_offset:02X} idx={p.index:02d} flags={p.flags:02X} orientation={p.orientation} x={p.x_raw:02X} y={p.y:02X} raw={p.raw.hex(' ')}")

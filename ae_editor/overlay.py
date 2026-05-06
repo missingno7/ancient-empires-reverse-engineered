@@ -12,6 +12,7 @@ from .room_payload import (
     actor_records_for_room,
     control_commands,
     header_object_candidates,
+    header_exit_door,
     laser_crystal_table,
     parse_exe_payload_directory,
     parse_platform_triplets,
@@ -71,6 +72,7 @@ class RoomOverlay:
     links: list[OverlayLine]
     actor_paths: list[OverlayLine]
     platform_paths: list[OverlayLine]
+    exit_doors: list[OverlayRect]
     exits: list[OverlayLine]
 
 
@@ -186,6 +188,7 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
     links: list[OverlayLine] = []
     actor_paths: list[OverlayLine] = []
     platform_paths: list[OverlayLine] = []
+    exit_doors: list[OverlayRect] = []
     exits: list[OverlayLine] = []
     actor_rects: list[tuple[ActorTableRecord, OverlayRect]] = []
 
@@ -382,6 +385,13 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
         x, y = header_object_xy(cand.x_raw, cand.y_raw)
         pickups.append(OverlayPoint("pickup", f"D{cand.index}", x + 8, y + 8, f"D{cand.index}", "#ff40ff"))
 
+    door = header_exit_door(part.header)
+    if door is not None and door.room_index == room.index:
+        width, height = 46, 33
+        x = door.x_raw * 2 - 12
+        y = door.y_raw - 16
+        exit_doors.append(OverlayRect("exit_door", "Exit", x, y, width, height, "Exit door", "#ffffff"))
+
     table = laser_crystal_table(room)
     if table:
         for entry in table.entries:
@@ -420,4 +430,4 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
                 )
             )
 
-    return RoomOverlay(platforms, conveyors, puzzle_blocks, puzzle_destinations, controls, actors, pickups, crystals, links, actor_paths, platform_paths, exits)
+    return RoomOverlay(platforms, conveyors, puzzle_blocks, puzzle_destinations, controls, actors, pickups, crystals, links, actor_paths, platform_paths, exit_doors, exits)

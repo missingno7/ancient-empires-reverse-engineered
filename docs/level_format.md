@@ -46,6 +46,11 @@ Known header fields:
 
 ```text
 header[2] & 0x03       theme index
+header[0x03]           player start x
+header[0x04]           player start y
+header[0x05]           conditional exit door room index, zero-based
+header[0x06]           conditional exit door x
+header[0x07]           conditional exit door y
 header[0x08..0x0D]     room-gated pickup room ids
 header[0x0E..0x13]     pickup x values
 header[0x14..0x19]     pickup y values
@@ -56,6 +61,24 @@ header[0x38..0x41]     down room links
 ```
 
 Room links are stored as one-based room ids. Zero means no link.
+
+The conditional exit door appears after all artifacts are collected. Its
+artwork is sprite 0 from the current theme terrain bank:
+
+```text
+theme 0 -> AE001:021:0
+theme 1 -> AE001:022:0
+theme 2 -> AE001:023:0
+theme 3 -> AE001:024:0
+```
+
+Door coordinates currently use the same screen-space family as several payload
+objects, but with an exit-specific origin:
+
+```text
+x = x_raw * 2 - 12
+y = y_raw - 16
+```
 
 ## Trailing Room Payload
 
@@ -159,6 +182,8 @@ The static renderer currently draws:
 8. puzzle markers and panels;
 9. laser crystals;
 10. foreground compact3 visuals;
-11. header pickups and known extra pickups;
-12. visible actor records;
-13. player start marker in room 0.
+11. header pickups;
+12. conditional exit door;
+13. known extra pickups;
+14. visible actor records;
+15. player start marker in room 0.

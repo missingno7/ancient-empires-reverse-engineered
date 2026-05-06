@@ -96,3 +96,7 @@ Current payload parsing starts at trailing offset `0x1E`, after the ten 3-byte
 platform records. It decodes length-prefixed control records, puzzle marker
 tables, record12 puzzle panels, laser crystal tables and the main compact3
 visual table.
+
+The part header also stores the conditional exit door in bytes `0x05..0x07`.
+The room byte is zero-based; x/y are a bottom-center screen-space anchor. The
+door uses sprite 0 from the current theme terrain bank (`AE001:021..024`).

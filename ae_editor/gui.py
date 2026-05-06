@@ -15,6 +15,7 @@ from .project import AncientEmpiresProject
 from .renderer import RenderOptions
 from .room_payload import (
     actor_records_for_room,
+    header_exit_door,
     header_object_candidates,
     laser_crystal_table,
     parse_exe_payload_directory,
@@ -316,16 +317,18 @@ class LevelEditorApp(tk.Tk):
         visual = visual_compact3_table(room)
         crystals = laser_crystal_table(room)
         actors = actor_records_for_room(part, room.index)
+        door = header_exit_door(part.header)
         links = transition_links_for_room(part, room.index)
         controls = 0 if directory is None else len(directory.control_records)
         visual_txt = "none" if visual is None else f"@{visual.offset:02X} n={visual.count}"
         crystal_txt = "none" if crystals is None else f"@{crystals.offset:02X} n={crystals.count}"
+        door_txt = "none" if door is None else f"room={door.room_index} x={door.x_raw:02X} y={door.y_raw:02X}"
         platforms = ", ".join(p.label for p in parse_platform_triplets(room)) or "none"
         self.status.set(
             f"level={level.index + 1} difficulty={DIFFICULTY_LABELS[part.index]} room={room.index} theme={part.theme} "
             f"room_quality={room.quality_label} terrain_off=0x{room.terrain_offset:04X} preamble={room.preamble.hex(' ')} "
             f"platforms=[{platforms}] controls={controls} actors={len(actors)} links={links.label if links else 'none'} "
-            f"crystals={crystal_txt} visual={visual_txt} "
+            f"exit_door={door_txt} crystals={crystal_txt} visual={visual_txt} "
             f"unique_tiles={unique} footer={part.footer.hex(' ')}"
         )
         if self.mode_var.get() == "codes_hex":
@@ -455,6 +458,8 @@ class LevelEditorApp(tk.Tk):
             draw_rects(overlay.puzzle_destinations)
         if self.show_actors_var.get():
             draw_rects(overlay.actors)
+        if self.show_exits_var.get():
+            draw_rects(overlay.exit_doors)
 
         control_points = [p for p in overlay.controls if p.kind == "control"]
         puzzle_points = [p for p in overlay.controls if p.kind.startswith("puzzle")]
@@ -541,6 +546,15 @@ class LevelEditorApp(tk.Tk):
                 [
                     ("Diamond / artifact", "AE000", 44, 0, "header room object"),
                     ("Apple", "AE000", 45, 0, "verified collectible, schema still WIP"),
+                ],
+            ),
+            (
+                "Exit",
+                [
+                    ("Exit door, theme 0", "AE001", 21, 0, "header exit door"),
+                    ("Exit door, theme 1", "AE001", 22, 0, "header exit door"),
+                    ("Exit door, theme 2", "AE001", 23, 0, "header exit door"),
+                    ("Exit door, theme 3", "AE001", 24, 0, "header exit door"),
                 ],
             ),
             (
@@ -633,6 +647,19 @@ class LevelEditorApp(tk.Tk):
                 pickups.append((f"D{cand.index} artifact", "AE000", 44, 0, f"x={cand.x_raw} y={cand.y_raw}"))
         if pickups:
             dynamic.append(("Current room: pickups", pickups))
+
+        door = header_exit_door(part.header)
+        if door is not None and door.room_index == room.index:
+            dynamic.append((
+                "Current room: exit",
+                [(
+                    "Exit door",
+                    "AE001",
+                    21 + part.theme,
+                    0,
+                    f"x={door.x_raw} y={door.y_raw}",
+                )],
+            ))
 
         return dynamic + static
 
