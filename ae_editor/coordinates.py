@@ -122,10 +122,6 @@ def control_xy(cmd: ControlCommand, *, mode: str = "button") -> tuple[int, int]:
     """
     x_raw = cmd.x_raw or 0
     y_raw = cmd.y_raw or 0
-    if mode == "actor":
-        # Kept for old debug overlays.  Normal enemy rendering now reads the
-        # actor table at part+0x2754 instead of command-2 control records.
-        return x_raw * 2 - 12, y_raw - 28
     if mode == "laser_trigger":
         # Trigger pads were consistently a little too low in captured rooms.
         return x_raw * 2 - 8, y_raw - 18

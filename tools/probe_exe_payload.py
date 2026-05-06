@@ -13,15 +13,15 @@ def main() -> None:
     ap.add_argument("dat", nargs="+", help="DAT files, usually AE000.DAT AE001.DAT")
     ap.add_argument("--exe", default="AEPROG.EXE")
     ap.add_argument("--level", type=int, required=True, help="1-based level number")
-    ap.add_argument("--page", choices=["A", "B", "0", "1", "Explorer", "Expert"], default="A")
+    ap.add_argument("--difficulty", choices=["Explorer", "Expert"], default="Explorer")
     ap.add_argument("--room", type=int, required=True, help="0-based room index")
     args = ap.parse_args()
 
-    page = 1 if args.page in {"B", "1", "Expert"} else 0
+    part_index = 1 if args.difficulty == "Expert" else 0
     project = AncientEmpiresProject(Path(args.exe), [Path(x) for x in args.dat])
-    room = project.levels[args.level - 1].part(page).room(args.room)
+    room = project.levels[args.level - 1].part(part_index).room(args.room)
 
-    print(f"level={args.level} difficulty={'Expert' if page else 'Explorer'} room={args.room}")
+    print(f"level={args.level} difficulty={args.difficulty} room={args.room}")
     print("platform/control triplets:")
     for p in parse_platform_triplets(room):
         print(f"  @{p.source_offset:02X} idx={p.index:02d} flags={p.flags:02X} orientation={p.orientation} x={p.x_raw:02X} y={p.y:02X} raw={p.raw.hex(' ')}")

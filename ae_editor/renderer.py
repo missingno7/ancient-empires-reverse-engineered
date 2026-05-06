@@ -412,7 +412,7 @@ class RoomRenderer:
                 entry,
                 level_index=getattr(self, "_current_level_index", None),
                 room_index=room.index,
-                page_index=room.page_index,
+                part_index=room.part_index,
             )
             if layer != "all" and entry_layer != layer:
                 continue
@@ -425,7 +425,7 @@ class RoomRenderer:
                 theme=getattr(self, "_current_theme", 0),
                 level_index=getattr(self, "_current_level_index", None),
                 room_index=room.index,
-                page_index=room.page_index,
+                part_index=room.part_index,
             )
             # Large statue/sarcophagus artwork sits a little lower than the
             # generic foreground decor anchor.
@@ -440,7 +440,7 @@ class RoomRenderer:
             theme=getattr(self, "_current_theme", 0),
             level_index=getattr(self, "_current_level_index", None),
             room_index=room.index,
-            page_index=room.page_index,
+            part_index=room.part_index,
         )
         sprite = self.graphics.sprite(ref.archive, ref.resource_id, ref.sprite_index)
         if sprite is not None and getattr(ref, "flip_h", False):
@@ -473,7 +473,7 @@ class RoomRenderer:
             self._blit(image, diamond, x, y)
 
     def _draw_known_extra_pickups(self, image: Image.Image, room: Room) -> None:
-        key = (getattr(self, "_current_level_index", -1) + 1, room.page_index, room.index)
+        key = (getattr(self, "_current_level_index", -1) + 1, room.part_index, room.index)
         for pickup in self.KNOWN_EXTRA_PICKUPS.get(key, []):
             sprite = self.graphics.sprite(pickup.archive, pickup.resource_id, pickup.sprite_index)
             if sprite is not None:

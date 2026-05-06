@@ -15,12 +15,11 @@ from __future__ import annotations
 # Code 0x07 = invisible solid/support, not a visible platform sprite.
 # 0x80..0xC0 = rope-family special codes rendered from AE000 rope sprites.
 #
-# v23 correction: visual tile indexes are shifted for the main low codes.
 # Confirmed by comparing room screenshots against AE001:021 sprites:
 #   dec 2 should render as AE001:021:6, not AE001:021:5.
 #   dec 5 should render as AE001:021:9.
 # This implies the non-empty normal tile family is code + 4 for 1..6.
-TERRAIN_CODE_TO_SPRITE_V23: dict[int, int | None] = {
+TERRAIN_CODE_TO_SPRITE: dict[int, int | None] = {
     0x00: None,
     0x01: 5,
     0x02: 6,
@@ -29,15 +28,4 @@ TERRAIN_CODE_TO_SPRITE_V23: dict[int, int | None] = {
     0x05: 9,
     0x06: 10,
     # NOTE: 0x07 deliberately omitted/None in renderer logic.
-}
-
-# Historical mapping kept only for comparison in debugging/docs.
-TERRAIN_CODE_TO_SPRITE_V22: dict[int, int | None] = {
-    0x00: None,
-    0x01: 5,
-    0x02: 5,
-    0x03: 7,
-    0x04: 8,
-    0x05: 9,
-    0x06: 10,
 }

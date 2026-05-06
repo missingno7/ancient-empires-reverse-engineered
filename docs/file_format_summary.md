@@ -1,10 +1,9 @@
-# File format summary
+# File Format Summary
 
-## DAT archive
+## DAT Archives
 
-`AE000.DAT` and `AE001.DAT` are resource archives.
-
-Known layout:
+`AE000.DAT` and `AE001.DAT` are resource archives with a little-endian offset
+table:
 
 ```text
 uint32_le offsets[]
@@ -13,7 +12,8 @@ resource 1
 ...
 ```
 
-The first 32-bit value is the byte offset of the first resource. Because the offset table itself is made of 4-byte values, the number of offsets is:
+The first 32-bit value is the byte offset of the first resource, so the resource
+count is:
 
 ```text
 count = first_offset / 4
@@ -24,37 +24,32 @@ Each resource block starts with:
 ```text
 byte rtype
 byte flags
-byte compressed_or_plain_payload[]
+byte payload[]
 ```
 
-Compression flags:
+Compression flags are applied in this order:
 
 ```text
-flags & 0x02  -> LZW-like decompression first
-flags & 0x01  -> RLE decompression second
+flags & 0x02  -> LZW-like decompression
+flags & 0x01  -> RLE decompression
 ```
 
-So `flags == 3` means LZW-like, then RLE.
+## VGA Palette
 
-## VGA palette
+`AEPROG.EXE` contains the custom VGA 256-colour DAC palette. The editor resolves
+the loaded MZ image and extracts the palette used by the BIOS `INT 10h
+AX=1012h` call. DAC values are expanded from 6-bit channels to Pillow-compatible
+8-bit RGB triples.
 
-`AEPROG.EXE` contains a custom VGA 256-colour DAC palette. The known-good decoder finds it by interpreting the loaded MZ image:
+## Type 0x47 Images
 
-- the program loads the palette using BIOS `INT 10h AX=1012h`,
-- for VGA mode selector byte `0x05`, it passes `DS:011e`,
-- in this EXE the loaded-image offset resolves to `0xfb4e`.
+Type `0x47` image payloads store two logical 4-bit pixels per byte.
 
-The palette is stored as 256 RGB triples using 6-bit DAC values. The editor expands those to 8-bit Pillow palettes.
-
-## type 0x47 images
-
-The game image format stores two logical 4-bit pixels per byte.
-
-Important fields in the type47 payload:
+Important fields:
 
 ```text
-0x00..0x0f  EGA colour table
-0x10..0x1f  VGA colour table
+0x00..0x0F  EGA colour table
+0x10..0x1F  VGA colour table
 0x20        row_bytes
 0x21        height
 0x22..      packed image bytes, row_bytes * height
@@ -66,24 +61,38 @@ For VGA rendering:
 logical_pixel -> payload[0x10 + logical_pixel] -> 8-bit VGA palette index
 ```
 
-Logical colour `0` is treated as the transparent/blitter key for sprites.
+Logical colour `0` is treated as transparent for sprites.
 
-## Level resources
+## Level Resources
 
-Current best level layout for `AE001.DAT` resources `0..19`:
+`AE001.DAT` resources `0..19` are level/cavern resources. A decoded level
+resource has two difficulty parts:
+
+```text
+part 0 = Explorer
+part 1 = Expert
+```
+
+Each part:
 
 ```text
 0x40-byte header
-38 room records
-80-byte footer/trailing data
+13 room records * 1000 bytes
+4-byte footer
 ```
 
-Each room record currently parses as:
+Each room record:
 
 ```text
-38 * 18 = 684 bytes of tile codes
+0x000..0x001  preamble / room metadata
+0x002..0x2AD  38 * 18 terrain bytes
+0x2AE..0x3E7  trailing room payload
 ```
 
-This exactly matches the visible room grid described by screenshots: `38×18` cells. Rendering uses an 8px cell grid, giving a `304×144` room area. The game UI surrounds/crops/composes this in the full 320×200 screen.
+The visible room viewport is `38 * 18` cells. Rendering uses an 8 px cell grid,
+so the room bitmap is `304 * 144` px before zoom.
 
-Earlier hypotheses that the decoded level was a `136×64×3` grid or a `0x2AC + object slot` room record did not match screenshots reliably and are considered deprecated.
+Current payload parsing starts at trailing offset `0x1E`, after the ten 3-byte
+platform records. It decodes length-prefixed control records, puzzle marker
+tables, record12 puzzle panels, laser crystal tables and the main compact3
+visual table.

@@ -1,152 +1,96 @@
-# Reverse-engineering notes
+# Reverse-Engineering Notes
 
-## What is known with high confidence
+This file keeps the current research posture: what is known, what is partial,
+and where to continue. Historical false starts were removed from the main docs
+so the editor has one current model.
 
-### Archive/decompression
+## Known With High Confidence
 
-The `.DAT` files use a simple offset table. The decompression pipeline is working and shared by both the image decoder and the level editor.
+### Archives And Compression
 
-Resource flags are interpreted as:
+The DAT archive reader and decompression pipeline are shared by graphics and
+level loading. Resource flags are interpreted as:
 
 ```text
 0x02 = LZW-like stage
 0x01 = RLE stage
 ```
 
-The stages are applied in that order.
+The stages run in that order.
 
 ### Graphics
 
-The correct image decoder is the v9 VGA decoder:
+The editor decodes type `0x47` VGA images with the custom game palette from
+`AEPROG.EXE`. Logical colour `0` is treated as the transparent blitter key.
 
-- it reads the custom game palette from `AEPROG.EXE`,
-- it decodes type `0x47` images,
-- it uses the VGA colour substitution table, not just EGA RGBI,
-- it supports alpha by treating logical colour `0` as transparent.
+Graphics are source-qualified because gameplay sprites are split across both
+archives:
 
-This fixed the earlier blue/garbage sprite-background problem.
+- `AE001:021..024`: terrain banks for the four themes;
+- `AE001:025..028`: theme visual/decor banks;
+- `AE000`: actors, UI, ropes, switches, pickups, projectiles and platforms.
 
-### Room size
+### Level Structure
 
-A room is `38×18` cells. That matches real gameplay screenshots much better than earlier whole-map guesses.
+`AE001.DAT` resources `0..19` are the 20 caverns. Each level resource contains
+two difficulty parts: Explorer and Expert. Each part has a 0x40-byte header,
+13 fixed room records of 1000 bytes, and a 4-byte footer.
 
-The renderer uses an 8px grid:
+The room terrain grid is 38 by 18 cells. Rendering uses 8 px cells, producing a
+304 by 144 px static room viewport before zoom.
 
-```text
-38 * 8 = 304 px
-18 * 8 = 144 px
-```
+## Partially Solved
 
-This explains why terrain sprites can be around `18×17` but still form a grid: they are placed every 8 pixels and overlap.
+### Terrain Mapping
 
-### Level resource candidates
+The current terrain mapping lives in `ae_editor/tile_mapping.py`. It is a small,
+confirmed mapping from logical tile codes to sprite indexes in the active theme
+terrain bank. It is intentionally incomplete until the EXE lookup table is
+recovered.
 
-`AE001.DAT` resources `0..19` are level/cavern resources. They begin with magic-like byte `0x4D` and parse consistently into:
+Special terrain codes handled outside the direct mapping:
 
-```text
-0x40 + 38 * 684 + 80 bytes
-```
+- `0x07`: invisible support/collision;
+- `0x0F`, `0x1F`: conveyor belt tile runs;
+- `0x80..0xC0`: rope-family markers.
 
-The theme is currently read as:
+### Room Payload
 
-```text
-theme = header[2] & 3
-```
+The trailing payload begins with ten platform triplets. The EXE-style payload
+directory currently decodes:
 
-This matches the presence of four terrain banks at `AE001` resources `21..24`, but the exact game logic should still be verified in disassembly.
+- length-prefixed control records;
+- puzzle marker compact3 table;
+- record12 puzzle panel records;
+- laser crystal compact3 table;
+- main visual compact3 table.
 
-## What is partially solved
+Buttons, floor switches and laser triggers are control commands. Actors are not
+inferred from those commands; they come from the part actor table.
 
-### Terrain tile rendering
+### Actor Records
 
-The best visual match so far is the v11/v15 approach:
+The actor table starts at part offset `0x2754`. Records are 0x20 bytes. The
+editor maps the currently recognized frame ranges to actor names and renders
+visible actors in normal previews while keeping hidden/start-state actors
+available in debug overlays.
 
-```text
-full room byte -> terrain code -> sprite index in theme terrain bank
-```
+Actor script decoding is still partial. The overlay can show decoded movement
+segments when the current subset recognizes them.
 
-Current mapping lives in `ae_editor/constants.py`:
+## Still Unknown
 
-```python
-DEFAULT_TERRAIN_CODE_TO_SPRITE = {
-    0x00: None,
-    0x02: 5,
-    0x03: 7,
-    0x04: 8,
-    0x05: 9,
-    0x06: 10,
-}
-```
+- Complete terrain and theme visual lookup tables.
+- Exact semantics for every control-command argument.
+- Full trigger graph behavior.
+- Complete actor script instruction set.
+- Full collectible/item storage schema.
+- Safe write-back rules for non-terrain payload edits.
 
-This is not complete. It exists because it makes real rooms start to look like the screenshots: repeated wall blocks, solid blocks, platform lips and room borders.
+## Suggested Continuation
 
-A previous low-nibble/high-nibble split looked plausible but made `level_01_room_00` worse. It is therefore not the default.
-
-### Cropping / offscreen columns
-
-Screenshots suggest that some previews have two extra columns on the left relative to the visible game area. The UI has a `crop left 2 cols` toggle. This is intentionally a presentation option, not baked into the parser.
-
-## What is not solved yet
-
-### Actors and gameplay objects
-
-Objects are not yet correctly parsed.
-
-The following are likely **not** simply terrain bytes:
-
-- player start,
-- enemies,
-- diamond/artifact piece,
-- apples/energy pickups,
-- buttons,
-- moving platforms,
-- doors/passages/triggers,
-- foreground decorations and background-only decorations.
-
-Several failed hypotheses were tried:
-
-1. `10 × 3 byte` object slots immediately after room terrain.
-2. Scanning compact triples in the level header.
-3. Treating high nibble of each terrain byte as an object/decor layer.
-
-None matched screenshots well enough to keep as canonical.
-
-Recommended next step: use disassembly to find the routine that initializes the visible room and actor list when entering a chamber. Look for constants `0x2AC`, `38`, `18`, sprite-bank resource IDs `25..28`, or calls to the type47 blitter shortly after room load.
-
-### Exact tile lookup tables
-
-The game probably has lookup tables that map a tile code to a sprite index depending on theme and/or room state. The current editor uses a small hand-discovered mapping. A complete editor needs to recover the actual lookup tables from `AEPROG.EXE` or infer them from game-rendered screenshots.
-
-### Draw order
-
-Terrain draw order is currently row-major top-to-bottom. This is close but not exact in every screenshot. Some elements may be background, terrain, foreground overlay, or actor sprites with different draw passes.
-
-## Suggested continuation plan
-
-1. Find the EXE function that loads a room from a level resource.
-2. Identify where `38×18` bytes are copied/read.
-3. Trace the tile-code-to-sprite lookup.
-4. Trace the actor list initialization.
-5. Split renderer into confirmed passes:
-   - background,
-   - terrain/metatiles,
-   - decorations,
-   - actors/items,
-   - foreground/UI.
-6. Only after the read path is confirmed, add safe write-back.
-
-## v16 correction: room record stride
-
-The old `38 rooms × 684 bytes` interpretation is wrong. The decoded level resource is two `0x330c` parts. Each part contains 13 room records of 1000 bytes. The 38×18 terrain grid begins two bytes into each room record.
-
-Formula:
-
-```text
-part_base = 0 or 0x330c
-room_record = part_base + 0x40 + room_index * 1000
-terrain = room_record + 2
-terrain_length = 38 * 18 = 684
-unknown_room_payload = room_record + 2 + 684, length 314
-```
-
-This fixes the shift that made level 1 room 1 render as nonsense. The correct level 1 page A room 1 terrain offset is `0x042a`.
+1. Add tests for parser invariants using local game files or small fixtures.
+2. Trace the EXE tables for tile-code-to-sprite and compact3-code-to-sprite
+   lookup.
+3. Expand actor script decoding against rooms with obvious movement paths.
+4. Build a write model for terrain edits first, then gated payload edits.

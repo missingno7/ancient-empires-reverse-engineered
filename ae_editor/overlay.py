@@ -119,24 +119,6 @@ def _invisible_clusters(room: Room) -> list[tuple[int, int, int, int]]:
     return clusters
 
 
-def control_link_ids(cmd: ControlCommand, platform_ids: set[int]) -> list[int]:
-    """Return platform indices referenced by raw command metadata.
-
-    This intentionally stays conservative: it only exposes bytes that already
-    look like small platform ids instead of inventing semantic names.
-    """
-    values: list[int] = []
-    if cmd.arg_b is not None:
-        values.append(cmd.arg_b & 0x0F)
-    values.extend(cmd.extra)
-
-    out: list[int] = []
-    for value in values:
-        if value in platform_ids and value not in out:
-            out.append(value)
-    return out
-
-
 def control_ref_values(cmd: ControlCommand) -> list[int]:
     values: list[int] = []
     if cmd.arg_b is not None:

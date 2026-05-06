@@ -21,11 +21,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from .constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS, ROOM_SCREEN_HEIGHT_PX, ROOM_SCREEN_WIDTH_PX
+from .constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS
 from .level_format import Room
 
-ROOM_WIDTH_PX = ROOM_SCREEN_WIDTH_PX
-ROOM_HEIGHT_PX = ROOM_SCREEN_HEIGHT_PX
 PAYLOAD_DIRECTORY_OFFSET = 0x1E
 PLATFORM_TRIPLET_COUNT = 10
 PLATFORM_TRIPLET_SIZE = 3

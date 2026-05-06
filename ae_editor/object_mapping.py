@@ -27,7 +27,14 @@ class SpriteRef:
     flip_h: bool = False
 
 
-def visual_sprite_ref(entry: ObjectTableEntry, *, theme: int, level_index: int | None = None, room_index: int | None = None, page_index: int | None = None) -> SpriteRef:
+def visual_sprite_ref(
+    entry: ObjectTableEntry,
+    *,
+    theme: int,
+    level_index: int | None = None,
+    room_index: int | None = None,
+    part_index: int | None = None,
+) -> SpriteRef:
     code = entry.code
 
     # Confirmed global/gameplay objects from screenshots and asset browsing.
@@ -50,7 +57,13 @@ def visual_sprite_ref(entry: ObjectTableEntry, *, theme: int, level_index: int |
     return SpriteRef("AE001", 25 + theme, code & 0x3F, "theme visual", flip_h=bool(code & 0x40))
 
 
-def visual_render_layer(entry: ObjectTableEntry, *, level_index: int | None = None, room_index: int | None = None, page_index: int | None = None) -> RenderLayer:
+def visual_render_layer(
+    entry: ObjectTableEntry,
+    *,
+    level_index: int | None = None,
+    room_index: int | None = None,
+    part_index: int | None = None,
+) -> RenderLayer:
     """Return the EXE-style render pass for a visual compact3 entry.
 
     The generic rule is code>=0x80 before terrain, code<0x80 after terrain.

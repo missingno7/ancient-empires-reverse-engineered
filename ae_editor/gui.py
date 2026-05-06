@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
 import tkinter.font as tkfont
@@ -14,6 +15,7 @@ from .project import AncientEmpiresProject
 from .renderer import RenderOptions
 from .room_payload import (
     actor_records_for_room,
+    header_object_candidates,
     laser_crystal_table,
     parse_exe_payload_directory,
     parse_platform_triplets,
@@ -24,11 +26,41 @@ from .room_payload import (
 DIFFICULTY_LABELS = ["Explorer", "Expert"]
 
 
+@dataclass(frozen=True)
+class OverlayOptionSpec:
+    label: str
+    var_name: str
+    default: bool
+    minimal: bool
+    logic: bool
+    debug: bool
+
+
+OVERLAY_OPTION_SPECS = (
+    OverlayOptionSpec("Platforms", "show_platforms_var", True, True, True, True),
+    OverlayOptionSpec("Platform paths", "show_platform_paths_var", False, False, True, True),
+    OverlayOptionSpec("Conveyors", "show_conveyors_var", False, False, True, True),
+    OverlayOptionSpec("Controls", "show_controls_var", True, True, True, True),
+    OverlayOptionSpec("Trigger links", "show_trigger_links_var", False, False, True, True),
+    OverlayOptionSpec("Puzzle markers", "show_puzzle_markers_var", True, True, True, True),
+    OverlayOptionSpec("Puzzle blocks", "show_puzzle_blocks_var", True, True, True, True),
+    OverlayOptionSpec("Puzzle dest", "show_puzzle_destinations_var", False, False, True, True),
+    OverlayOptionSpec("Puzzle links", "show_puzzle_links_var", False, False, True, True),
+    OverlayOptionSpec("Puzzle moves", "show_puzzle_move_links_var", True, True, True, True),
+    OverlayOptionSpec("Actors", "show_actors_var", True, True, True, True),
+    OverlayOptionSpec("Actor paths", "show_actor_paths_var", False, False, True, True),
+    OverlayOptionSpec("Projectile links", "show_projectile_links_var", True, False, True, True),
+    OverlayOptionSpec("Pickups", "show_pickups_var", True, True, True, True),
+    OverlayOptionSpec("Crystals", "show_crystals_var", True, True, True, True),
+    OverlayOptionSpec("Exits", "show_exits_var", False, False, False, True),
+)
+
+
 class LevelEditorApp(tk.Tk):
     def __init__(self, project: AncientEmpiresProject):
         super().__init__()
         self.project = project
-        self.title("Ancient Empires Level Editor - v43 tabs + overlay presets fix")
+        self.title("Ancient Empires Level Editor")
         self.geometry("1220x840")
 
         self.level_var = tk.IntVar(value=0)
@@ -42,23 +74,8 @@ class LevelEditorApp(tk.Tk):
         self.overlay_links_var = tk.BooleanVar(value=True)
         self.overlay_hidden_var = tk.BooleanVar(value=False)
 
-        # Fine-grained overlay visibility toggles.
-        self.show_platforms_var = tk.BooleanVar(value=True)
-        self.show_platform_paths_var = tk.BooleanVar(value=False)
-        self.show_conveyors_var = tk.BooleanVar(value=False)
-        self.show_controls_var = tk.BooleanVar(value=True)
-        self.show_trigger_links_var = tk.BooleanVar(value=False)
-        self.show_puzzle_markers_var = tk.BooleanVar(value=True)
-        self.show_puzzle_blocks_var = tk.BooleanVar(value=True)
-        self.show_puzzle_destinations_var = tk.BooleanVar(value=False)
-        self.show_puzzle_links_var = tk.BooleanVar(value=False)
-        self.show_puzzle_move_links_var = tk.BooleanVar(value=True)
-        self.show_actors_var = tk.BooleanVar(value=True)
-        self.show_actor_paths_var = tk.BooleanVar(value=False)
-        self.show_projectile_links_var = tk.BooleanVar(value=True)
-        self.show_pickups_var = tk.BooleanVar(value=True)
-        self.show_crystals_var = tk.BooleanVar(value=True)
-        self.show_exits_var = tk.BooleanVar(value=False)
+        for spec in OVERLAY_OPTION_SPECS:
+            setattr(self, spec.var_name, tk.BooleanVar(value=spec.default))
         first_bank = next(iter(project.graphics.banks.keys()), "AE001:021")
         self.bank_var = tk.StringVar(value=first_bank)
         self.status = tk.StringVar(value="")
@@ -161,28 +178,15 @@ class LevelEditorApp(tk.Tk):
         groups = ttk.Frame(overlay_frame)
         groups.pack(fill=tk.X, padx=6, pady=(0, 6))
 
-        object_specs = [
-            ("Platforms", self.show_platforms_var),
-            ("Platform paths", self.show_platform_paths_var),
-            ("Conveyors", self.show_conveyors_var),
-            ("Controls", self.show_controls_var),
-            ("Trigger links", self.show_trigger_links_var),
-            ("Puzzle markers", self.show_puzzle_markers_var),
-            ("Puzzle blocks", self.show_puzzle_blocks_var),
-            ("Puzzle dest", self.show_puzzle_destinations_var),
-            ("Puzzle links", self.show_puzzle_links_var),
-            ("Puzzle moves", self.show_puzzle_move_links_var),
-            ("Actors", self.show_actors_var),
-            ("Actor paths", self.show_actor_paths_var),
-            ("Projectile links", self.show_projectile_links_var),
-            ("Pickups", self.show_pickups_var),
-            ("Crystals", self.show_crystals_var),
-            ("Exits", self.show_exits_var),
-        ]
-        for idx, (label, var) in enumerate(object_specs):
+        for idx, spec in enumerate(OVERLAY_OPTION_SPECS):
             row = idx // 2
             col = idx % 2
-            ttk.Checkbutton(groups, text=label, variable=var, command=self.redraw_room).grid(row=row, column=col, sticky="w", padx=(0, 12), pady=1)
+            ttk.Checkbutton(
+                groups,
+                text=spec.label,
+                variable=getattr(self, spec.var_name),
+                command=self.redraw_room,
+            ).grid(row=row, column=col, sticky="w", padx=(0, 12), pady=1)
 
         ttk.Label(
             right,
@@ -249,67 +253,10 @@ class LevelEditorApp(tk.Tk):
         self.bank_canvas.bind("<Shift-MouseWheel>", lambda event: self.bank_canvas.xview_scroll(int(-1 * (event.delta / 120)), "units"))
 
     def apply_overlay_preset(self, preset: str) -> None:
-        minimal = [
-            (self.show_platforms_var, True),
-            (self.show_platform_paths_var, False),
-            (self.show_conveyors_var, False),
-            (self.show_controls_var, True),
-            (self.show_trigger_links_var, False),
-            (self.show_puzzle_markers_var, True),
-            (self.show_puzzle_blocks_var, True),
-            (self.show_puzzle_destinations_var, False),
-            (self.show_puzzle_links_var, False),
-            (self.show_puzzle_move_links_var, True),
-            (self.show_actors_var, True),
-            (self.show_actor_paths_var, False),
-            (self.show_projectile_links_var, False),
-            (self.show_pickups_var, True),
-            (self.show_crystals_var, True),
-            (self.show_exits_var, False),
-        ]
-        logic = [
-            (self.show_platforms_var, True),
-            (self.show_platform_paths_var, True),
-            (self.show_conveyors_var, True),
-            (self.show_controls_var, True),
-            (self.show_trigger_links_var, True),
-            (self.show_puzzle_markers_var, True),
-            (self.show_puzzle_blocks_var, True),
-            (self.show_puzzle_destinations_var, True),
-            (self.show_puzzle_links_var, True),
-            (self.show_puzzle_move_links_var, True),
-            (self.show_actors_var, True),
-            (self.show_actor_paths_var, True),
-            (self.show_projectile_links_var, True),
-            (self.show_pickups_var, True),
-            (self.show_crystals_var, True),
-            (self.show_exits_var, False),
-        ]
-        debug = [
-            (self.show_platforms_var, True),
-            (self.show_platform_paths_var, True),
-            (self.show_conveyors_var, True),
-            (self.show_controls_var, True),
-            (self.show_trigger_links_var, True),
-            (self.show_puzzle_markers_var, True),
-            (self.show_puzzle_blocks_var, True),
-            (self.show_puzzle_destinations_var, True),
-            (self.show_puzzle_links_var, True),
-            (self.show_puzzle_move_links_var, True),
-            (self.show_actors_var, True),
-            (self.show_actor_paths_var, True),
-            (self.show_projectile_links_var, True),
-            (self.show_pickups_var, True),
-            (self.show_crystals_var, True),
-            (self.show_exits_var, True),
-        ]
-        presets = {
-            "minimal": minimal,
-            "logic": logic,
-            "debug": debug,
-        }
-        for var, value in presets.get(preset, []):
-            var.set(value)
+        if preset not in {"minimal", "logic", "debug"}:
+            return
+        for spec in OVERLAY_OPTION_SPECS:
+            getattr(self, spec.var_name).set(getattr(spec, preset))
         self.redraw_room()
 
     def room_labels(self) -> list[str]:
@@ -646,43 +593,46 @@ class LevelEditorApp(tk.Tk):
         ]
 
         dynamic = []
-        try:
-            level = self.current_level()
-            part = level.part(self.part_var.get())
-            room = part.room(self.room_var.get())
-            actors = []
-            for actor in actor_records_for_room(part, room.index):
-                if actor.hidden and not self.overlay_hidden_var.get():
+        level = self.current_level()
+        part = level.part(self.part_var.get())
+        room = part.room(self.room_var.get())
+        actors = []
+        for actor in actor_records_for_room(part, room.index):
+            if actor.hidden and not self.overlay_hidden_var.get():
+                continue
+            actors.append((
+                f"A{actor.index} {actor.confirmed_name or 'actor'}",
+                "AE000",
+                self._actor_resource_id(actor.frame),
+                self._actor_sprite_index(actor.frame),
+                f"frame={actor.frame:02X} type={actor.actor_type} hidden={actor.hidden}",
+            ))
+        if actors:
+            dynamic.append(("Current room: actors", actors))
+
+        controls = []
+        directory = parse_exe_payload_directory(room)
+        if directory:
+            for cmd in directory.control_records:
+                body = cmd.body
+                if not body:
                     continue
-                actors.append((f"A{actor.index} {actor.confirmed_name or 'actor'}", "AE000", self._actor_resource_id(actor.frame), self._actor_sprite_index(actor.frame), f"frame={actor.frame:02X} type={actor.actor_type} hidden={actor.hidden}"))
-            if actors:
-                dynamic.append(("Current room: actors", actors))
+                command = body[0]
+                if command == 0:
+                    controls.append((f"B{cmd.index} ceiling", "AE000", 39, 0, f"@{cmd.source_offset:02X}"))
+                elif command == 1:
+                    controls.append((f"S{cmd.index} floor", "AE000", 40, 0, f"@{cmd.source_offset:02X}"))
+                elif command == 2:
+                    controls.append((f"J{cmd.index} light", "AE000", 41, 0, f"@{cmd.source_offset:02X}"))
+            if controls:
+                dynamic.append(("Current room: controls", controls))
 
-            controls = []
-            directory = parse_exe_payload_directory(room)
-            if directory:
-                for cmd in directory.control_records:
-                    body = cmd.body
-                    if not body:
-                        continue
-                    command = body[0]
-                    if command == 0:
-                        controls.append((f"B{cmd.index} ceiling", "AE000", 39, 0, f"@{cmd.source_offset:02X}"))
-                    elif command == 1:
-                        controls.append((f"S{cmd.index} floor", "AE000", 40, 0, f"@{cmd.source_offset:02X}"))
-                    elif command == 2:
-                        controls.append((f"J{cmd.index} light", "AE000", 41, 0, f"@{cmd.source_offset:02X}"))
-                if controls:
-                    dynamic.append(("Current room: controls", controls))
-
-            pickups = []
-            for cand in header_object_candidates(part.header):
-                if cand.room_plus_one == room.index + 1:
-                    pickups.append((f"D{cand.index} artifact", "AE000", 44, 0, f"x={cand.x_raw} y={cand.y_raw}"))
-            if pickups:
-                dynamic.append(("Current room: pickups", pickups))
-        except Exception:
-            pass
+        pickups = []
+        for cand in header_object_candidates(part.header):
+            if cand.room_plus_one == room.index + 1:
+                pickups.append((f"D{cand.index} artifact", "AE000", 44, 0, f"x={cand.x_raw} y={cand.y_raw}"))
+        if pickups:
+            dynamic.append(("Current room: pickups", pickups))
 
         return dynamic + static
 

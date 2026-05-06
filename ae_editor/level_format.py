@@ -21,7 +21,7 @@ from .dat_archive import DatArchive
 class Room:
     """One 38x18 visible room terrain grid plus unknown per-room data."""
 
-    page_index: int
+    part_index: int
     index: int
     record_offset: int
     terrain_offset: int
@@ -81,10 +81,8 @@ class LevelPart:
             +0x2ae..0x3e7: unknown room payload, likely actors/triggers/decor
         4 byte footer, usually zero
 
-    The two parts are now exposed as Explorer / Expert. They are not animation
-    pages; they are the two difficulty variants stored inside the same level
-    resource. Some rooms are shared/similar, while later caverns can diverge
-    substantially between difficulties.
+    The two parts are exposed as Explorer / Expert difficulty variants. Some
+    rooms are shared/similar, while later caverns can diverge substantially.
     """
 
     index: int
@@ -142,7 +140,7 @@ class Level:
             terrain = record[ROOM_TERRAIN_OFFSET:ROOM_TERRAIN_OFFSET + ROOM_TILE_COUNT]
             rooms.append(
                 Room(
-                    page_index=part_index,
+                    part_index=part_index,
                     index=room_index,
                     record_offset=base + record_start,
                     terrain_offset=base + terrain_start,

@@ -8,8 +8,6 @@ from PIL import Image, ImageDraw
 from .palette import dac6_to_pillow_palette, find_vga_palette_dac6
 from .type47 import decode_type47, iter_type47
 from .constants import (
-    SPRITE_BANK_SCAN_END,
-    SPRITE_BANK_SCAN_START,
     TERRAIN_BANK_COUNT,
     TERRAIN_BANK_RESOURCE_START,
 )
@@ -32,10 +30,9 @@ class GraphicsSet:
     palette embedded in AEPROG.EXE. Logical colour 0 is used as a transparent key
     for sprites.
 
-    v17 change: graphics are loaded from both AE001.DAT and AE000.DAT.  Earlier
-    builds only showed AE001:21..28, which are terrain/decor banks.  Many actor,
-    UI and gameplay sprites live in AE000 lower-numbered resources, so the bank
-    browser now uses source-qualified bank ids such as "AE000:020".
+    Graphics are loaded from both AE001.DAT and AE000.DAT. Terrain/decor banks
+    live in AE001, while many actor, UI and gameplay sprites live in AE000. The
+    bank browser therefore uses source-qualified ids such as "AE000:020".
     """
 
     def __init__(self, ae001: DatArchive, exe_path: Path | str, ae000: DatArchive | None = None):
@@ -78,7 +75,7 @@ class GraphicsSet:
         for bitmap in iter_type47(res.decoded, res.rtype):
             try:
                 decoded = decode_type47(bitmap.payload, "vga", self.vga_palette, transparent=True)
-            except Exception:
+            except ValueError:
                 continue
             rgba = decoded.image.convert("RGBA")
             images.append(rgba)

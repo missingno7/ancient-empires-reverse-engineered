@@ -44,7 +44,7 @@ class DatArchive:
             try:
                 rtype, flags, decoded = decode_resource_block(raw)
                 resources.append(Resource(index, rtype, flags, decoded, raw))
-            except Exception as exc:  # keep archive browsable even if one entry fails
+            except ValueError as exc:  # keep archive browsable even if one entry fails
                 resources.append(Resource(index, -1, -1, b"", raw, repr(exc)))
         return resources
 

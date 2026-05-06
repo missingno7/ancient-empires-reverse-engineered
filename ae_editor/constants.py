@@ -3,7 +3,7 @@
 LEVEL_COUNT = 20
 LEVEL_MAGIC = 0x4D
 
-# New best-known level layout (v16): each AE001 level resource is two halves.
+# Current level layout: each AE001 level resource has two difficulty parts.
 # Each half starts with a 0x40-byte header, then 13 fixed-size room records,
 # then a 4-byte footer. A room record is 1000 bytes. Its first two bytes are
 # per-room metadata/unknown flags; the visible terrain grid starts at +2.
@@ -25,15 +25,7 @@ CELL_SIZE = 8
 ROOM_SCREEN_WIDTH_PX = ROOM_COLUMNS * CELL_SIZE
 ROOM_SCREEN_HEIGHT_PX = ROOM_ROWS * CELL_SIZE
 
-# Kept for compatibility in docs/tools.
-LEVEL_HEADER_SIZE = LEVEL_PART_HEADER_SIZE
-
-# Terrain mapping lives in ae_editor.tile_mapping now.  It used to be embedded
-# here, which made it too easy to hide renderer hacks that were actually mapping
-# mistakes.  Keep the import for backward compatibility with older modules.
-from .tile_mapping import TERRAIN_CODE_TO_SPRITE_V23 as DEFAULT_TERRAIN_CODE_TO_SPRITE
+from .tile_mapping import TERRAIN_CODE_TO_SPRITE as DEFAULT_TERRAIN_CODE_TO_SPRITE
 
 TERRAIN_BANK_RESOURCE_START = 21
 TERRAIN_BANK_COUNT = 4
-SPRITE_BANK_SCAN_START = 20
-SPRITE_BANK_SCAN_END = 60
