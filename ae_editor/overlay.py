@@ -6,6 +6,7 @@ from .coordinates import actor_origin, actor_xy, control_xy, header_object_xy, p
 from .constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS, ROOM_SCREEN_HEIGHT_PX as ROOM_HEIGHT_PX, ROOM_SCREEN_WIDTH_PX as ROOM_WIDTH_PX
 from .level_format import Room
 from .actor_scripts import actor_script_bytes, decode_actor_script
+from .conveyors import iter_conveyor_runs
 from .room_payload import (
     ActorTableRecord,
     ControlCommand,
@@ -16,6 +17,7 @@ from .room_payload import (
     laser_crystal_table,
     parse_exe_payload_directory,
     parse_platform_triplets,
+    parse_conveyor_visual_records,
     transition_links_for_room,
 )
 
@@ -85,19 +87,9 @@ PLATFORM_SIZE = {
 
 def _conveyor_runs(room: Room) -> list[tuple[int, int, int, int]]:
     runs: list[tuple[int, int, int, int]] = []
-    for y in range(ROOM_ROWS):
-        x = 0
-        while x < ROOM_COLUMNS:
-            code = room.get(x, y)
-            if code not in {0x0F, 0x1F}:
-                x += 1
-                continue
-            start = x
-            while x < ROOM_COLUMNS and room.get(x, y) == code:
-                x += 1
-            runs.append((len(runs), start * CELL_SIZE - 4, y * CELL_SIZE - 6, max(8, (x - start + 1) * CELL_SIZE)))
+    for cv in parse_conveyor_visual_records(room):
+        runs.append((cv.index, cv.x_raw * 2 - 8, cv.y - 18, max(8, (cv.length + 1) * CELL_SIZE)))
     return runs
-
 
 def _invisible_clusters(room: Room) -> list[tuple[int, int, int, int]]:
     cells = {(x, y) for y in range(ROOM_ROWS) for x in range(ROOM_COLUMNS) if room.get(x, y) == 0x07}
@@ -122,10 +114,22 @@ def _invisible_clusters(room: Room) -> list[tuple[int, int, int, int]]:
 
 
 def control_ref_values(cmd: ControlCommand) -> list[int]:
+    """Return platform/CV target slot ids referenced by a control command.
+
+    In confirmed rooms such as L01 R03 Explorer the command body is:
+
+        cmd, x, y, state/subtype, target0, target1, ...
+
+    The byte after y is therefore not a platform id.  It is commonly 00 and
+    changing it can make the object appear to break.  Every following byte is a
+    target slot id (P0/P1/P2/CV0/...) and one button may reference multiple
+    targets.  Keep only small slot ids here; larger values are preserved in raw
+    data but are not drawn as trigger links yet.
+    """
     values: list[int] = []
-    if cmd.arg_b is not None:
-        values.append(cmd.arg_b & 0x0F)
-    values.extend(value for value in cmd.extra if value < 0x10)
+    body = cmd.body
+    if len(body) >= 5:
+        values.extend(value for value in body[4:] if value < 0x10)
     out: list[int] = []
     for value in values:
         if value not in out:
@@ -200,6 +204,8 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
         conveyor_by_index[cid] = rect
 
     for platform in parse_platform_triplets(room):
+        if not platform.visible:
+            continue
         x, y = platform_xy(platform)
         width, height = PLATFORM_SIZE[platform.orientation]
         rect = OverlayRect(

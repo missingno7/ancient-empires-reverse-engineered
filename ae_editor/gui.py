@@ -10,18 +10,28 @@ from PIL import Image, ImageTk
 
 from .constants import CELL_SIZE, ROOM_COUNT, ROOM_COLUMNS, ROOM_ROWS
 from .exporters import export_bank_sheets, export_probe_csv, export_room_previews
-from .overlay import build_room_overlay
+from .overlay import build_room_overlay, control_ref_values
+from .coordinates import control_xy, actor_xy
+from .conveyors import iter_conveyor_runs
 from .project import AncientEmpiresProject
 from .renderer import RenderOptions
 from .room_payload import (
     actor_records_for_room,
+    control_commands,
     header_exit_door,
     header_object_candidates,
     header_player_start,
     laser_crystal_table,
     PLATFORM_TRIPLET_SIZE,
+    clear_runtime_triplet_slot,
     parse_exe_payload_directory,
     parse_platform_triplets,
+    parse_conveyor_visual_records,
+    add_conveyor_visual_record,
+    set_conveyor_visual_record,
+    set_control_command_body,
+    delete_conveyor_visual_record,
+    cv_geometry_to_raw,
     transition_links_for_room,
     visual_compact3_table,
 )
@@ -97,6 +107,18 @@ class LevelEditorApp(tk.Tk):
         self.belt_length_var = tk.IntVar(value=4)
         self.brush_size_var = tk.IntVar(value=1)
         self.editor_info = tk.StringVar(value="")
+        self.property_title_var = tk.StringVar(value="No object selected")
+        self.property_x_var = tk.StringVar(value="")
+        self.property_y_var = tk.StringVar(value="")
+        self.property_len_var = tk.StringVar(value="")
+        self.property_code_var = tk.StringVar(value="")
+        self.property_props_var = tk.StringVar(value="")
+        self.property_label_x_var = tk.StringVar(value="x")
+        self.property_label_y_var = tk.StringVar(value="y")
+        self.property_label_len_var = tk.StringVar(value="len")
+        self.property_label_code_var = tk.StringVar(value="code")
+        self.property_label_props_var = tk.StringVar(value="props")
+        self.property_note_var = tk.StringVar(value="")
         self.editor_selected_ref: tuple[str, int | None] | None = None
         self.editor_drag_offset: tuple[int, int] | None = None
 
@@ -310,34 +332,48 @@ class LevelEditorApp(tk.Tk):
 
         tools_row = ttk.Frame(right)
         tools_row.pack(fill=tk.X, padx=6, pady=(6, 2))
-        ttk.Radiobutton(tools_row, text="Select", variable=self.editor_tool_var, value="select", command=self.redraw_editor_room).pack(side=tk.LEFT)
-        ttk.Radiobutton(tools_row, text="Tiles", variable=self.editor_tool_var, value="terrain", command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Radiobutton(tools_row, text="Belts", variable=self.editor_tool_var, value="belt", command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Radiobutton(tools_row, text="Objects", variable=self.editor_tool_var, value="object", command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(tools_row, text="Tool").pack(side=tk.LEFT)
+        ttk.Label(tools_row, textvariable=self.editor_tool_var).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(tools_row, text="Delete selected", command=self.delete_selected_editor_object).pack(side=tk.RIGHT)
 
         view_row = ttk.Frame(right)
         view_row.pack(fill=tk.X, padx=6, pady=(0, 6))
-        ttk.Checkbutton(view_row, text="Grid", variable=self.editor_grid_var, command=self.redraw_editor_room).pack(side=tk.LEFT)
+        ttk.Checkbutton(view_row, text="Grid", variable=self.editor_grid_var, command=self.on_editor_tool_changed).pack(side=tk.LEFT)
         ttk.Checkbutton(view_row, text="Overlay", variable=self.editor_overlay_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Checkbutton(view_row, text="Collision", variable=self.editor_collision_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(8, 0))
 
-        ttk.Label(right, text="Tile").pack(anchor="w", padx=6)
-        tile_row = ttk.Frame(right)
+        self.tool_settings_tabs = ttk.Notebook(right)
+        self.tool_settings_tabs.pack(fill=tk.X, padx=6, pady=(0, 6))
+
+        self.select_tool_tab = ttk.Frame(self.tool_settings_tabs)
+        self.terrain_tool_tab = ttk.Frame(self.tool_settings_tabs)
+        self.belt_tool_tab = ttk.Frame(self.tool_settings_tabs)
+        self.object_tool_tab = ttk.Frame(self.tool_settings_tabs)
+        self.tool_settings_tabs.add(self.select_tool_tab, text="Select")
+        self.tool_settings_tabs.add(self.terrain_tool_tab, text="Tiles")
+        self.tool_settings_tabs.add(self.belt_tool_tab, text="Belts")
+        self.tool_settings_tabs.add(self.object_tool_tab, text="Objects")
+        self.tool_settings_tabs.bind("<<NotebookTabChanged>>", self.on_tool_tab_changed)
+
+        ttk.Label(self.select_tool_tab, text="Click an object handle in the room. Drag to move it. Delete removes the selected object.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=6)
+        ttk.Label(self.select_tool_tab, textvariable=self.editor_info, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
+
+        ttk.Label(self.terrain_tool_tab, text="Tile brush").pack(anchor="w", padx=6, pady=(6, 0))
+        tile_row = ttk.Frame(self.terrain_tool_tab)
         tile_row.pack(fill=tk.X, padx=6, pady=(0, 6))
         ttk.Entry(tile_row, textvariable=self.tile_value_var, width=6).pack(side=tk.LEFT)
         ttk.Button(tile_row, text="00", width=3, command=lambda: self.select_tile_code(0x00)).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Button(tile_row, text="07", width=3, command=lambda: self.select_tile_code(COLLISION_TILE_CODE)).pack(side=tk.LEFT, padx=(2, 0))
         ttk.Button(tile_row, text="0F", width=3, command=lambda: self.select_tile_code(0x0F)).pack(side=tk.LEFT, padx=(2, 0))
-
-        brush_row = ttk.Frame(right)
+        brush_row = ttk.Frame(self.terrain_tool_tab)
         brush_row.pack(fill=tk.X, padx=6, pady=(0, 6))
         ttk.Label(brush_row, text="Brush").pack(side=tk.LEFT)
         ttk.Spinbox(brush_row, from_=1, to=5, textvariable=self.brush_size_var, width=4).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Label(brush_row, textvariable=self.editor_info, justify=tk.LEFT).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Label(self.terrain_tool_tab, text="Painting over a belt removes the whole belt composite first, so the room cannot keep an orphan invisible conveyor footprint.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
 
-        belt_row = ttk.Frame(right)
-        belt_row.pack(fill=tk.X, padx=6, pady=(0, 6))
-        ttk.Label(belt_row, text="Belt").pack(side=tk.LEFT)
+        belt_row = ttk.Frame(self.belt_tool_tab)
+        belt_row.pack(fill=tk.X, padx=6, pady=(6, 6))
+        ttk.Label(belt_row, text="Kind").pack(side=tk.LEFT)
         belt_kind = ttk.Combobox(
             belt_row,
             state="readonly",
@@ -349,6 +385,37 @@ class LevelEditorApp(tk.Tk):
         belt_kind.bind("<<ComboboxSelected>>", lambda _event: self.redraw_editor_room())
         ttk.Label(belt_row, text="Len").pack(side=tk.LEFT, padx=(8, 0))
         ttk.Spinbox(belt_row, from_=1, to=38, textvariable=self.belt_length_var, width=4, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(self.belt_tool_tab, text="Belt = physics tile run + CV visual object. Default props: grey=00, teal=07. Props probably include state/trigger bits; select the CV to edit raw fields.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
+
+        object_controls = ttk.Frame(self.object_tool_tab)
+        object_controls.pack(fill=tk.X, padx=6, pady=6)
+        object_values = ["exit_door", "player_start"] + [f"artifact_{i}" for i in range(6)]
+        self.object_combo = ttk.Combobox(
+            object_controls,
+            state="readonly",
+            textvariable=self.editor_object_var,
+            values=object_values,
+            width=18,
+        )
+        self.object_combo.pack(side=tk.LEFT)
+        self.object_combo.bind("<<ComboboxSelected>>", lambda _event: self.select_editor_object(self.editor_object_var.get()))
+        ttk.Button(object_controls, text="Delete", command=self.delete_selected_header_object).pack(side=tk.LEFT, padx=(6, 0))
+
+        prop_box = ttk.LabelFrame(right, text="Selected object properties")
+        prop_box.pack(fill=tk.X, padx=6, pady=(0, 6))
+        ttk.Label(prop_box, textvariable=self.property_title_var, wraplength=260, justify=tk.LEFT).grid(row=0, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
+        ttk.Label(prop_box, textvariable=self.property_label_x_var).grid(row=1, column=0, sticky="e", padx=(6, 2))
+        ttk.Entry(prop_box, textvariable=self.property_x_var, width=8).grid(row=1, column=1, sticky="w")
+        ttk.Label(prop_box, textvariable=self.property_label_y_var).grid(row=1, column=2, sticky="e", padx=(8, 2))
+        ttk.Entry(prop_box, textvariable=self.property_y_var, width=8).grid(row=1, column=3, sticky="w")
+        ttk.Label(prop_box, textvariable=self.property_label_len_var).grid(row=2, column=0, sticky="e", padx=(6, 2))
+        ttk.Entry(prop_box, textvariable=self.property_len_var, width=8).grid(row=2, column=1, sticky="w")
+        ttk.Label(prop_box, textvariable=self.property_label_code_var).grid(row=2, column=2, sticky="e", padx=(8, 2))
+        ttk.Entry(prop_box, textvariable=self.property_code_var, width=8).grid(row=2, column=3, sticky="w")
+        ttk.Label(prop_box, textvariable=self.property_label_props_var).grid(row=3, column=0, sticky="e", padx=(6, 2))
+        ttk.Entry(prop_box, textvariable=self.property_props_var, width=18).grid(row=3, column=1, columnspan=3, sticky="ew")
+        ttk.Button(prop_box, text="Apply", command=self.apply_selected_properties).grid(row=4, column=0, columnspan=4, sticky="ew", padx=6, pady=(4, 4))
+        ttk.Label(prop_box, textvariable=self.property_note_var, wraplength=260, justify=tk.LEFT).grid(row=5, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 4))
 
         palettes = ttk.Notebook(right)
         palettes.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
@@ -369,23 +436,25 @@ class LevelEditorApp(tk.Tk):
         tile_frame.columnconfigure(0, weight=1)
         self.tile_palette_canvas.bind("<Button-1>", self.tile_palette_click)
 
-        object_controls = ttk.Frame(object_tab)
-        object_controls.pack(fill=tk.X, padx=6, pady=6)
-        object_values = ["exit_door", "player_start"] + [f"artifact_{i}" for i in range(6)]
-        self.object_combo = ttk.Combobox(
-            object_controls,
-            state="readonly",
-            textvariable=self.editor_object_var,
-            values=object_values,
-            width=18,
-        )
-        self.object_combo.pack(side=tk.LEFT)
-        self.object_combo.bind("<<ComboboxSelected>>", lambda _event: self.select_editor_object(self.editor_object_var.get()))
-        ttk.Button(object_controls, text="Delete", command=self.delete_selected_header_object).pack(side=tk.LEFT, padx=(6, 0))
-
         self.object_palette_canvas = tk.Canvas(object_tab, bg="#202020", width=260)
         self.object_palette_canvas.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
         self.object_palette_canvas.bind("<Button-1>", self.object_palette_click)
+
+    def on_editor_tool_changed(self) -> None:
+        tab_by_tool = {"select": 0, "terrain": 1, "belt": 2, "object": 3}
+        if hasattr(self, "tool_settings_tabs"):
+            self.tool_settings_tabs.select(tab_by_tool.get(self.editor_tool_var.get(), 0))
+        self.redraw_editor_room()
+
+    def on_tool_tab_changed(self, _event=None) -> None:
+        if not hasattr(self, "tool_settings_tabs"):
+            return
+        selected = self.tool_settings_tabs.index(self.tool_settings_tabs.select())
+        tool_by_tab = {0: "select", 1: "terrain", 2: "belt", 3: "object"}
+        tool = tool_by_tab.get(selected, "select")
+        if self.editor_tool_var.get() != tool:
+            self.editor_tool_var.set(tool)
+            self.redraw_editor_room()
 
     def apply_overlay_preset(self, preset: str) -> None:
         if preset not in {"minimal", "logic", "debug"}:
@@ -551,18 +620,86 @@ class LevelEditorApp(tk.Tk):
     def _belt_tile_code(self) -> int:
         return 0x1F if self.belt_kind_var.get() == "teal" else 0x0F
 
+    def _belt_default_props(self) -> int:
+        # Existing rooms strongly correlate grey/0F belts with props 00-03 and
+        # teal/1F belts with props 04-07.  Keep the raw field visible because
+        # these bits are probably also used as state/trigger data.
+        return 0x07 if self.belt_kind_var.get() == "teal" else 0x00
+
+    def _cv_ref(self, cv) -> tuple[str, int]:
+        return ("conveyor", cv.index)
+
+    def _cv_from_ref(self, room, ref):
+        if ref is None or ref[0] != "conveyor":
+            return None
+        index = ref[1]
+        for cv in parse_conveyor_visual_records(room):
+            if cv.index == index:
+                return cv
+        return None
+
+    def _cv_records_touching_cells(self, room, cells: set[tuple[int, int]]) -> list:
+        return [cv for cv in parse_conveyor_visual_records(room) if cv.cells & cells]
+
+    def _clear_cv_composite(self, room, cv) -> bool:
+        # Remove the visible CV object and its matching physics footprint.
+        for x, y in sorted(cv.cells):
+            if 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS and room.get(x, y) in {0x0F, 0x1F}:
+                room.set(x, y, 0)
+        delete_conveyor_visual_record(room, cv.index)
+        return True
+
+    def _belt_run_ref(self, run) -> tuple[str, int, int, int, int]:
+        # Belts are terrain-run objects, not payload-slot objects. Use the
+        # run geometry as the selection handle identity.
+        return ("belt", run.start_x, run.y, run.length, run.code)
+
+    def _belt_run_from_ref(self, room, ref):
+        if ref is None or ref[0] != "belt":
+            return None
+        _kind, start_x, y, length, code = ref
+        for run in iter_conveyor_runs(room):
+            if run.start_x == start_x and run.y == y and run.length == length and run.code == code:
+                return run
+        return None
+
+    def _belt_runs_touching_cells(self, room, cells: set[tuple[int, int]]) -> list:
+        return [run for run in iter_conveyor_runs(room) if run.cells & cells]
+
+    def _clear_belt_run(self, room, run) -> bool:
+        changed = False
+        for x in range(run.start_x, min(ROOM_COLUMNS, run.start_x + run.length)):
+            if room.get(x, run.y) == run.code:
+                room.set(x, run.y, 0)
+                changed = True
+        return changed
+
+    def _clear_belt_composite(self, room, ref) -> bool:
+        run = self._belt_run_from_ref(room, ref)
+        if run is None:
+            return False
+        return self._clear_belt_run(room, run)
+
+    def _write_belt_footprint(self, room, *, start_x: int, y: int, length: int, tile_code: int) -> bool:
+        changed = False
+        for x in range(start_x, min(ROOM_COLUMNS, start_x + length)):
+            if room.get(x, y) != tile_code:
+                room.set(x, y, tile_code)
+                changed = True
+        return changed
     def _update_editor_info(self) -> None:
         tool = self.editor_tool_var.get()
         if tool == "terrain":
             self.editor_info.set(f"tile {self.tile_value_var.get().upper()}  brush {self._brush_size()}x{self._brush_size()}")
         elif tool == "belt":
-            self.editor_info.set(f"belt {self.belt_kind_var.get()} {self._belt_tile_code():02X}  len {self._belt_length()}")
+            self.editor_info.set(f"belt {self.belt_kind_var.get()} {self._belt_tile_code():02X}  len {self._belt_length()}  (click place/replace; select+Del removes)")
         elif tool == "select":
             if self.editor_selected_ref is None:
                 self.editor_info.set("select")
             else:
-                kind, slot = self.editor_selected_ref
-                suffix = "" if slot is None else f" {slot}"
+                kind = self.editor_selected_ref[0]
+                slot = self.editor_selected_ref[1] if len(self.editor_selected_ref) > 1 else None
+                suffix = "" if slot is None or kind in {"belt", "conveyor"} else f" {slot}"
                 self.editor_info.set(f"selected {kind.replace('_', ' ')}{suffix}")
         else:
             self.editor_info.set(self.editor_object_var.get().replace("_", " "))
@@ -587,6 +724,257 @@ class LevelEditorApp(tk.Tk):
         suffix = " *" if self.project.dirty else ""
         self.title(f"Ancient Empires Level Editor{suffix}")
 
+
+    def _parse_int_property(self, value: str, *, default: int = 0) -> int:
+        text = value.strip()
+        if not text:
+            return default
+        base = 16 if text.lower().startswith("0x") or any(c in "abcdefABCDEF" for c in text) else 10
+        return int(text, base)
+
+    def _format_control_targets(self, cmd) -> str:
+        return ",".join(str(value) for value in control_ref_values(cmd))
+
+    def _parse_control_targets(self, text: str, *, current: list[int]) -> list[int]:
+        text = text.strip()
+        if not text:
+            return current
+        parts = [part.strip() for part in text.replace(";", ",").split(",")]
+        targets: list[int] = []
+        for part in parts:
+            if not part:
+                continue
+            if part.upper().startswith(("P", "CV", "C")):
+                part = "".join(ch for ch in part if ch.isdigit() or ch in "abcdefABCDEFxX")
+            value = self._parse_int_property(part, default=0)
+            if not 0 <= value < 16:
+                raise ValueError(f"target id must be 0..15, got {value}")
+            targets.append(value)
+        return targets
+
+    def _rewrite_control_targets(self, body: bytearray, targets: list[int]) -> None:
+        if len(body) < 5:
+            if targets:
+                raise ValueError("this control record has no target-list bytes")
+            return
+        capacity = len(body) - 4
+        if len(targets) != capacity:
+            raise ValueError(f"this control record currently has exactly {capacity} target byte(s); resizing records is not enabled yet")
+        # body[3] is state/subtype. Do not treat it as a target id.
+        for i, target in enumerate(targets):
+            body[4 + i] = target
+
+    def _reset_property_labels(self) -> None:
+        self.property_label_x_var.set("x")
+        self.property_label_y_var.set("y")
+        self.property_label_len_var.set("len")
+        self.property_label_code_var.set("code")
+        self.property_label_props_var.set("props/raw")
+        self.property_note_var.set("")
+
+    def _clear_property_values(self) -> None:
+        self.property_x_var.set("")
+        self.property_y_var.set("")
+        self.property_len_var.set("")
+        self.property_code_var.set("")
+        self.property_props_var.set("")
+
+    def refresh_property_panel(self) -> None:
+        ref = self.editor_selected_ref
+        room = self.current_room()
+        self._reset_property_labels()
+        if ref is None:
+            self.property_title_var.set("No object selected")
+            self._clear_property_values()
+            self.property_note_var.set("Use Select to edit existing CV belts, controls, platforms and actors. Tool-specific placement options are in the tool tabs above.")
+            return
+        kind = ref[0]
+        if kind == "conveyor":
+            cv = self._cv_from_ref(room, ref)
+            if cv is None:
+                self.property_title_var.set("Selected CV no longer exists")
+                self._clear_property_values()
+                return
+            footprint_codes = sorted({room.get(x, y) for x, y in cv.cells if 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS})
+            self.property_title_var.set(f"CV{cv.index} conveyor visual object")
+            self.property_label_x_var.set("cell x")
+            self.property_label_y_var.set("cell y")
+            self.property_label_len_var.set("length")
+            self.property_label_code_var.set("raw code")
+            self.property_label_props_var.set("props")
+            self.property_x_var.set(str(cv.start_x))
+            self.property_y_var.set(str(cv.cell_y))
+            self.property_len_var.set(str(cv.length))
+            self.property_code_var.set(f"{cv.code:02X}")
+            self.property_props_var.set(f"{cv.props:02X}")
+            self.property_note_var.set(f"Physics tiles under CV: {', '.join(f'{c:02X}' for c in footprint_codes) or 'none'}. 0F/1F controls pushing; CV props probably include initial state / trigger linkage, so preserve raw values when unsure.")
+        elif kind == "belt":
+            run = self._belt_run_from_ref(room, ref)
+            if run is None:
+                self.property_title_var.set("Selected tile-only belt no longer exists")
+                self._clear_property_values()
+                return
+            self.property_title_var.set("Tile-only conveyor footprint")
+            self.property_label_x_var.set("cell x")
+            self.property_label_y_var.set("cell y")
+            self.property_label_len_var.set("length")
+            self.property_label_code_var.set("tile")
+            self.property_label_props_var.set("CV")
+            self.property_x_var.set(str(run.start_x))
+            self.property_y_var.set(str(run.y))
+            self.property_len_var.set(str(run.length))
+            self.property_code_var.set(f"{run.code:02X}")
+            self.property_props_var.set("")
+            self.property_note_var.set("This pushes the player but is invisible in game until paired with a CV visual object.")
+        elif kind == "platform":
+            platforms = [p for p in parse_platform_triplets(room) if p.index == ref[1]]
+            if not platforms:
+                self.property_title_var.set("Selected platform no longer exists")
+                self._clear_property_values()
+                return
+            pl = platforms[0]
+            refs = [cmd.record.index for cmd in control_commands(room) if pl.index in control_ref_values(cmd)]
+            self.property_title_var.set(f"P{pl.index} platform/runtime object")
+            self.property_label_x_var.set("raw x")
+            self.property_label_y_var.set("raw y")
+            self.property_label_len_var.set("target slot")
+            self.property_label_code_var.set("flags")
+            self.property_label_props_var.set("controlled by")
+            self.property_x_var.set(str(pl.x_raw))
+            self.property_y_var.set(str(pl.y))
+            self.property_len_var.set(f"P{pl.index}")
+            self.property_code_var.set(f"{pl.flags:02X}")
+            self.property_props_var.set(",".join(f"C{i}" for i in refs))
+            self.property_note_var.set("Target slot is the fixed runtime slot id used by controls. Do not change this by editing platform bytes; edit the target list on the button/switch instead. Flags 40/60 are horizontal families, 80/A0 vertical families.")
+        elif kind == "control":
+            idx = ref[1]
+            cmds = [cmd for cmd in control_commands(room) if cmd.record.index == idx]
+            if not cmds:
+                self.property_title_var.set("Selected control no longer exists")
+                self._clear_property_values()
+                return
+            cmd = cmds[0]
+            self.property_title_var.set(f"C{idx} trigger/control command @{cmd.record.source_offset:02X}")
+            self.property_label_x_var.set("raw x")
+            self.property_label_y_var.set("raw y")
+            self.property_label_len_var.set("targets")
+            self.property_label_code_var.set("type")
+            self.property_label_props_var.set("raw body")
+            self.property_x_var.set("" if cmd.x_raw is None else str(cmd.x_raw))
+            self.property_y_var.set("" if cmd.y_raw is None else str(cmd.y_raw))
+            self.property_len_var.set(self._format_control_targets(cmd))
+            self.property_code_var.set("" if cmd.command is None else f"{cmd.command:02X}")
+            self.property_props_var.set(cmd.body.hex(" "))
+            state = cmd.body[3] if len(cmd.body) >= 4 else None
+            state_text = "n/a" if state is None else f"{state:02X}"
+            self.property_note_var.set("Friendly model: body = type, x, y, state/subtype, target0, target1...  Targets are platform/CV slot ids, so one button can control multiple platforms, e.g. targets '0,2'. State/subtype is currently preserved as raw byte " + state_text + ".")
+        elif kind == "actor":
+            idx = ref[1]
+            actors = [a for a in actor_records_for_room(self.current_level().part(self.part_var.get()), room.index) if a.index == idx]
+            if not actors:
+                self.property_title_var.set("Selected actor no longer exists")
+                self._clear_property_values()
+                return
+            actor = actors[0]
+            self.property_title_var.set(f"A{actor.index} {actor.confirmed_name or 'actor'}")
+            self.property_label_x_var.set("x")
+            self.property_label_y_var.set("y")
+            self.property_label_len_var.set("facing/var")
+            self.property_label_code_var.set("frame")
+            self.property_label_props_var.set("hidden")
+            self.property_x_var.set(str(actor.x))
+            self.property_y_var.set(str(actor.y))
+            self.property_len_var.set(f"{actor.frame_variant:02X}")
+            self.property_code_var.set(f"{actor.frame:02X}")
+            self.property_props_var.set(f"{actor.hidden:02X}")
+            self.property_note_var.set("Actor editing scaffold: frame_variant is a likely direction/facing/state byte for many enemies. Apply is intentionally not enabled for actor table yet.")
+        else:
+            self.property_title_var.set(kind.replace("_", " "))
+            self._clear_property_values()
+
+    def apply_selected_properties(self) -> None:
+        ref = self.editor_selected_ref
+        if ref is None:
+            self.status.set("Select a CV/platform/belt object first.")
+            return
+        room = self.current_room()
+        kind = ref[0]
+        try:
+            if kind == "conveyor":
+                cv = self._cv_from_ref(room, ref)
+                if cv is None:
+                    self.status.set("Selected CV no longer exists.")
+                    return
+                x_cell = max(0, min(ROOM_COLUMNS - 1, self._parse_int_property(self.property_x_var.get(), default=cv.start_x)))
+                y_cell = max(0, min(ROOM_ROWS - 1, self._parse_int_property(self.property_y_var.get(), default=cv.cell_y)))
+                length = max(1, min(ROOM_COLUMNS - x_cell, self._parse_int_property(self.property_len_var.get(), default=cv.length)))
+                code = self._parse_int_property(self.property_code_var.get(), default=max(0, length - 2)) & 0xFF
+                props = self._parse_int_property(self.property_props_var.get(), default=cv.props) & 0xFF
+                x_raw, y_raw, auto_code = cv_geometry_to_raw(x_cell, y_cell, length)
+                # Empty code means derive it from length; non-empty code lets the
+                # user preserve or investigate raw game values.
+                if not self.property_code_var.get().strip():
+                    code = auto_code
+                # Move the matching physics footprint together with the CV.
+                old_tile = 0x1F if any(room.get(x, y) == 0x1F for x, y in cv.cells if 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS) else self._belt_tile_code()
+                for x, y in cv.cells:
+                    if 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS and room.get(x, y) in {0x0F, 0x1F}:
+                        room.set(x, y, 0)
+                set_conveyor_visual_record(room, cv.index, x_raw=x_raw, y=y_raw, code=code, props=props)
+                self._write_belt_footprint(room, start_x=x_cell, y=y_cell, length=length, tile_code=old_tile)
+                self.status.set(f"Updated CV{cv.index}: x={x_cell} y={y_cell} len={length} code={code:02X} props={props:02X}")
+            elif kind == "platform":
+                slot = ref[1]
+                platforms = [p for p in parse_platform_triplets(room) if p.index == slot]
+                old_flags = platforms[0].flags if platforms else 0x40
+                old_x = platforms[0].x_raw if platforms else 0
+                old_y = platforms[0].y if platforms else 0
+                flags = self._parse_int_property(self.property_code_var.get(), default=old_flags) & 0xFF
+                x_raw = self._parse_int_property(self.property_x_var.get(), default=old_x) & 0xFF
+                y_raw = self._parse_int_property(self.property_y_var.get(), default=old_y) & 0xFF
+                requested_slot = self.property_len_var.get().strip()
+                if requested_slot and requested_slot.upper() not in {f"P{slot}", str(slot)}:
+                    self.status.set(f"P{slot} target slot is fixed. Edit control target lists instead; position/flags were not changed.")
+                    self.refresh_property_panel()
+                    return
+                room.set_trailing_bytes(slot * PLATFORM_TRIPLET_SIZE, [flags, x_raw, y_raw])
+                self.status.set(f"Updated P{slot}: flags={flags:02X} x={x_raw} y={y_raw}")
+            elif kind == "control":
+                idx = ref[1]
+                cmds = [cmd for cmd in control_commands(room) if cmd.record.index == idx]
+                if not cmds:
+                    self.status.set("Selected control no longer exists.")
+                    return
+                cmd = cmds[0]
+                body = bytearray(cmd.body)
+                raw_text = self.property_props_var.get().strip()
+                # If the user edited the raw body, trust it but keep the same length.
+                raw_candidate = bytes.fromhex(raw_text) if raw_text else bytes(body)
+                if len(raw_candidate) == len(body) and raw_candidate != bytes(body):
+                    body[:] = raw_candidate
+                if len(body) >= 1 and self.property_code_var.get().strip():
+                    body[0] = self._parse_int_property(self.property_code_var.get(), default=body[0]) & 0xFF
+                if len(body) >= 2 and self.property_x_var.get().strip():
+                    body[1] = self._parse_int_property(self.property_x_var.get(), default=body[1]) & 0xFF
+                if len(body) >= 3 and self.property_y_var.get().strip():
+                    body[2] = self._parse_int_property(self.property_y_var.get(), default=body[2]) & 0xFF
+                if self.property_len_var.get().strip():
+                    current_targets = control_ref_values(cmd)
+                    targets = self._parse_control_targets(self.property_len_var.get(), current=current_targets)
+                    self._rewrite_control_targets(body, targets)
+                set_control_command_body(room, idx, bytes(body))
+                new_targets = [value for value in body[4:] if value < 0x10]
+                self.status.set(f"Updated C{idx}: targets={','.join(str(v) for v in new_targets)} body={bytes(body).hex(' ')}")
+            else:
+                self.status.set("Properties are editable for CV belts, platforms and control triggers for now.")
+                return
+        except Exception as exc:
+            self.status.set(f"Invalid properties: {exc}")
+            return
+        self._set_dirty()
+        self.redraw_room()
+        self.redraw_editor_object_palette()
+
     def redraw_editor_room(self) -> None:
         if not hasattr(self, "editor_canvas"):
             return
@@ -600,6 +988,7 @@ class LevelEditorApp(tk.Tk):
         self.editor_canvas.create_image(0, 0, anchor="nw", image=self.tk_editor_image)
         self.editor_canvas.config(scrollregion=(0, 0, image.width, image.height))
         self._update_editor_info()
+        self.refresh_property_panel()
         if self.editor_collision_var.get():
             self.draw_collision_overlay(self.editor_canvas, self.current_room())
         self.draw_editor_selection_preview()
@@ -695,7 +1084,42 @@ class LevelEditorApp(tk.Tk):
             if cand.room_plus_one == room.index + 1:
                 handles.append(EditorHandle(("artifact", cand.index), cand.x_raw * 2, cand.y_raw, f"A{cand.index}", "#ff40ff"))
         for platform in parse_platform_triplets(room):
-            handles.append(EditorHandle(("platform", platform.index), platform.x_raw * 2, platform.y, f"P{platform.index}", "#ffb000"))
+            if platform.visible:
+                handles.append(EditorHandle(("platform", platform.index), platform.x_raw * 2, platform.y, f"P{platform.index}", "#ffb000"))
+        for cmd in control_commands(room):
+            if cmd.command is None or cmd.x_raw is None or cmd.y_raw is None:
+                continue
+            mode = "button"
+            prefix = "C"
+            if cmd.command == 0x00:
+                mode = "ceiling_button"
+                prefix = "B"
+            elif cmd.command == 0x01:
+                mode = "floor_switch"
+                prefix = "S"
+            elif cmd.command == 0x02:
+                mode = "laser_trigger"
+                prefix = "J"
+            cx, cy = control_xy(cmd, mode=mode)
+            refs = control_ref_values(cmd)
+            suffix = "" if not refs else "→" + ",".join(str(v) for v in refs)
+            handles.append(EditorHandle(("control", cmd.record.index), cx + 8, cy + 8, f"{prefix}{cmd.record.index}{suffix}", "#00e0ff"))
+        for actor in actor_records_for_room(part, room.index):
+            if actor.hidden and not self.overlay_hidden_var.get():
+                continue
+            ax, ay = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
+            handles.append(EditorHandle(("actor", actor.index), ax + 12, ay + 8, f"A{actor.index}", "#7cff6b" if not actor.hidden else "#7a7a7a"))
+        cv_cells = set()
+        for cv in parse_conveyor_visual_records(room):
+            cv_cells |= cv.cells
+            handles.append(EditorHandle(self._cv_ref(cv), cv.x_raw * 2, cv.y - 8, f"CV{cv.index}×{cv.length}", "#4aa8ff"))
+        # Tile-only belt runs are physics footprints. Show them as a separate
+        # grey handle only when no CV object covers them, because in-game they
+        # are invisible but still push the player.
+        for belt in iter_conveyor_runs(room):
+            if belt.cells & cv_cells:
+                continue
+            handles.append(EditorHandle(self._belt_run_ref(belt), belt.start_x * CELL_SIZE + 4, belt.y * CELL_SIZE + 4, f"BT{belt.index}×{belt.length}", "#8aa0b8"))
         return handles
 
     def draw_editor_object_handles(self, part, room) -> None:
@@ -711,19 +1135,40 @@ class LevelEditorApp(tk.Tk):
         room = self.current_room()
         brush = self._brush_size()
         half = brush // 2
+        cells = {
+            (xx, yy)
+            for yy in range(cy - half, cy - half + brush)
+            for xx in range(cx - half, cx - half + brush)
+            if 0 <= xx < ROOM_COLUMNS and 0 <= yy < ROOM_ROWS
+        }
+        if not cells:
+            return
+
+        # Terrain painting must not leave half-deleted belts behind.  If a tile
+        # brush touches a belt footprint, delete that whole composite belt first
+        # and then apply the requested tile paint.
         changed = False
-        for yy in range(cy - half, cy - half + brush):
-            for xx in range(cx - half, cx - half + brush):
-                if not (0 <= xx < ROOM_COLUMNS and 0 <= yy < ROOM_ROWS):
-                    continue
-                if room.get(xx, yy) == value:
-                    continue
-                room.set(xx, yy, value)
-                changed = True
+        touched_cvs = self._cv_records_touching_cells(room, cells)
+        for cv in sorted(touched_cvs, key=lambda r: r.index, reverse=True):
+            changed = self._clear_cv_composite(room, cv) or changed
+        touched_belts = self._belt_runs_touching_cells(room, cells)
+        for belt in touched_belts:
+            changed = self._clear_belt_run(room, belt) or changed
+        if (touched_belts or touched_cvs) and self.editor_selected_ref and self.editor_selected_ref[0] in {"belt", "conveyor"}:
+            self.editor_selected_ref = None
+            self.editor_drag_offset = None
+
+        for xx, yy in cells:
+            if room.get(xx, yy) == value:
+                continue
+            room.set(xx, yy, value)
+            changed = True
         if not changed:
             return
         self._set_dirty()
         self.redraw_room()
+        if touched_belts or touched_cvs:
+            self.status.set(f"Painted tile {value:02X}; removed {len(touched_belts) + len(touched_cvs)} belt/CV object(s) that overlapped the brush.")
 
     def place_editor_belt(self, event) -> None:
         cell = self._cell_from_event(event, self.editor_canvas)
@@ -733,18 +1178,30 @@ class LevelEditorApp(tk.Tk):
         room = self.current_room()
         value = self._belt_tile_code()
         length = self._belt_length()
-        changed = False
-        for x in range(start_x, min(ROOM_COLUMNS, start_x + length)):
-            if room.get(x, y) == value:
-                continue
-            room.set(x, y, value)
-            changed = True
-        if not changed:
-            return
+        actual_length = min(length, ROOM_COLUMNS - start_x)
+        footprint = {(x, y) for x in range(start_x, start_x + actual_length)}
+
+        # A real belt is a composite of:
+        #   1) 0x0F/0x1F terrain cells = physics/scrolling footprint;
+        #   2) CV payload record        = visible animated strip.
+        # Never write the first ten runtime triplets; those are platform-like
+        # records and can become horizontal platforms in the real game.
+        replaced_cvs = self._cv_records_touching_cells(room, footprint)
+        for cv in sorted(replaced_cvs, key=lambda r: r.index, reverse=True):
+            self._clear_cv_composite(room, cv)
+        replaced_tiles = self._belt_runs_touching_cells(room, footprint)
+        for belt in replaced_tiles:
+            self._clear_belt_run(room, belt)
+
+        self._write_belt_footprint(room, start_x=start_x, y=y, length=actual_length, tile_code=value)
+        x_raw, y_raw, code = cv_geometry_to_raw(start_x, y, actual_length)
+        cv_index = add_conveyor_visual_record(room, x_raw=x_raw, y=y_raw, code=code, props=self._belt_default_props())
+        self.editor_selected_ref = ("conveyor", cv_index)
+        self.editor_drag_offset = None
         self._set_dirty()
         self.redraw_room()
-        self.status.set(f"Placed {self.belt_kind_var.get()} belt tile {value:02X} at x={start_x} y={y} len={length}")
-
+        action = "Replaced" if replaced_cvs or replaced_tiles else "Placed"
+        self.status.set(f"{action} {self.belt_kind_var.get()} belt CV{cv_index} + physics tile {value:02X} at x={start_x} y={y} len={actual_length}")
     def find_editor_handle(self, event) -> EditorHandle | None:
         x, y = self._screen_xy_from_event(event, self.editor_canvas)
         part = self.current_level().part(self.part_var.get())
@@ -769,7 +1226,8 @@ class LevelEditorApp(tk.Tk):
         else:
             x, y = self._screen_xy_from_event(event, self.editor_canvas)
             self.editor_drag_offset = (handle.x - x, handle.y - y)
-            kind, slot = handle.ref
+            kind = handle.ref[0]
+            slot = handle.ref[1] if len(handle.ref) > 1 else None
             if kind == "artifact" and slot is not None:
                 self.editor_object_var.set(f"artifact_{slot}")
             else:
@@ -789,8 +1247,10 @@ class LevelEditorApp(tk.Tk):
         y = max(0, min(ROOM_ROWS * CELL_SIZE - 1, y))
         part = self.current_level().part(self.part_var.get())
         room = self.current_room()
-        kind, slot = self.editor_selected_ref
+        kind = self.editor_selected_ref[0]
+        slot = self.editor_selected_ref[1] if len(self.editor_selected_ref) > 1 else None
         before_header = part.header
+        before_tiles = list(room.tiles)
         before_trailing = room.trailing
 
         if kind == "exit_door":
@@ -805,16 +1265,77 @@ class LevelEditorApp(tk.Tk):
         elif kind == "platform" and slot is not None:
             off = slot * PLATFORM_TRIPLET_SIZE
             room.set_trailing_bytes(off + 1, [self._clamp_byte(round(x / 2)), self._clamp_byte(y)])
+        elif kind == "control" and slot is not None:
+            cmds = [cmd for cmd in control_commands(room) if cmd.record.index == slot]
+            if not cmds:
+                self.status.set("Selected control no longer exists.")
+                self.editor_selected_ref = None
+                self.editor_drag_offset = None
+                self.redraw_editor_room()
+                return
+            body = bytearray(cmds[0].body)
+            if len(body) < 3:
+                self.status.set("Selected control has no editable x/y bytes.")
+                return
+            body[1] = self._clamp_byte(round(x / 2))
+            body[2] = self._clamp_byte(y)
+            set_control_command_body(room, slot, bytes(body))
+        elif kind == "actor":
+            self.status.set("Actor table handles are selectable for inspection; movement editing is not enabled yet.")
+            return
+        elif kind == "conveyor" and slot is not None:
+            cv = self._cv_from_ref(room, self.editor_selected_ref)
+            if cv is None:
+                self.status.set("Selected CV no longer exists.")
+                self.editor_selected_ref = None
+                self.editor_drag_offset = None
+                self.redraw_editor_room()
+                return
+            old_tile = 0x1F if any(room.get(bx, by) == 0x1F for bx, by in cv.cells if 0 <= bx < ROOM_COLUMNS and 0 <= by < ROOM_ROWS) else self._belt_tile_code()
+            for bx, by in cv.cells:
+                if 0 <= bx < ROOM_COLUMNS and 0 <= by < ROOM_ROWS and room.get(bx, by) in {0x0F, 0x1F}:
+                    room.set(bx, by, 0)
+            start_x = max(0, min(ROOM_COLUMNS - 1, x // CELL_SIZE))
+            start_y = max(0, min(ROOM_ROWS - 1, y // CELL_SIZE))
+            actual_length = min(cv.length, ROOM_COLUMNS - start_x)
+            new_cells = {(bx, start_y) for bx in range(start_x, start_x + actual_length)}
+            for other in sorted(self._cv_records_touching_cells(room, new_cells), key=lambda r: r.index, reverse=True):
+                if other.index != cv.index:
+                    self._clear_cv_composite(room, other)
+            for other in self._belt_runs_touching_cells(room, new_cells):
+                self._clear_belt_run(room, other)
+            self._write_belt_footprint(room, start_x=start_x, y=start_y, length=actual_length, tile_code=old_tile)
+            x_raw, y_raw, code = cv_geometry_to_raw(start_x, start_y, actual_length)
+            set_conveyor_visual_record(room, cv.index, x_raw=x_raw, y=y_raw, code=code, props=cv.props)
+        elif kind == "belt":
+            run = self._belt_run_from_ref(room, self.editor_selected_ref)
+            if run is None:
+                self.status.set("Selected belt no longer exists.")
+                self.editor_selected_ref = None
+                self.editor_drag_offset = None
+                self.redraw_editor_room()
+                return
+            old_code = run.code
+            length = run.length
+            self._clear_belt_run(room, run)
+            start_x = max(0, min(ROOM_COLUMNS - 1, x // CELL_SIZE))
+            start_y = max(0, min(ROOM_ROWS - 1, y // CELL_SIZE))
+            actual_length = min(length, ROOM_COLUMNS - start_x)
+            new_cells = {(bx, start_y) for bx in range(start_x, start_x + actual_length)}
+            for other in self._belt_runs_touching_cells(room, new_cells):
+                self._clear_belt_run(room, other)
+            self._write_belt_footprint(room, start_x=start_x, y=start_y, length=actual_length, tile_code=old_code)
+            self.editor_selected_ref = ("belt", start_x, start_y, actual_length, old_code)
         else:
             return
 
-        if part.header == before_header and room.trailing == before_trailing:
+        if part.header == before_header and room.tiles == before_tiles and room.trailing == before_trailing:
             return
         self._set_dirty()
         self.redraw_room()
         self.redraw_editor_object_palette()
         label = kind.replace("_", " ")
-        suffix = "" if slot is None else f" {slot}"
+        suffix = "" if slot is None or kind == "conveyor" else f" {slot}"
         self.status.set(f"Moved {label}{suffix} to x={x} y={y}")
 
     def editor_click(self, event) -> None:
@@ -837,6 +1358,26 @@ class LevelEditorApp(tk.Tk):
             self.paint_editor_tile(event)
 
     def editor_pick_tile(self, event) -> None:
+        # Right-click on an editable handle selects it. Right-click again or use
+        # the Delete button/key to remove it.  Otherwise right-click keeps the
+        # original convenient tile-pick behaviour.
+        handle = self.find_editor_handle(event)
+        if handle is not None:
+            self.editor_selected_ref = handle.ref
+            self.editor_drag_offset = None
+            kind = handle.ref[0]
+            slot = handle.ref[1] if len(handle.ref) > 1 else None
+            if kind == "artifact" and slot is not None:
+                self.editor_object_var.set(f"artifact_{slot}")
+            else:
+                self.editor_object_var.set(kind)
+            if kind in {"belt", "conveyor"} and self.editor_tool_var.get() == "belt":
+                self.delete_selected_editor_object()
+                return
+            self.status.set(f"Selected {handle.label}. Press Delete or click Delete to remove it.")
+            self.redraw_editor_object_palette()
+            self.redraw_editor_room()
+            return
         cell = self._cell_from_event(event, self.editor_canvas)
         if cell is None:
             return
@@ -886,18 +1427,37 @@ class LevelEditorApp(tk.Tk):
             obj = self.editor_object_var.get()
             if obj.startswith("artifact_"):
                 ref = ("artifact", int(obj.split("_", 1)[1]))
-        if ref is None or ref[1] is None:
-            self.status.set("Only artifact and platform slots can be deleted in this MVP.")
+        if ref is None:
+            self.status.set("Select an artifact, platform, CV, or belt first, then press Delete. Controls/actors are editable/inspectable but not deleted yet.")
             return "break"
-        kind, slot = ref
+        kind = ref[0]
+        slot = ref[1] if len(ref) > 1 else None
+        if kind in {"artifact", "platform", "conveyor"} and slot is None:
+            self.status.set("Select an artifact, platform, CV, or belt first, then press Delete. Controls/actors are editable/inspectable but not deleted yet.")
+            return "break"
         if kind == "artifact":
             part = self.current_level().part(self.part_var.get())
             part.clear_artifact_slot(slot)
         elif kind == "platform":
             room = self.current_room()
-            room.set_trailing_bytes(slot * PLATFORM_TRIPLET_SIZE, [0, 0, 0])
+            clear_runtime_triplet_slot(room, slot)
+        elif kind == "conveyor":
+            room = self.current_room()
+            cv = self._cv_from_ref(room, ref)
+            if cv is None:
+                self.status.set("Selected CV no longer exists.")
+                return "break"
+            self._clear_cv_composite(room, cv)
+        elif kind == "belt":
+            room = self.current_room()
+            if not self._clear_belt_composite(room, ref):
+                self.status.set("Selected belt no longer exists.")
+                return "break"
+        elif kind in {"control", "actor"}:
+            self.status.set("Control/actor deletion is intentionally disabled for now; use properties to edit raw trigger fields.")
+            return "break"
         else:
-            self.status.set("Only artifact and platform slots can be deleted in this MVP.")
+            self.status.set("Select an artifact, platform, CV, or belt first, then press Delete. Controls/actors are editable/inspectable but not deleted yet.")
             return "break"
         if self.editor_selected_ref == ref:
             self.editor_selected_ref = None
@@ -905,7 +1465,7 @@ class LevelEditorApp(tk.Tk):
         self._set_dirty()
         self.redraw_room()
         self.redraw_editor_object_palette()
-        self.status.set(f"Deleted {kind} slot {slot}")
+        self.status.set(f"Deleted {kind}")
         return "break"
 
     def draw_codes_overlay(self, room) -> None:

@@ -176,7 +176,7 @@ The static renderer currently draws:
 2. background compact3 visuals;
 3. terrain tiles;
 4. rope special tiles;
-5. conveyors from terrain tile runs;
+5. conveyors from CV payload records plus terrain physics tile runs;
 6. moving platforms;
 7. control records;
 8. puzzle markers and panels;

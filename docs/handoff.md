@@ -10,7 +10,7 @@ labels for the currently understood gameplay objects.
 The editor is not yet a safe full level writer. Treat rendering and overlays as
 the canonical read path. MVP1 write-back edits the 38x18 room tile bytes plus
 the known header object slots for player start, exit door and artifacts. The
-Editor tab can also place conveyor belts as runs of terrain tiles `0x0F`/`0x1F`
+Editor tab can also place conveyor belts as composite objects: CV visible record plus terrain physics tiles `0x0F`/`0x1F`
 and move/delete the editable header object handles plus moving-platform
 triplets. Changed level resources are stored back into `AE001.DAT` as plain
 uncompressed resources.
@@ -55,7 +55,7 @@ Useful smoke rooms:
 - Real actors come from the part actor table at `0x2754`, not command-2 control
   records.
 - Buttons and floor switches come from length-prefixed control commands.
-- Conveyors are terrain special tiles `0x0F` and `0x1F`.
+- Conveyors are composite: terrain special tiles `0x0F`/`0x1F` provide physics/scrolling, while CV records in the payload directory provide the visible belt.
 - Moving platforms are the ten leading 3-byte room trailing payload triplets.
   The editor can move/delete these slots, but it still preserves the existing
   flag byte instead of inventing new path semantics.

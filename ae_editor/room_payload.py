@@ -21,7 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from .constants import CELL_SIZE, ROOM_COLUMNS, ROOM_COUNT, ROOM_ROWS
+from .constants import CELL_SIZE, ROOM_COLUMNS, ROOM_COUNT, ROOM_ROWS, ROOM_SCREEN_HEIGHT_PX, ROOM_SCREEN_WIDTH_PX
+from .conveyors import BeltKind, ConveyorRecord, ConveyorVisualRecord, DEFAULT_CONVEYOR_FLAGS
 from .level_format import Room
 
 PAYLOAD_DIRECTORY_OFFSET = 0x1E
@@ -77,6 +78,16 @@ class PlatformTriplet:
         return self.raw != b"\x00\x00\x00"
 
     @property
+    def visible(self) -> bool:
+        """Whether this triplet is currently known to draw a moving platform.
+
+        Original level 1 room 0 contains two 00-family triplets that do not
+        appear in the game.  Treat them as hidden/unknown leftovers instead of
+        rendering fake platforms.
+        """
+        return (self.flags & 0xF0) in {0x40, 0x60, 0x80, 0xA0}
+
+    @property
     def orientation(self) -> PlatformOrientation:
         """Best current orientation model.
 
@@ -88,7 +99,7 @@ class PlatformTriplet:
         high = self.flags & 0xF0
         if high in {0x80, 0xA0}:
             return "vertical"
-        if high in {0x40, 0x60}:
+        if high in {0x00, 0x20, 0x40, 0x60}:
             return "horizontal"
         return "unknown"
 
@@ -185,6 +196,23 @@ def control_commands(room: Room) -> list[ControlCommand]:
     if not directory:
         return []
     return [ControlCommand(record) for record in directory.control_records]
+
+
+def set_control_command_body(room: Room, index: int, body: bytes) -> None:
+    """Rewrite one length-prefixed control command body in-place.
+
+    This intentionally keeps the existing record length.  The trigger/control
+    format is still being reverse engineered, so changing record sizes would
+    shift all following payload sections and is too risky for the editor UI.
+    """
+    directory = parse_exe_payload_directory(room)
+    if directory is None or not 0 <= index < len(directory.control_records):
+        raise ValueError(f"control record out of range: {index}")
+    record = directory.control_records[index]
+    old_body = record.body
+    if len(body) != len(old_body):
+        raise ValueError(f"control body must stay {len(old_body)} bytes, got {len(body)}")
+    room.set_trailing_bytes(record.source_offset + 1, list(body))
 
 
 @dataclass
@@ -337,6 +365,189 @@ def transition_links_for_room(part, room_index: int) -> RoomTransitionLinks | No
     return None
 
 
+
+def _payload_xy_on_screen(x_raw: int, y: int, *, margin: int = 24) -> bool:
+    x = x_raw * 2
+    return -margin <= x <= ROOM_SCREEN_WIDTH_PX + margin and -margin <= y <= ROOM_SCREEN_HEIGHT_PX + margin
+
+
+CONVEYOR_DIRECTORY_OFFSET = PAYLOAD_DIRECTORY_OFFSET
+CONVEYOR_VISUAL_RECORD_SIZE = 4
+
+
+def parse_conveyor_visual_records(room: Room) -> list[ConveyorVisualRecord]:
+    """Read CV records from the room payload directory header.
+
+    These four-byte records are separate from terrain tile codes 0x0F/0x1F:
+    the terrain is the physical scrolling footprint, while the CV record is the
+    visible belt object drawn by the game.
+    """
+    data = room.trailing
+    base = CONVEYOR_DIRECTORY_OFFSET
+    if base >= len(data):
+        return []
+    count = data[base]
+    if count > 32 or base + 1 + count * CONVEYOR_VISUAL_RECORD_SIZE > len(data):
+        return []
+    out: list[ConveyorVisualRecord] = []
+    for index in range(count):
+        off = base + 1 + index * CONVEYOR_VISUAL_RECORD_SIZE
+        raw = bytes(data[off:off + CONVEYOR_VISUAL_RECORD_SIZE])
+        if len(raw) < CONVEYOR_VISUAL_RECORD_SIZE:
+            break
+        x_raw, y, code, props = raw
+        out.append(ConveyorVisualRecord(off, index, x_raw, y, code, props, raw))
+    return out
+
+
+def _replace_trailing(room: Room, data: bytearray) -> None:
+    room.trailing = bytes(data[:len(room.trailing)])
+
+
+def set_conveyor_visual_record(room: Room, index: int, *, x_raw: int, y: int, code: int, props: int) -> None:
+    records = parse_conveyor_visual_records(room)
+    if not 0 <= index < len(records):
+        raise ValueError(f"CV index out of range: {index}")
+    off = records[index].source_offset
+    room.set_trailing_bytes(off, [x_raw, y, code, props])
+
+
+def _payload_padding_start(room: Room) -> int:
+    directory = parse_exe_payload_directory(room)
+    if directory and directory.sections and directory.sections.after_visual is not None:
+        return directory.sections.after_visual
+    return len(room.trailing)
+
+
+def _delete_padding_bytes_after_insert(data: bytearray, start: int, size: int, original_len: int) -> None:
+    # Prefer consuming explicit zero padding right after the structured payload.
+    # This avoids losing arbitrary non-zero bytes at the very end of the fixed
+    # room record.
+    start = max(0, min(len(data) - size, start))
+    for off in range(start, max(start, len(data) - size + 1)):
+        if data[off:off + size] == b"\x00" * size:
+            del data[off:off + size]
+            return
+    del data[original_len:]
+
+
+def add_conveyor_visual_record(room: Room, *, x_raw: int, y: int, code: int, props: int = 0x07) -> int:
+    data = bytearray(room.trailing)
+    base = CONVEYOR_DIRECTORY_OFFSET
+    count = data[base]
+    insert_at = base + 1 + count * CONVEYOR_VISUAL_RECORD_SIZE
+    if count >= 32 or insert_at + CONVEYOR_VISUAL_RECORD_SIZE > len(data):
+        raise ValueError("no room for another CV record")
+    padding_start = _payload_padding_start(room)
+    original_len = len(room.trailing)
+    data[base] = count + 1
+    data[insert_at:insert_at] = bytes([x_raw & 0xFF, y & 0xFF, code & 0xFF, props & 0xFF])
+    # If padding was after the insert point, it moved by four bytes.
+    shifted_padding_start = padding_start + CONVEYOR_VISUAL_RECORD_SIZE if padding_start >= insert_at else padding_start
+    _delete_padding_bytes_after_insert(data, shifted_padding_start, CONVEYOR_VISUAL_RECORD_SIZE, original_len)
+    _replace_trailing(room, data)
+    return count
+
+
+def delete_conveyor_visual_record(room: Room, index: int) -> None:
+    records = parse_conveyor_visual_records(room)
+    if not 0 <= index < len(records):
+        raise ValueError(f"CV index out of range: {index}")
+    original_len = len(room.trailing)
+    data = bytearray(room.trailing)
+    base = CONVEYOR_DIRECTORY_OFFSET
+    off = records[index].source_offset
+    del data[off:off + CONVEYOR_VISUAL_RECORD_SIZE]
+    data[base] = max(0, data[base] - 1)
+    # Temporarily parse the shortened structured payload to find where the new
+    # padding should begin, then insert zero padding there and keep fixed size.
+    old_trailing = room.trailing
+    room.trailing = bytes(data[:original_len - CONVEYOR_VISUAL_RECORD_SIZE])
+    padding_start = _payload_padding_start(room)
+    room.trailing = old_trailing
+    padding_start = max(0, min(len(data), padding_start))
+    data[padding_start:padding_start] = b"\x00" * CONVEYOR_VISUAL_RECORD_SIZE
+    del data[original_len:]
+    room.trailing = bytes(data)
+
+
+def first_conveyor_visual_touching(room: Room, cells: set[tuple[int, int]]) -> ConveyorVisualRecord | None:
+    for record in parse_conveyor_visual_records(room):
+        if record.cells & cells:
+            return record
+    return None
+
+
+def cv_geometry_to_raw(start_x: int, y: int, length: int) -> tuple[int, int, int]:
+    x_raw = max(0, min(0xFF, start_x * 4 + 2))
+    y_raw = max(0, min(0xFF, y * 8 + 12))
+    code = max(0, min(0xFF, length - 2))
+    return x_raw, y_raw, code
+
+
+def parse_conveyor_records(room: Room) -> list[ConveyorRecord]:
+    """Read visible/runtime conveyor records from the first ten room triplets.
+
+    Older editor builds inferred visible belts from terrain tile codes 0x0F/0x1F.
+    Testing in the real game shows that is only the logical/physics side: adding
+    those terrain bytes creates an invisible belt.  The visible belt object lives
+    in the same ten 3-byte payload slots that the EXE iterates at room+0x2AC.
+
+    The low nibble must be non-zero; it is the animation/state counter used by
+    the EXE.  A loose on-screen coordinate filter avoids treating unrelated or
+    unused payload bytes in placeholder rooms as editable belts.
+    """
+    out: list[ConveyorRecord] = []
+    data = room.trailing
+    for index in range(PLATFORM_TRIPLET_COUNT):
+        off = index * PLATFORM_TRIPLET_SIZE
+        raw = data[off:off + PLATFORM_TRIPLET_SIZE]
+        if len(raw) < PLATFORM_TRIPLET_SIZE or raw == b"\x00\x00\x00":
+            continue
+        flags, x_raw, y = raw
+        if not (flags & 0x0F):
+            continue
+        if not _payload_xy_on_screen(x_raw, y):
+            continue
+        out.append(ConveyorRecord(off, index, flags, x_raw, y, bytes(raw)))
+    return out
+
+
+def first_free_runtime_triplet_slot(room: Room) -> int | None:
+    """Return the first empty 3-byte runtime object slot, if any."""
+    data = room.trailing
+    for index in range(PLATFORM_TRIPLET_COUNT):
+        off = index * PLATFORM_TRIPLET_SIZE
+        raw = data[off:off + PLATFORM_TRIPLET_SIZE]
+        if len(raw) == PLATFORM_TRIPLET_SIZE and raw == b"\x00\x00\x00":
+            return index
+    return None
+
+
+def set_conveyor_record(room: Room, slot: int, *, kind: BeltKind, x_raw: int, y: int) -> None:
+    """Write one visible/runtime conveyor record into a room triplet slot."""
+    if not 0 <= slot < PLATFORM_TRIPLET_COUNT:
+        raise ValueError(f"conveyor slot out of range: {slot}")
+    flags = DEFAULT_CONVEYOR_FLAGS[kind]
+    room.set_trailing_bytes(slot * PLATFORM_TRIPLET_SIZE, [flags, x_raw, y])
+
+
+def move_conveyor_record(room: Room, slot: int, *, x_raw: int, y: int) -> None:
+    """Move an existing visible/runtime conveyor record without changing flags."""
+    if not 0 <= slot < PLATFORM_TRIPLET_COUNT:
+        raise ValueError(f"conveyor slot out of range: {slot}")
+    off = slot * PLATFORM_TRIPLET_SIZE
+    if len(room.trailing[off:off + PLATFORM_TRIPLET_SIZE]) < PLATFORM_TRIPLET_SIZE:
+        raise ValueError(f"conveyor slot out of range: {slot}")
+    room.set_trailing_bytes(off + 1, [x_raw, y])
+
+
+def clear_runtime_triplet_slot(room: Room, slot: int) -> None:
+    """Clear one of the ten 3-byte platform/conveyor runtime slots."""
+    if not 0 <= slot < PLATFORM_TRIPLET_COUNT:
+        raise ValueError(f"runtime slot out of range: {slot}")
+    room.set_trailing_bytes(slot * PLATFORM_TRIPLET_SIZE, [0, 0, 0])
+
 def parse_platform_triplets(room: Room) -> list[PlatformTriplet]:
     """Read the ten platform/control records at room+0x2AC."""
     out: list[PlatformTriplet] = []
@@ -349,6 +560,11 @@ def parse_platform_triplets(room: Room) -> list[PlatformTriplet]:
         flags, x, y = raw
         if raw == b"\x00\x00\x00":
             continue
+        # The first ten payload triplets are runtime platform/control slots.
+        # Do not reinterpret low-nibble records as belts: visible belts are CV
+        # records in the payload directory header, while 0x0F/0x1F tiles are
+        # only the physics/scrolling footprint. Writing a low-nibble triplet can
+        # show up in the real game as a moving platform.
         out.append(PlatformTriplet(off, index, flags, x, y, bytes(raw)))
     return out
 

@@ -25,7 +25,7 @@ from .coordinates import (
     header_object_xy,
     platform_xy,
 )
-from .conveyors import ConveyorSpec, compose_conveyor
+from .conveyors import ConveyorSpec, compose_conveyor, iter_conveyor_runs
 from .graphics import GraphicsSet
 from .level_format import Level, Room
 from .object_mapping import visual_render_layer, visual_sprite_ref
@@ -92,6 +92,7 @@ from .room_payload import (
     control_commands,
     parse_exe_payload_directory,
     parse_platform_triplets,
+    parse_conveyor_visual_records,
     visual_compact3_table,
     laser_crystal_table,
     room_tail_marker,
@@ -254,40 +255,33 @@ class RoomRenderer:
 
 
     def _draw_conveyor_tiles(self, image: Image.Image, room: Room) -> None:
-        """Render conveyor belts directly from terrain tile runs.
+        """Render visible conveyor belts from CV payload objects.
 
-        User screenshots plus codes_hex confirmed that belts behave like rope:
-        the room grid contains special non-terrain tile codes.  The visible belt
-        is not a one-sprite object and should not be inferred from trigger/control
-        records.  AE000:038 stores left/middle/right pieces for four animation
-        frames and two colour/direction families; static previews use frame 0.
+        Terrain codes 0x0F/0x1F are only the scrolling/physics footprint.  A
+        tile-only belt is intentionally invisible in the original game.  The
+        visible belt is a CV record in the room payload directory header.
         """
         parts = [self.graphics.sprite("AE000", 38, i) for i in range(24)]
-        y_bias = -6
-        x_bias = -4
-        for y in range(ROOM_ROWS):
-            x = 0
-            while x < ROOM_COLUMNS:
-                code = room.get(x, y)
-                kind = self.CONVEYOR_TILE_CODES.get(code)
-                if kind is None:
-                    x += 1
-                    continue
-                start = x
-                while x < ROOM_COLUMNS and room.get(x, y) == code:
-                    x += 1
-                # Conveyor tile runs need one extra cell on the right: the grid
-                # marks occupied conveyor cells, while the visual right cap extends
-                # past the final marker.
-                width = max(8, (x - start + 1) * CELL_SIZE)
-                strip = compose_conveyor(parts, ConveyorSpec(kind=kind, x=0, y=0, width=width, frame=0))
-                if strip is not None:
-                    self._blit(image, strip, start * CELL_SIZE + x_bias, y * CELL_SIZE + y_bias)
+        runs = iter_conveyor_runs(room)
+        for cv in parse_conveyor_visual_records(room):
+            # Prefer the tile footprint to choose grey/teal when it is present;
+            # otherwise keep the existing default so orphan CVs remain visible.
+            kind = "teal"
+            for run in runs:
+                if run.cells & cv.cells:
+                    kind = run.kind
+                    break
+            width = max(8, (cv.length + 1) * CELL_SIZE)
+            strip = compose_conveyor(parts, ConveyorSpec(kind=kind, x=0, y=0, width=width, frame=0))
+            if strip is not None:
+                self._blit(image, strip, cv.x_raw * 2 - 8, cv.y - 18)
 
     def _draw_platforms(self, image: Image.Image, room: Room) -> None:
         horizontal = self.graphics.sprite("AE000", 47, 0)
         vertical = self.graphics.sprite("AE000", 48, 0)
         for triplet in parse_platform_triplets(room):
+            if not triplet.visible:
+                continue
             x, y = platform_xy(triplet)
             if triplet.orientation == "vertical" and vertical is not None:
                 self._blit(image, vertical, x, y)

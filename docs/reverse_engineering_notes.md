@@ -56,7 +56,7 @@ recovered.
 Special terrain codes handled outside the direct mapping:
 
 - `0x07`: invisible support/collision;
-- `0x0F`, `0x1F`: conveyor belt tile runs;
+- `0x0F`, `0x1F`: conveyor physics tile runs; visible art comes from CV payload records;
 - `0x80..0xC0`: rope-family markers.
 
 ### Room Payload
