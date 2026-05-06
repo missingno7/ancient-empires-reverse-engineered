@@ -38,6 +38,9 @@ from .room_payload import (
     add_visual_compact3_entry,
     set_visual_compact3_entry,
     delete_visual_compact3_entry,
+    add_laser_crystal_entry,
+    set_laser_crystal_entry,
+    delete_laser_crystal_entry,
     add_control_command,
     delete_control_command,
     cv_geometry_to_raw,
@@ -58,6 +61,10 @@ PLATFORM_KIND_FLAGS = {
     "vertical_down": 0x80,
     "vertical_up": 0xA0,
 }
+DELETE_SELECTION_HINT = (
+    "Select an artifact, platform, CV, belt, control, decor decal, or reflector first. "
+    "Actors are inspect-only for now."
+)
 
 
 @dataclass(frozen=True)
@@ -368,6 +375,7 @@ class LevelEditorApp(tk.Tk):
         tools_row = ttk.Frame(right)
         tools_row.pack(fill=tk.X, padx=6, pady=(6, 2))
         ttk.Label(tools_row, text="Editor").pack(side=tk.LEFT)
+        ttk.Label(tools_row, textvariable=self.palette_selection_var, wraplength=220, justify=tk.RIGHT).pack(side=tk.RIGHT)
 
         view_row = ttk.Frame(right)
         view_row.pack(fill=tk.X, padx=6, pady=(0, 6))
@@ -380,12 +388,25 @@ class LevelEditorApp(tk.Tk):
         ttk.Button(action_row, text="Select / move", command=self.select_selection_mode).pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(action_row, text="Delete selected", command=self.delete_selected_editor_object).pack(side=tk.LEFT, padx=(6, 0))
 
-        ttk.Label(right, textvariable=self.palette_selection_var, wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
+        self.editor_palettes = ttk.Notebook(right)
+        self.editor_palettes.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
 
-        self.placeable_settings_host = ttk.Frame(right)
-        self.placeable_settings_host.pack(fill=tk.X, padx=6, pady=(0, 6))
+        tile_tab = ttk.Frame(self.editor_palettes)
+        object_tab = ttk.Frame(self.editor_palettes)
+        decor_tab = ttk.Frame(self.editor_palettes)
+        actor_tab = ttk.Frame(self.editor_palettes)
+        self.editor_palettes.add(tile_tab, text="Tile brush")
+        self.editor_palettes.add(object_tab, text="Mechanics")
+        self.editor_palettes.add(decor_tab, text="Decor")
+        self.editor_palettes.add(actor_tab, text="Actors")
+        self.editor_palettes.bind("<<NotebookTabChanged>>", self.on_editor_palette_tab_changed)
 
-        self.select_settings_frame = ttk.LabelFrame(self.placeable_settings_host, text="Selection")
+        tile_settings_host = ttk.Frame(tile_tab)
+        tile_settings_host.pack(fill=tk.X, padx=6, pady=(6, 0))
+        mechanics_settings_host = ttk.Frame(object_tab)
+        mechanics_settings_host.pack(fill=tk.X, padx=6, pady=(6, 0))
+
+        self.select_settings_frame = ttk.LabelFrame(mechanics_settings_host, text="Selection")
         ttk.Label(
             self.select_settings_frame,
             text="Select, move and delete existing room objects. Tile painting is handled separately by Tile brush.",
@@ -394,7 +415,7 @@ class LevelEditorApp(tk.Tk):
         ).pack(fill=tk.X, padx=6, pady=6)
         ttk.Label(self.select_settings_frame, textvariable=self.editor_info, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
 
-        self.tile_settings_frame = ttk.LabelFrame(self.placeable_settings_host, text="Tile brush")
+        self.tile_settings_frame = ttk.LabelFrame(tile_settings_host, text="Tile brush")
         tile_row = ttk.Frame(self.tile_settings_frame)
         tile_row.pack(fill=tk.X, padx=6, pady=(6, 6))
         ttk.Label(tile_row, text="Tile").pack(side=tk.LEFT)
@@ -415,7 +436,7 @@ class LevelEditorApp(tk.Tk):
         tile_mode.bind("<<ComboboxSelected>>", lambda _event: self.on_palette_setting_changed())
         ttk.Label(self.tile_settings_frame, text="Auto modes retile nearby known terrain cells. Belts stay in the Belt tool so 0F/1F physics cannot be painted without a CV visual object.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
 
-        self.belt_settings_frame = ttk.LabelFrame(self.placeable_settings_host, text="Belt placement")
+        self.belt_settings_frame = ttk.LabelFrame(mechanics_settings_host, text="Belt placement")
         belt_row = ttk.Frame(self.belt_settings_frame)
         belt_row.pack(fill=tk.X, padx=6, pady=(6, 6))
         ttk.Label(belt_row, text="Kind").pack(side=tk.LEFT)
@@ -432,7 +453,7 @@ class LevelEditorApp(tk.Tk):
         ttk.Spinbox(belt_row, from_=1, to=38, textvariable=self.belt_length_var, width=4, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Label(self.belt_settings_frame, text="Belt = physics tile run + CV visual object. Select the CV afterwards to edit props/trigger links.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
 
-        self.platform_settings_frame = ttk.LabelFrame(self.placeable_settings_host, text="Platform placement")
+        self.platform_settings_frame = ttk.LabelFrame(mechanics_settings_host, text="Platform placement")
         platform_row = ttk.Frame(self.platform_settings_frame)
         platform_row.pack(fill=tk.X, padx=6, pady=(6, 6))
         ttk.Label(platform_row, text="Move").pack(side=tk.LEFT)
@@ -447,7 +468,7 @@ class LevelEditorApp(tk.Tk):
         platform_kind.bind("<<ComboboxSelected>>", lambda _event: self.on_palette_setting_changed())
         ttk.Label(self.platform_settings_frame, text="Platform = runtime P slot + invisible 07 support footprint. Placement uses the first free P slot.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
 
-        self.control_settings_frame = ttk.LabelFrame(self.placeable_settings_host, text="New control / trigger")
+        self.control_settings_frame = ttk.LabelFrame(mechanics_settings_host, text="New control / trigger")
         ttk.Label(self.control_settings_frame, text="Targets").grid(row=0, column=0, sticky="e", padx=(6, 2), pady=(6, 2))
         ttk.Entry(self.control_settings_frame, textvariable=self.control_targets_var, width=22).grid(row=0, column=1, sticky="ew", padx=(0, 6), pady=(6, 2))
         ttk.Label(self.control_settings_frame, text="State").grid(row=1, column=0, sticky="e", padx=(6, 2), pady=2)
@@ -460,8 +481,61 @@ class LevelEditorApp(tk.Tk):
             justify=tk.LEFT,
         ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
 
-        self.object_settings_frame = ttk.LabelFrame(self.placeable_settings_host, text="Object placement")
+        self.object_settings_frame = ttk.LabelFrame(mechanics_settings_host, text="Object placement")
         ttk.Label(self.object_settings_frame, text="Choose an object from Object placement, then click in the room to place it. Use Select objects to move or delete existing objects.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=6)
+
+        tile_frame = ttk.Frame(tile_tab)
+        tile_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(6, 0))
+        self.tile_palette_canvas = tk.Canvas(tile_frame, bg="#202020", width=260)
+        tile_scroll = ttk.Scrollbar(tile_frame, orient=tk.VERTICAL, command=self.tile_palette_canvas.yview)
+        self.tile_palette_canvas.configure(yscrollcommand=tile_scroll.set)
+        self.tile_palette_canvas.grid(row=0, column=0, sticky="nsew")
+        tile_scroll.grid(row=0, column=1, sticky="ns")
+        tile_frame.rowconfigure(0, weight=1)
+        tile_frame.columnconfigure(0, weight=1)
+        self.tile_palette_canvas.bind("<Button-1>", self.tile_palette_click)
+
+        object_frame = ttk.Frame(object_tab)
+        object_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(6, 0))
+        self.object_palette_canvas = tk.Canvas(object_frame, bg="#202020", width=260)
+        object_scroll = ttk.Scrollbar(object_frame, orient=tk.VERTICAL, command=self.object_palette_canvas.yview)
+        self.object_palette_canvas.configure(yscrollcommand=object_scroll.set)
+        self.object_palette_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        object_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        object_frame.columnconfigure(0, weight=1)
+        self.object_palette_canvas.bind("<Button-1>", self.object_palette_click)
+
+        decor_settings = ttk.Frame(decor_tab)
+        decor_settings.pack(fill=tk.X, padx=6, pady=(6, 4))
+        ttk.Label(decor_settings, text="Code").pack(side=tk.LEFT)
+        ttk.Entry(decor_settings, textvariable=self.decor_code_var, width=6).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(
+            decor_tab,
+            text="Theme decor from the room visual compact3 table. Choose a decal, click to place it, or select an existing V handle to move/delete it.",
+            wraplength=260,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=6, pady=(0, 4))
+        decor_frame = ttk.Frame(decor_tab)
+        decor_frame.pack(fill=tk.BOTH, expand=True)
+        self.decor_palette_canvas = tk.Canvas(decor_frame, bg="#202020", width=260)
+        decor_scroll = ttk.Scrollbar(decor_frame, orient=tk.VERTICAL, command=self.decor_palette_canvas.yview)
+        self.decor_palette_canvas.configure(yscrollcommand=decor_scroll.set)
+        self.decor_palette_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        decor_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.decor_palette_canvas.bind("<Button-1>", self.decor_palette_click)
+
+        ttk.Label(
+            actor_tab,
+            text="Current room actors are selectable for inspection. Placement and path editing can plug in here next.",
+            wraplength=260,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=6, pady=(6, 4))
+        self.actor_palette_canvas = tk.Canvas(actor_tab, bg="#202020", width=260)
+        actor_scroll = ttk.Scrollbar(actor_tab, orient=tk.VERTICAL, command=self.actor_palette_canvas.yview)
+        self.actor_palette_canvas.configure(yscrollcommand=actor_scroll.set)
+        self.actor_palette_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(0, 6))
+        actor_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=(0, 6))
+        self.actor_palette_canvas.bind("<Button-1>", self.actor_palette_click)
 
         prop_box = ttk.LabelFrame(right, text="Selected object properties")
         prop_box.pack(fill=tk.X, padx=6, pady=(0, 6))
@@ -493,74 +567,6 @@ class LevelEditorApp(tk.Tk):
         self.property_apply_button = ttk.Button(prop_box, text="Apply", command=self.apply_selected_properties)
         self.property_note_label = ttk.Label(prop_box, textvariable=self.property_note_var, wraplength=260, justify=tk.LEFT)
         prop_box.columnconfigure(3, weight=1)
-
-        self.editor_palettes = ttk.Notebook(right)
-        self.editor_palettes.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
-
-        tile_tab = ttk.Frame(self.editor_palettes)
-        object_tab = ttk.Frame(self.editor_palettes)
-        decor_tab = ttk.Frame(self.editor_palettes)
-        actor_tab = ttk.Frame(self.editor_palettes)
-        self.editor_palettes.add(tile_tab, text="Tile brush")
-        self.editor_palettes.add(object_tab, text="Mechanics")
-        self.editor_palettes.add(decor_tab, text="Decor")
-        self.editor_palettes.add(actor_tab, text="Actors")
-        self.editor_palettes.bind("<<NotebookTabChanged>>", self.on_editor_palette_tab_changed)
-
-        tile_frame = ttk.Frame(tile_tab)
-        tile_frame.pack(fill=tk.BOTH, expand=True)
-        self.tile_palette_canvas = tk.Canvas(tile_frame, bg="#202020", width=260)
-        tile_scroll = ttk.Scrollbar(tile_frame, orient=tk.VERTICAL, command=self.tile_palette_canvas.yview)
-        self.tile_palette_canvas.configure(yscrollcommand=tile_scroll.set)
-        self.tile_palette_canvas.grid(row=0, column=0, sticky="nsew")
-        tile_scroll.grid(row=0, column=1, sticky="ns")
-        tile_frame.rowconfigure(0, weight=1)
-        tile_frame.columnconfigure(0, weight=1)
-        self.tile_palette_canvas.bind("<Button-1>", self.tile_palette_click)
-
-        object_frame = ttk.Frame(object_tab)
-        object_frame.pack(fill=tk.BOTH, expand=True)
-        self.object_palette_canvas = tk.Canvas(object_frame, bg="#202020", width=260)
-        object_scroll = ttk.Scrollbar(object_frame, orient=tk.VERTICAL, command=self.object_palette_canvas.yview)
-        self.object_palette_canvas.configure(yscrollcommand=object_scroll.set)
-        self.object_palette_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        object_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        object_frame.columnconfigure(0, weight=1)
-        self.object_palette_canvas.bind("<Button-1>", self.object_palette_click)
-
-        decor_settings = ttk.Frame(decor_tab)
-        decor_settings.pack(fill=tk.X, padx=6, pady=(6, 4))
-        ttk.Label(decor_settings, text="Code").pack(side=tk.LEFT)
-        ttk.Entry(decor_settings, textvariable=self.decor_code_var, width=6).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Label(
-            decor_tab,
-            text="Theme decor from the room visual compact3 table. Choose a decal, click to place it, or select an existing V handle to move/delete it.",
-            wraplength=260,
-            justify=tk.LEFT,
-        ).pack(fill=tk.X, padx=6, pady=(0, 4))
-        decor_frame = ttk.Frame(decor_tab)
-        decor_frame.pack(fill=tk.BOTH, expand=True)
-        self.decor_palette_canvas = tk.Canvas(decor_frame, bg="#202020", width=260)
-        decor_scroll = ttk.Scrollbar(decor_frame, orient=tk.VERTICAL, command=self.decor_palette_canvas.yview)
-        self.decor_palette_canvas.configure(yscrollcommand=decor_scroll.set)
-        self.decor_palette_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        decor_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.decor_palette_canvas.bind("<Button-1>", self.decor_palette_click)
-
-        actor_actions = ttk.Frame(actor_tab)
-        actor_actions.pack(fill=tk.X, padx=6, pady=(6, 4))
-        ttk.Button(actor_actions, text="Select actor", command=self.select_actor_mode).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Label(
-            actor_tab,
-            text="Actor editing scaffold. Current room enemies are selectable on the canvas for inspection; placement and path editing can plug in here next.",
-            wraplength=260,
-            justify=tk.LEFT,
-        ).pack(fill=tk.X, padx=6, pady=(0, 4))
-        self.actor_palette_canvas = tk.Canvas(actor_tab, bg="#202020", width=260)
-        actor_scroll = ttk.Scrollbar(actor_tab, orient=tk.VERTICAL, command=self.actor_palette_canvas.yview)
-        self.actor_palette_canvas.configure(yscrollcommand=actor_scroll.set)
-        self.actor_palette_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(0, 6))
-        actor_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=(0, 6))
 
     def on_editor_tool_changed(self) -> None:
         self.refresh_placeable_settings()
@@ -824,10 +830,10 @@ class LevelEditorApp(tk.Tk):
             self.select_editor_object("belt_teal" if code == 0x1F else "belt_grey")
             self.status.set(f"Tile {code:02X} is conveyor physics; use the Belt tool so it stays paired with a CV visual object.")
             return
-        if code == COLLISION_TILE_CODE:
-            self.select_editor_object("platform_horizontal_left")
-            self.status.set("Tile 07 is platform/support collision; use Mechanics platform placement so it stays paired with a P slot.")
-            return
+        # 0x07 is used both as a platform support footprint and as a standalone
+        # invisible solid tile in several original rooms.  Selecting it from the
+        # tile palette must therefore keep the user in the Terrain brush instead
+        # of switching to platform placement.
         self.editor_tool_var.set("terrain")
         self.editor_selected_ref = None
         self.editor_drag_offset = None
@@ -1044,6 +1050,7 @@ class LevelEditorApp(tk.Tk):
 
     def _platforms_touching_cells(self, room, cells: set[tuple[int, int]]) -> list:
         return [platform for platform in parse_platform_triplets(room) if platform.visible and self._platform_footprint_cells(platform) & cells]
+
     def _update_editor_info(self) -> None:
         tool = self.editor_tool_var.get()
         if tool == "terrain":
@@ -1129,16 +1136,15 @@ class LevelEditorApp(tk.Tk):
         return targets
 
     def _rewrite_control_targets(self, body: bytearray, targets: list[int]) -> None:
-        if len(body) < 5:
+        if len(body) < 4:
             if targets:
-                raise ValueError("this control record has no target-list bytes")
+                raise ValueError("this control record has no state/subtype byte before the target list")
             return
-        capacity = len(body) - 4
-        if len(targets) != capacity:
-            raise ValueError(f"this control record currently has exactly {capacity} target byte(s); resizing records is not enabled yet")
         # body[3] is state/subtype. Do not treat it as a target id.
-        for i, target in enumerate(targets):
-            body[4 + i] = target
+        # Target lists are intentionally resizable in the editor: one switch can
+        # control multiple runtime objects, e.g. P1,P2 or P0,CV0.
+        del body[4:]
+        body.extend(target & 0xFF for target in targets)
 
     def _reset_property_labels(self) -> None:
         self.property_label_x_var.set("x")
@@ -1263,21 +1269,21 @@ class LevelEditorApp(tk.Tk):
                 self._clear_property_values()
                 self._layout_property_panel()
                 return
-            self._layout_property_panel(rows=(True, True, True), apply=True)
+            self._layout_property_panel(rows=(True, True, False), apply=True)
             pl = platforms[0]
             refs = [cmd.record.index for cmd in control_commands(room) if any(t.kind == "platform" and t.index == pl.index for t in control_targets(cmd))]
+            controlled_by = ", ".join(f"C{i}" for i in refs) or "none"
             self.property_title_var.set(f"P{pl.index} platform/runtime object")
             self.property_label_x_var.set("raw x")
             self.property_label_y_var.set("raw y")
             self.property_label_len_var.set("target slot")
             self.property_label_code_var.set("flags")
-            self.property_label_props_var.set("controlled by")
             self.property_x_var.set(str(pl.x_raw))
             self.property_y_var.set(str(pl.y))
             self.property_len_var.set(f"P{pl.index}")
             self.property_code_var.set(f"{pl.flags:02X}")
-            self.property_props_var.set(",".join(f"C{i}" for i in refs))
-            self.property_note_var.set("Target slot is the fixed runtime slot id. Buttons/switches point here with P0/P1/... target bytes. Use the selected control's Targets field to link or unlink this platform. Flags 40/60 are horizontal families, 80/A0 vertical families.")
+            self.property_props_var.set("")
+            self.property_note_var.set(f"Controlled by: {controlled_by}. Target slot is fixed. Buttons/switches point here with P0/P1/... target bytes; edit links on the selected control's Targets field. Flags 40/60 are horizontal families, 80/A0 vertical families.")
         elif kind == "control":
             idx = ref[1]
             cmds = [cmd for cmd in control_commands(room) if cmd.record.index == idx]
@@ -1367,6 +1373,63 @@ class LevelEditorApp(tk.Tk):
                 note_bits.append("hidden is shown as a checkbox")
             suffix = "; ".join(note_bits) or "raw actor bytes are shown because this actor uses non-binary state values"
             self.property_note_var.set(f"Actor table is inspect-only for now; {suffix}.")
+        elif kind == "crystal":
+            idx = ref[1]
+            table = laser_crystal_table(room)
+            entry = None if table is None else next((e for e in table.entries if e.index == idx), None)
+            if entry is None:
+                self.property_title_var.set("Selected reflector no longer exists")
+                self._clear_property_values()
+                self._layout_property_panel()
+                return
+            cmd_by_index = {cmd.record.index: cmd for cmd in control_commands(room)}
+            refs = [cmd.record.index for cmd in cmd_by_index.values() if any(t.kind == "mirror" and t.index == entry.index for t in control_targets(cmd))]
+            def _ctrl_label(i: int) -> str:
+                cmd = cmd_by_index.get(i)
+                if cmd is None:
+                    return f"C{i}"
+                if cmd.command == 0x00:
+                    return f"B{i}"
+                if cmd.command == 0x01:
+                    return f"S{i}"
+                if cmd.command == 0x02:
+                    return f"J{i}"
+                return f"C{i}"
+            controlled_by = ", ".join(_ctrl_label(i) for i in refs) or "none"
+            self._layout_property_panel(rows=(True, True, True), apply=True)
+            self.property_title_var.set(f"Reflector R{entry.index}")
+            self.property_label_x_var.set("raw x")
+            self.property_label_y_var.set("raw y")
+            self.property_label_len_var.set("code")
+            self.property_label_code_var.set("sprite")
+            self.property_label_props_var.set("controlled by")
+            self.property_x_var.set(str(entry.x_raw))
+            self.property_y_var.set(str(entry.y))
+            self.property_len_var.set(f"{entry.code:02X}")
+            self.property_code_var.set(str(entry.code & 0x3F))
+            self.property_props_var.set(controlled_by)
+            self.property_note_var.set("Section_c laser/reflector entry. Controls point here with M0/M1/...; edit links on the selected button/switch Targets field. High bits in code are preserved as raw state/flags; a reflector with no incoming control may be autonomous or state-driven elsewhere.")
+        elif kind == "known_pickup":
+            idx = ref[1]
+            pickups = self._known_extra_pickups_for_room(self.current_level().part(self.part_var.get()), room)
+            if idx is None or not 0 <= idx < len(pickups):
+                self.property_title_var.set("Selected pickup no longer exists")
+                self._clear_property_values()
+                self._layout_property_panel()
+                return
+            pickup = pickups[idx]
+            self._layout_property_panel(rows=(True, True, False), apply=False)
+            name = "Apple" if pickup.resource_id == 45 else "Known pickup"
+            self.property_title_var.set(name)
+            self.property_label_x_var.set("x")
+            self.property_label_y_var.set("y")
+            self.property_label_len_var.set("source")
+            self.property_label_code_var.set("sprite")
+            self.property_x_var.set(str(pickup.x))
+            self.property_y_var.set(str(pickup.y))
+            self.property_len_var.set("verified screenshot")
+            self.property_code_var.set(f"{pickup.archive}:{pickup.resource_id:03d}:{pickup.sprite_index}")
+            self.property_note_var.set("Read-only verified apple marker. Its original gameplay storage is still unknown, so the editor no longer writes fake apple compact3 records that break the real game.")
         elif kind in {"exit_door", "player_start", "artifact"}:
             self._layout_property_panel(rows=(True, True, False), apply=True)
             self.property_label_x_var.set("raw x")
@@ -1495,7 +1558,7 @@ class LevelEditorApp(tk.Tk):
                     current_targets = control_ref_values(cmd)
                     targets = self._parse_control_targets(self.property_len_var.get(), current=current_targets)
                     self._rewrite_control_targets(body, targets)
-                set_control_command_body(room, idx, bytes(body))
+                set_control_command_body(room, idx, bytes(body), allow_resize=True)
                 new_targets = [decode_control_target(value).label for value in body[4:]]
                 self.status.set(f"Updated C{idx}: targets={','.join(new_targets)} body={bytes(body).hex(' ')}")
             elif kind == "decor":
@@ -1636,6 +1699,14 @@ class LevelEditorApp(tk.Tk):
             colour = major if y % 4 == 0 else minor
             self.editor_canvas.create_line(0, py, width, py, fill=colour, stipple="gray75")
 
+
+    def _known_extra_pickups_for_room(self, part, room):
+        # Renderer keeps visually verified pickups whose original storage schema
+        # is still unknown.  Expose them in the editor as read-only handles so
+        # they are visible/selectable instead of silently looking like terrain.
+        key = (self.current_level().index + 1, part.index, room.index)
+        return list(getattr(self.project.renderer, "KNOWN_EXTRA_PICKUPS", {}).get(key, []))
+
     def _draw_editor_handle(self, handle: EditorHandle) -> None:
         zoom = self.zoom_var.get()
         sx = handle.x * zoom
@@ -1658,6 +1729,9 @@ class LevelEditorApp(tk.Tk):
         for cand in header_object_candidates(part.header):
             if cand.room_plus_one == room.index + 1:
                 handles.append(EditorHandle(("artifact", cand.index), cand.x_raw * 2, cand.y_raw, f"D{cand.index}", "#ff40ff"))
+        for i, pickup in enumerate(self._known_extra_pickups_for_room(part, room)):
+            label = "Apple" if pickup.resource_id == 45 else f"Pickup{i}"
+            handles.append(EditorHandle(("known_pickup", i), pickup.x + 8, pickup.y + 8, label, "#ff5050"))
         for platform in parse_platform_triplets(room):
             if platform.visible:
                 handles.append(EditorHandle(("platform", platform.index), platform.x_raw * 2, platform.y, f"P{platform.index}", "#ffb000"))
@@ -1688,10 +1762,19 @@ class LevelEditorApp(tk.Tk):
         for cv in parse_conveyor_visual_records(room):
             cv_cells |= cv.cells
             handles.append(EditorHandle(self._cv_ref(cv), cv.x_raw * 2, cv.y - 8, f"CV{cv.index}×{cv.length}", "#4aa8ff"))
+        crystal_table = laser_crystal_table(room)
+        if crystal_table is not None:
+            for entry in crystal_table.entries:
+                handles.append(EditorHandle(("crystal", entry.index), entry.x_raw * 2, entry.y, f"R{entry.index}:{entry.code & 0x3F:02X}", "#44d7ff"))
         visual_table = visual_compact3_table(room)
         if visual_table is not None:
             for entry in visual_table.entries:
-                handles.append(EditorHandle(("decor", entry.index), entry.x_raw * 2, entry.y, f"V{entry.index}:{entry.code:02X}", "#d4a8ff"))
+                label = f"V{entry.index}:{entry.code:02X}"
+                colour = "#d4a8ff"
+                if entry.code == 0xFD:
+                    label = f"Apple V{entry.index}"
+                    colour = "#ff5050"
+                handles.append(EditorHandle(("decor", entry.index), entry.x_raw * 2, entry.y, label, colour))
         # Tile-only belt runs are physics footprints. Show them as a separate
         # grey handle only when no CV object covers them, because in-game they
         # are invisible but still push the player.
@@ -1713,10 +1796,6 @@ class LevelEditorApp(tk.Tk):
         if value in CONVEYOR_PHYSICS_TILE_CODES:
             self.select_editor_object("belt_teal" if value == 0x1F else "belt_grey")
             self.status.set(f"Tile {value:02X} is conveyor physics. Switched to Belt placement to keep the CV visual object and physics footprint together.")
-            return
-        if value == COLLISION_TILE_CODE:
-            self.select_editor_object("platform_horizontal_left")
-            self.status.set("Tile 07 is platform/support collision. Switched to Mechanics platform placement to keep it paired with a P slot.")
             return
         cx, cy = cell
         room = self.current_room()
@@ -1742,7 +1821,10 @@ class LevelEditorApp(tk.Tk):
         touched_belts = self._belt_runs_touching_cells(room, cells)
         for belt in touched_belts:
             changed = self._clear_belt_run(room, belt) or changed
-        touched_platforms = self._platforms_touching_cells(room, cells)
+        # Painting another terrain value over a platform footprint deletes the
+        # platform composite.  Painting 0x07 itself should not delete runtime P
+        # records because 0x07 is also a legitimate standalone invisible tile.
+        touched_platforms = [] if value == COLLISION_TILE_CODE else self._platforms_touching_cells(room, cells)
         for platform in touched_platforms:
             changed = self._clear_platform_footprint(room, platform) or changed
             clear_runtime_triplet_slot(room, platform.index)
@@ -1909,6 +1991,15 @@ class LevelEditorApp(tk.Tk):
                     self.editor_tool_var.set("decor")
                     if hasattr(self, "editor_palettes"):
                         self.editor_palettes.select(2)
+            elif kind == "actor" and slot is not None:
+                self.editor_tool_var.set("actor")
+                if hasattr(self, "editor_palettes"):
+                    self.editor_palettes.select(3)
+            elif kind == "known_pickup":
+                self.editor_object_var.set("apple")
+                self.editor_tool_var.set("object")
+                if hasattr(self, "editor_palettes"):
+                    self.editor_palettes.select(1)
             else:
                 self.editor_object_var.set(kind)
             self.status.set(f"Selected {handle.label}")
@@ -1966,6 +2057,16 @@ class LevelEditorApp(tk.Tk):
             body[1] = self._clamp_byte(round(x / 2))
             body[2] = self._clamp_byte(y)
             set_control_command_body(room, slot, bytes(body))
+        elif kind == "crystal" and slot is not None:
+            table = laser_crystal_table(room)
+            entry = None if table is None else next((e for e in table.entries if e.index == slot), None)
+            if entry is None:
+                self.status.set("Selected reflector no longer exists.")
+                self.editor_selected_ref = None
+                self.editor_drag_offset = None
+                self.redraw_editor_room()
+                return
+            set_laser_crystal_entry(room, entry.index, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y), code=entry.code)
         elif kind == "decor" and slot is not None:
             entry = self._decor_from_ref(room, self.editor_selected_ref)
             if entry is None:
@@ -1977,6 +2078,9 @@ class LevelEditorApp(tk.Tk):
             set_visual_compact3_entry(room, entry.index, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y), code=entry.code)
         elif kind == "actor":
             self.status.set("Actor table handles are selectable for inspection; movement editing is not enabled yet.")
+            return
+        elif kind == "known_pickup":
+            self.status.set("This apple is a verified read-only marker; original apple storage is still unknown, so the editor will not write fake apple records into the game data.")
             return
         elif kind == "conveyor" and slot is not None:
             cv = self._cv_from_ref(room, self.editor_selected_ref)
@@ -2159,6 +2263,23 @@ class LevelEditorApp(tk.Tk):
             x_raw = self._clamp_byte(round((x + 8) / 2))
             y_raw = self._clamp_byte(y + 16)
             part.set_artifact_slot(slot, room.index, x_raw, y_raw)
+        elif obj == "apple":
+            self.status.set("Apple placement is disabled for now: the previous 0xFD marker was only an editor preview and appears as garbage in the real game. Existing verified apples stay visible/read-only until the gameplay storage is decoded.")
+            return
+        elif obj.startswith("reflector_"):
+            try:
+                sprite_index = int(obj.split("_", 1)[1]) & 0x3F
+            except ValueError:
+                self.status.set("Invalid reflector kind.")
+                return
+            try:
+                idx = add_laser_crystal_entry(room, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y), code=sprite_index)
+            except ValueError as exc:
+                self.status.set(f"Cannot place reflector: {exc}")
+                return
+            self.editor_selected_ref = ("crystal", idx)
+            self.editor_drag_offset = None
+            self.status.set(f"Placed reflector R{idx} sprite={sprite_index} at x={x} y={y}. Use M{idx} in a control Targets field to rotate/control it.")
         elif obj in {"ceiling_button", "floor_switch", "jello"}:
             command_by_object = {"ceiling_button": 0x00, "floor_switch": 0x01, "jello": 0x02}
             command = command_by_object[obj]
@@ -2180,7 +2301,7 @@ class LevelEditorApp(tk.Tk):
         self._set_dirty()
         self.redraw_room()
         self.redraw_editor_object_palette()
-        if not obj in {"ceiling_button", "floor_switch", "jello"}:
+        if obj not in {"ceiling_button", "floor_switch", "jello", "apple"} and not obj.startswith("reflector_"):
             self.status.set(f"Placed {obj} at x={x} y={y}")
 
     def delete_selected_header_object(self) -> None:
@@ -2193,12 +2314,12 @@ class LevelEditorApp(tk.Tk):
             if obj.startswith("artifact_"):
                 ref = ("artifact", int(obj.split("_", 1)[1]))
         if ref is None:
-            self.status.set("Select an artifact, platform, CV, belt, or control first, then press Delete. Actors are inspect-only for now.")
+            self.status.set(DELETE_SELECTION_HINT)
             return "break"
         kind = ref[0]
         slot = ref[1] if len(ref) > 1 else None
         if kind in {"artifact", "platform", "conveyor"} and slot is None:
-            self.status.set("Select an artifact, platform, CV, belt, or control first, then press Delete. Actors are inspect-only for now.")
+            self.status.set(DELETE_SELECTION_HINT)
             return "break"
         if kind == "artifact":
             part = self.current_level().part(self.part_var.get())
@@ -2224,14 +2345,20 @@ class LevelEditorApp(tk.Tk):
         elif kind == "control":
             room = self.current_room()
             delete_control_command(room, slot)
+        elif kind == "crystal":
+            room = self.current_room()
+            delete_laser_crystal_entry(room, slot)
         elif kind == "decor":
             room = self.current_room()
             delete_visual_compact3_entry(room, slot)
         elif kind == "actor":
             self.status.set("Actor deletion is intentionally disabled for now; use properties to inspect actor fields.")
             return "break"
+        elif kind == "known_pickup":
+            self.status.set("This is a read-only verified apple marker; original apple storage is still unknown.")
+            return "break"
         else:
-            self.status.set("Select an artifact, platform, CV, belt, or control first, then press Delete. Actors are inspect-only for now.")
+            self.status.set(DELETE_SELECTION_HINT)
             return "break"
         if self.editor_selected_ref == ref:
             self.editor_selected_ref = None
@@ -2552,6 +2679,9 @@ class LevelEditorApp(tk.Tk):
         for cand in header_object_candidates(part.header):
             if cand.room_plus_one == room.index + 1:
                 pickups.append((f"D{cand.index} artifact", "AE000", 44, 0, f"x={cand.x_raw} y={cand.y_raw}"))
+        for pickup in self._known_extra_pickups_for_room(part, room):
+            label = "Apple" if pickup.resource_id == 45 else "Known pickup"
+            pickups.append((label, pickup.archive, pickup.resource_id, pickup.sprite_index, f"x={pickup.x} y={pickup.y} verified/screenshot"))
         if pickups:
             dynamic.append(("Current room: pickups", pickups))
 
@@ -2613,6 +2743,8 @@ class LevelEditorApp(tk.Tk):
         if lower_note.startswith("platform "):
             kind = lower_note.removeprefix("platform ").strip()
             return f"platform_{kind}" if kind in PLATFORM_KIND_FLAGS else None
+        if archive == "AE000" and resource_id == 19:
+            return f"reflector_{sprite_index & 0x3F}"
         for value, _label, a, rid, si in self.editor_object_specs():
             if (archive, resource_id, sprite_index) == (a, rid, si):
                 return value
@@ -2707,7 +2839,11 @@ class LevelEditorApp(tk.Tk):
         part = self.current_level().part(self.part_var.get())
         theme = part.theme
         normal_codes = sorted(self.project.renderer.code_to_sprite.keys())
-        special_codes = [0x90, 0xA0, 0xB0, 0xC0]
+        # 0x07 is an invisible solid/support tile.  It deliberately has no
+        # terrain sprite in the renderer, but it must remain paintable because
+        # the original levels use it as standable hidden collision, including
+        # around some statue/puzzle setups.
+        special_codes = [COLLISION_TILE_CODE, 0x90, 0xA0, 0xB0, 0xC0]
         codes = []
         for code in normal_codes + special_codes:
             if code not in codes:
@@ -2738,6 +2874,8 @@ class LevelEditorApp(tk.Tk):
                 tk_img = ImageTk.PhotoImage(thumb)
                 self.tk_tile_images.append(tk_img)
                 self.tile_palette_canvas.create_image(x + 34, y + 22, image=tk_img)
+            elif code == COLLISION_TILE_CODE:
+                self.tile_palette_canvas.create_rectangle(x + 22, y + 12, x + 46, y + 32, outline="#ff66dd", fill="#ff66dd", stipple="gray75")
             self.tile_palette_canvas.create_text(x + 4, y + 38, anchor="nw", text=f"{code:02X}", fill="#ffffff", font=("Consolas", 9))
 
         rows = (len(codes) + cols - 1) // cols
@@ -2823,6 +2961,14 @@ class LevelEditorApp(tk.Tk):
             ("ceiling_button", "Ceiling button", "AE000", 39, 0),
             ("floor_switch", "Floor switch", "AE000", 40, 0),
             ("jello", "Jello / light trigger", "AE000", 41, 0),
+            ("apple", "Apple (read-only / storage WIP)", "AE000", 45, 0),
+            ("reflector_0", "Reflector 0", "AE000", 19, 0),
+            ("reflector_2", "Reflector 2", "AE000", 19, 2),
+            ("reflector_4", "Reflector 4", "AE000", 19, 4),
+            ("reflector_7", "Reflector 7", "AE000", 19, 7),
+            ("reflector_9", "Reflector 9", "AE000", 19, 9),
+            ("reflector_16", "Reflector 16", "AE000", 19, 16),
+            ("reflector_22", "Reflector 22", "AE000", 19, 22),
             ("belt_grey", "Conveyor grey", "AE000", 38, 0),
             ("belt_teal", "Conveyor teal", "AE000", 38, 12),
             ("platform_horizontal_left", "Platform left", "AE000", 47, 0),
@@ -2899,6 +3045,7 @@ class LevelEditorApp(tk.Tk):
             return
         self.actor_palette_canvas.delete("all")
         self.tk_actor_images = []
+        self.actor_palette_hitboxes = []
         part = self.current_level().part(self.part_var.get())
         room = self.current_room()
         actors = actor_records_for_room(part, room.index)
@@ -2915,6 +3062,7 @@ class LevelEditorApp(tk.Tk):
             fill = "#4f6f8f" if self.editor_selected_ref == ("actor", actor.index) else "#343434"
             outline = "#9ed0ff" if not actor.hidden else "#777777"
             self.actor_palette_canvas.create_rectangle(8, y, 246, y + 52, outline=outline, fill=fill)
+            self.actor_palette_hitboxes.append((8, y, 246, y + 52, actor.index))
             sprite = self.project.graphics.sprite("AE000", self._actor_resource_id(actor.frame), self._actor_sprite_index(actor.frame))
             if sprite is not None:
                 thumb = sprite.copy()
@@ -2929,6 +3077,24 @@ class LevelEditorApp(tk.Tk):
             self.actor_palette_canvas.create_text(56, y + 27, anchor="nw", text=note, fill="#c8c8c8", font=note_font)
             y += 58
         self.actor_palette_canvas.config(scrollregion=(0, 0, 260, y + 8))
+
+    def actor_palette_click(self, event) -> None:
+        if not hasattr(self, "actor_palette_hitboxes"):
+            return
+        x = int(self.actor_palette_canvas.canvasx(event.x))
+        y = int(self.actor_palette_canvas.canvasy(event.y))
+        for x0, y0, x1, y1, actor_index in self.actor_palette_hitboxes:
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                self.editor_selected_ref = ("actor", actor_index)
+                self.editor_drag_offset = None
+                self.editor_tool_var.set("actor")
+                if hasattr(self, "editor_palettes"):
+                    self.editor_palettes.select(3)
+                self.refresh_placeable_settings()
+                self.redraw_actor_palette()
+                self.redraw_editor_room()
+                self.status.set(f"Selected actor A{actor_index}.")
+                return
 
     def redraw_bank_sheet(self) -> None:
         rid = self.bank_var.get() or next(iter(self.project.graphics.banks.keys()), "AE001:021")

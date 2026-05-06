@@ -151,6 +151,10 @@ class RoomRenderer:
     # Apples likely belong to the same broad collectible family as diamonds,
     # but the general parser hook still needs to be found in the room data/EXE.
     KNOWN_EXTRA_PICKUPS: ClassVar[dict[tuple[int, int, int], list[KnownExtraPickup]]] = {
+        # These apples are visually verified from real-game screenshots, but
+        # their original storage schema is not decoded yet.  Keep them explicit
+        # so they render and expose editor handles instead of disappearing.
+        (1, 0, 1): [KnownExtraPickup("AE000", 45, 0, 196, 99)],
         (18, 0, 0): [KnownExtraPickup("AE000", 45, 0, 83, 46)],
     }
 
@@ -424,11 +428,17 @@ class RoomRenderer:
                 room_index=room.index,
                 part_index=room.part_index,
             )
-            # Large statue/sarcophagus artwork sits a little lower than the
-            # generic foreground decor anchor.
-            if ref.archive == "AE001" and ref.resource_id == 26 and ref.sprite_index in {24, 25}:
-                delta = (delta[0], delta[1] + 2)
-            x, y = compact3_xy(entry, sprite, "screen_exe", delta=delta)
+            # Editor-created apple markers use their compact3 x/y as a plain
+            # top-left preview coordinate.  This avoids the generic decor anchor
+            # offset, which made apples appear away from the clicked point.
+            if ref.archive == "AE000" and ref.resource_id == 45:
+                x, y = entry.x_raw * 2, entry.y
+            else:
+                # Large statue/sarcophagus artwork sits a little lower than the
+                # generic foreground decor anchor.
+                if ref.archive == "AE001" and ref.resource_id == 26 and ref.sprite_index in {24, 25}:
+                    delta = (delta[0], delta[1] + 2)
+                x, y = compact3_xy(entry, sprite, "screen_exe", delta=delta)
             self._blit(image, sprite, x, y)
 
     def _sprite_for_visual_entry(self, entry: ObjectTableEntry, room: Room) -> Image.Image | None:

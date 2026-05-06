@@ -171,6 +171,23 @@ def control_ref_values(cmd: ControlCommand) -> list[int]:
     return [target.raw for target in control_targets(cmd)]
 
 
+# Visually confirmed mirror/reflector target overrides.  Mirror target bytes do
+# not behave as a plain section_c array index in every room.  For example, in
+# level 18 explorer room 8 the left ceiling button uses target byte 0x41 and
+# rotates the two left reflectors R0 and R2, while R1 appears autonomous.
+KNOWN_MIRROR_TARGET_OVERRIDES: dict[tuple[int, int, int], dict[int, list[int]]] = {
+    (18, 0, 8): {1: [0, 2]},
+}
+
+
+def mirror_target_indices(level, part, room: Room, target_index: int) -> list[int]:
+    key = (getattr(level, "index", -1), getattr(part, "index", -1), room.index)
+    override = KNOWN_MIRROR_TARGET_OVERRIDES.get(key, {})
+    if target_index in override:
+        return list(override[target_index])
+    return [target_index]
+
+
 def _is_projectile_actor(actor: ActorTableRecord) -> bool:
     name = actor.confirmed_name or ""
     projectile_names = {"Pill Projectile", "Energy Orb", "Fireball", "Sparkles"}
@@ -232,6 +249,7 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
 
     platform_by_index: dict[int, OverlayRect] = {}
     conveyor_by_index: dict[int, OverlayRect] = {}
+    crystal_by_index: dict[int, OverlayPoint] = {}
     for cid, x, y, width in _conveyor_runs(room):
         rect = OverlayRect("conveyor", f"CV{cid}", x, y, width, 16, f"CV{cid}", "#4aa8ff")
         conveyors.append(rect)
@@ -270,6 +288,22 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
                 )
             )
 
+
+    # Pre-index reflectors before processing control links, because control
+    # commands can target them with M0/M1/... bytes.  The visible points are
+    # still appended in the normal crystal overlay block below.
+    _crystal_table_for_links = laser_crystal_table(room)
+    if _crystal_table_for_links:
+        for _entry in _crystal_table_for_links.entries:
+            crystal_by_index[_entry.index] = OverlayPoint(
+                "crystal",
+                f"R{_entry.index}",
+                _entry.x_raw * 2,
+                _entry.y,
+                f"R{_entry.index} idx={_entry.code & 0x3F:02X} raw={_entry.code:02X}",
+                "#44d7ff",
+            )
+
     for cmd in control_commands(room):
         if cmd.command is None or cmd.x_raw is None or cmd.y_raw is None:
             continue
@@ -297,16 +331,34 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
                 target = platform_by_index.get(target_ref.index)
             elif target_ref.kind == "conveyor":
                 target = conveyor_by_index.get(target_ref.index)
+            elif target_ref.kind == "mirror":
+                for mirror_index in mirror_target_indices(level, part, room, target_ref.index):
+                    target = crystal_by_index.get(mirror_index)
+                    if target is None:
+                        continue
+                    links.append(
+                        OverlayLine(
+                            "trigger",
+                            f"{point.ident}->{target.ident}",
+                            (point.x, point.y),
+                            (target.x, target.y),
+                            f"{point.ident}->{target.ident}",
+                            "#00e0ff",
+                            dashed=cmd.command != 0x02,
+                        )
+                    )
+                continue
             else:
                 target = None
             if target is None:
                 continue
+            target_center = target.center if hasattr(target, "center") else (target.x, target.y)
             links.append(
                 OverlayLine(
                     "trigger",
                     f"{point.ident}->{target.ident}",
                     (point.x, point.y),
-                    target.center,
+                    target_center,
                     f"{point.ident}->{target.ident}",
                     "#00e0ff",
                     dashed=cmd.command != 0x02,
@@ -441,16 +493,16 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
         for entry in table.entries:
             x = entry.x_raw * 2
             y = entry.y
-            crystals.append(
-                OverlayPoint(
-                    "crystal",
-                    f"R{entry.index}",
-                    x,
-                    y,
-                    f"R{entry.index} idx={entry.code & 0x3F:02X}",
-                    "#44d7ff",
-                )
+            point = OverlayPoint(
+                "crystal",
+                f"R{entry.index}",
+                x,
+                y,
+                f"R{entry.index} idx={entry.code & 0x3F:02X} raw={entry.code:02X}",
+                "#44d7ff",
             )
+            crystals.append(point)
+            crystal_by_index[entry.index] = point
 
     room_links = transition_links_for_room(part, room.index)
     if room_links:

@@ -186,8 +186,12 @@ def decode_actor_script(part, actor: ActorTableRecord, *, max_bytes: int = 192, 
             raw = data[pc:pc + 3]
             commands.append(ActorScriptCommand(pc, opcode, raw, f"jump rel={rel:+d}"))
             if rel < 0:
+                # A few actors, notably the level 1 bat, keep trigger-gated
+                # movement branches after a small idle loop.  Mark the loop but
+                # continue scanning linearly so the overlay can still show those
+                # candidate route segments instead of collapsing to a zero-size
+                # path.
                 loop_detected = True
-                break
             pc += 3
             continue
 

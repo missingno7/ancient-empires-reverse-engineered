@@ -198,21 +198,47 @@ def control_commands(room: Room) -> list[ControlCommand]:
     return [ControlCommand(record) for record in directory.control_records]
 
 
-def set_control_command_body(room: Room, index: int, body: bytes) -> None:
-    """Rewrite one length-prefixed control command body in-place.
+def set_control_command_body(room: Room, index: int, body: bytes, *, allow_resize: bool = False) -> None:
+    """Rewrite one length-prefixed control command body.
 
-    This intentionally keeps the existing record length.  The trigger/control
-    format is still being reverse engineered, so changing record sizes would
-    shift all following payload sections and is too risky for the editor UI.
+    By default this preserves the existing record length.  When ``allow_resize``
+    is true the record may grow/shrink, which is needed for editor-side target
+    lists such as ``P1,P2``.  The room payload has a fixed-size trailing area, so
+    growth consumes zero padding after the structured payload and shrinkage adds
+    zero padding back at the same boundary.
     """
+    if not 1 <= len(body) <= 0xFE:
+        raise ValueError("control body must be 1..254 bytes")
     directory = parse_exe_payload_directory(room)
     if directory is None or not 0 <= index < len(directory.control_records):
         raise ValueError(f"control record out of range: {index}")
     record = directory.control_records[index]
     old_body = record.body
-    if len(body) != len(old_body):
+    if len(body) == len(old_body):
+        room.set_trailing_bytes(record.source_offset, [len(body) + 1])
+        room.set_trailing_bytes(record.source_offset + 1, list(body))
+        return
+    if not allow_resize:
         raise ValueError(f"control body must stay {len(old_body)} bytes, got {len(body)}")
-    room.set_trailing_bytes(record.source_offset + 1, list(body))
+
+    data = bytearray(room.trailing)
+    original_len = len(room.trailing)
+    old_raw_len = record.length
+    new_raw = bytes([len(body) + 1]) + bytes(body)
+    delta = len(new_raw) - old_raw_len
+    start = record.source_offset
+    end = start + old_raw_len
+    if delta > 0:
+        data[start:end] = new_raw
+        padding_start = _payload_padding_start(room) + delta
+        _delete_padding_bytes_after_insert(data, padding_start, delta, original_len)
+    else:
+        data[start:end] = new_raw
+        padding_start = _payload_padding_start(room) + delta
+        padding_start = max(0, min(len(data), padding_start))
+        data[padding_start:padding_start] = bytes(-delta)
+        del data[original_len:]
+    _replace_trailing(room, data)
 
 
 def _control_count_selector_offset(data: bytes) -> int | None:
@@ -925,3 +951,55 @@ def header_player_start(header: bytes) -> HeaderPlayerStart | None:
     if x_raw == 0 and y_raw == 0:
         return None
     return HeaderPlayerStart(x_raw, y_raw)
+
+
+def set_laser_crystal_entry(room: Room, index: int, *, x_raw: int, y: int, code: int) -> None:
+    """Rewrite one entry in the section_c laser/reflector compact3 table."""
+    table = laser_crystal_table(room)
+    if table is None or not 0 <= index < len(table.entries):
+        raise ValueError(f"laser reflector index out of range: {index}")
+    off = table.entries[index].source_offset
+    room.set_trailing_bytes(off, [x_raw & 0xFF, y & 0xFF, code & 0xFF])
+
+
+def add_laser_crystal_entry(room: Room, *, x_raw: int, y: int, code: int) -> int:
+    """Append an entry to section_c, the current reflector/crystal table.
+
+    This mirrors add_visual_compact3_entry but targets section_c instead of the
+    visual/decor table.  Controls can then point at the new item with M<n>.
+    """
+    table = laser_crystal_table(room)
+    if table is None:
+        raise ValueError("room has no editable laser/reflector table")
+    if table.count >= 32:
+        raise ValueError("laser/reflector table is full")
+    original_len = len(room.trailing)
+    data = bytearray(room.trailing)
+    insert_at = table.offset + 1 + table.count * 3
+    data[table.offset] = table.count + 1
+    data[insert_at:insert_at] = bytes([x_raw & 0xFF, y & 0xFF, code & 0xFF])
+    padding_start = _payload_padding_start(room)
+    shifted_padding_start = padding_start + 3 if padding_start >= insert_at else padding_start
+    _delete_padding_bytes_after_insert(data, shifted_padding_start, 3, original_len)
+    _replace_trailing(room, data)
+    return table.count
+
+
+def delete_laser_crystal_entry(room: Room, index: int) -> None:
+    """Delete one section_c laser/reflector entry."""
+    table = laser_crystal_table(room)
+    if table is None or not 0 <= index < len(table.entries):
+        raise ValueError(f"laser reflector index out of range: {index}")
+    original_len = len(room.trailing)
+    data = bytearray(room.trailing)
+    off = table.entries[index].source_offset
+    del data[off:off + 3]
+    data[table.offset] = max(0, data[table.offset] - 1)
+    old_trailing = room.trailing
+    room.trailing = bytes(data[:original_len - 3])
+    padding_start = _payload_padding_start(room)
+    room.trailing = old_trailing
+    padding_start = max(0, min(len(data), padding_start))
+    data[padding_start:padding_start] = b"\x00" * 3
+    del data[original_len:]
+    room.trailing = bytes(data)

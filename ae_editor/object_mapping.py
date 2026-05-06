@@ -45,6 +45,8 @@ def visual_sprite_ref(
         return SpriteRef("AE000", 44, 0, "diamond/artifact pickup")
     if code == 0x7D:
         return SpriteRef("AE000", 19, 2, "rotating laser crystal candidate")
+    if code == 0xFD:
+        return SpriteRef("AE000", 45, 0, "editor apple pickup marker")
 
     # Do not treat compact3 code 0x02 as a global actor.  Several confirmed
     # rooms use low visual codes as ordinary theme decorations; actors appear
@@ -71,6 +73,6 @@ def visual_render_layer(
     terrain.
     """
     code = entry.code
-    if code in {0x7D, 0x8E}:
+    if code in {0x7D, 0x8E, 0xFD}:
         return "foreground"
     return "background" if code >= 0x80 else "foreground"
