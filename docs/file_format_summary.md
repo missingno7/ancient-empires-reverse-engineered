@@ -100,3 +100,7 @@ visual table.
 The part header also stores the conditional exit door in bytes `0x05..0x07`.
 The room byte is zero-based; x/y are a bottom-center screen-space anchor. The
 door uses sprite 0 from the current theme terrain bank (`AE001:021..024`).
+
+MVP editor saves changed level resources as uncompressed DAT resources with
+`flags=0`, while preserving untouched resource blocks exactly. Current editable
+data is limited to terrain bytes and known header object slots.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import struct
 from typing import Iterator
 
 from .compression import decode_resource_block, read_offsets
@@ -61,3 +62,28 @@ class DatArchive:
                 continue
             for bitmap in iter_type47(res.decoded, res.rtype):
                 yield res, bitmap.subname, bitmap.payload
+
+    def build_blob_with_decoded_replacements(self, replacements: dict[int, bytes]) -> bytes:
+        """Return a DAT blob with selected resources replaced by plain payloads.
+
+        MVP editing writes changed level resources uncompressed (`flags=0`) and
+        preserves every untouched resource byte-for-byte.  The existing reader
+        and game resource format both model `flags=0` as plain decoded payload.
+        """
+        blocks: list[bytes] = []
+        for resource in self.resources:
+            replacement = replacements.get(resource.index)
+            if replacement is None:
+                blocks.append(resource.raw)
+            else:
+                blocks.append(bytes([resource.rtype, 0]) + replacement)
+
+        first_offset = (len(blocks) + 1) * 4
+        offsets: list[int] = []
+        cursor = first_offset
+        for block in blocks:
+            offsets.append(cursor)
+            cursor += len(block)
+        offsets.append(cursor)
+        table = struct.pack(f"<{len(offsets)}I", *offsets)
+        return table + b"".join(blocks)

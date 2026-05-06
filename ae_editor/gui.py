@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
@@ -17,6 +17,7 @@ from .room_payload import (
     actor_records_for_room,
     header_exit_door,
     header_object_candidates,
+    header_player_start,
     laser_crystal_table,
     parse_exe_payload_directory,
     parse_platform_triplets,
@@ -74,6 +75,14 @@ class LevelEditorApp(tk.Tk):
         self.overlay_labels_var = tk.BooleanVar(value=True)
         self.overlay_links_var = tk.BooleanVar(value=True)
         self.overlay_hidden_var = tk.BooleanVar(value=False)
+        self.edit_enabled_var = tk.BooleanVar(value=False)
+        self.tile_value_var = tk.StringVar(value="00")
+        self.editor_tool_var = tk.StringVar(value="terrain")
+        self.editor_object_var = tk.StringVar(value="exit_door")
+        self.editor_grid_var = tk.BooleanVar(value=True)
+        self.editor_overlay_var = tk.BooleanVar(value=True)
+        self.brush_size_var = tk.IntVar(value=1)
+        self.editor_info = tk.StringVar(value="")
 
         for spec in OVERLAY_OPTION_SPECS:
             setattr(self, spec.var_name, tk.BooleanVar(value=spec.default))
@@ -83,11 +92,17 @@ class LevelEditorApp(tk.Tk):
         self.tk_image = None
         self.tk_sheet = None
         self.tk_atlas_images = []
+        self.tk_editor_image = None
+        self.tk_tile_images = []
+        self.tk_editor_object_images = []
 
         self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self.close_window)
         self.redraw_room()
         self.redraw_bank_sheet()
         self.redraw_objects_atlas()
+        self.redraw_tile_palette()
+        self.redraw_editor_object_palette()
 
     def _build_ui(self) -> None:
         top = ttk.Frame(self)
@@ -134,6 +149,8 @@ class LevelEditorApp(tk.Tk):
         ttk.Button(top, text="Export all rooms", command=self.export_all_rooms).pack(side=tk.LEFT)
         ttk.Button(top, text="Export CSV", command=self.export_csv).pack(side=tk.LEFT, padx=4)
         ttk.Button(top, text="Export bank sheets", command=self.export_sheets).pack(side=tk.LEFT)
+        ttk.Button(top, text="Save AE001", command=self.save_ae001).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Button(top, text="Save as...", command=self.save_ae001_as).pack(side=tk.LEFT, padx=(4, 0))
 
         self.status_label = ttk.Label(self, textvariable=self.status, justify=tk.LEFT, anchor="w")
         self.status_label.pack(side=tk.TOP, fill=tk.X, padx=6)
@@ -143,9 +160,11 @@ class LevelEditorApp(tk.Tk):
         tabs.pack(fill=tk.BOTH, expand=True)
 
         level_tab = ttk.Frame(tabs)
+        editor_tab = ttk.Frame(tabs)
         graphics_tab = ttk.Frame(tabs)
         objects_tab = ttk.Frame(tabs)
         tabs.add(level_tab, text="Level viewer")
+        tabs.add(editor_tab, text="Editor")
         tabs.add(objects_tab, text="Objects atlas")
         tabs.add(graphics_tab, text="Graphics viewer")
 
@@ -194,6 +213,8 @@ class LevelEditorApp(tk.Tk):
             text="Sprite banks are now in the Graphics viewer tab.\nFuture object editor can live here.",
             justify=tk.LEFT,
         ).pack(fill=tk.X, padx=6, pady=(4, 0))
+
+        self._build_editor_tab(editor_tab)
 
         atlas_top = ttk.Frame(objects_tab)
         atlas_top.pack(fill=tk.X, padx=6, pady=6)
@@ -253,6 +274,79 @@ class LevelEditorApp(tk.Tk):
         self.bank_canvas.bind("<MouseWheel>", lambda event: self.bank_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
         self.bank_canvas.bind("<Shift-MouseWheel>", lambda event: self.bank_canvas.xview_scroll(int(-1 * (event.delta / 120)), "units"))
 
+    def _build_editor_tab(self, editor_tab: ttk.Frame) -> None:
+        main = ttk.PanedWindow(editor_tab, orient=tk.HORIZONTAL)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        left = ttk.Frame(main)
+        right = ttk.Frame(main)
+        main.add(left, weight=4)
+        main.add(right, weight=1)
+
+        self.editor_canvas = tk.Canvas(left, bg="black")
+        self.editor_canvas.pack(fill=tk.BOTH, expand=True)
+        self.editor_canvas.bind("<Button-1>", self.editor_click)
+        self.editor_canvas.bind("<B1-Motion>", self.editor_drag)
+        self.editor_canvas.bind("<Button-3>", self.editor_pick_tile)
+
+        toolbar = ttk.Frame(right)
+        toolbar.pack(fill=tk.X, padx=6, pady=6)
+        ttk.Radiobutton(toolbar, text="Tiles", variable=self.editor_tool_var, value="terrain").pack(side=tk.LEFT)
+        ttk.Radiobutton(toolbar, text="Objects", variable=self.editor_tool_var, value="object").pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Checkbutton(toolbar, text="Grid", variable=self.editor_grid_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Checkbutton(toolbar, text="Overlay", variable=self.editor_overlay_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(8, 0))
+
+        ttk.Label(right, text="Tile").pack(anchor="w", padx=6)
+        tile_row = ttk.Frame(right)
+        tile_row.pack(fill=tk.X, padx=6, pady=(0, 6))
+        ttk.Entry(tile_row, textvariable=self.tile_value_var, width=6).pack(side=tk.LEFT)
+        ttk.Button(tile_row, text="00", width=3, command=lambda: self.select_tile_code(0x00)).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(tile_row, text="07", width=3, command=lambda: self.select_tile_code(0x07)).pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(tile_row, text="0F", width=3, command=lambda: self.select_tile_code(0x0F)).pack(side=tk.LEFT, padx=(2, 0))
+
+        brush_row = ttk.Frame(right)
+        brush_row.pack(fill=tk.X, padx=6, pady=(0, 6))
+        ttk.Label(brush_row, text="Brush").pack(side=tk.LEFT)
+        ttk.Spinbox(brush_row, from_=1, to=5, textvariable=self.brush_size_var, width=4).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Label(brush_row, textvariable=self.editor_info, justify=tk.LEFT).pack(side=tk.LEFT, padx=(10, 0))
+
+        palettes = ttk.Notebook(right)
+        palettes.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
+
+        tile_tab = ttk.Frame(palettes)
+        object_tab = ttk.Frame(palettes)
+        palettes.add(tile_tab, text="Tile atlas")
+        palettes.add(object_tab, text="Object atlas")
+
+        tile_frame = ttk.Frame(tile_tab)
+        tile_frame.pack(fill=tk.BOTH, expand=True)
+        self.tile_palette_canvas = tk.Canvas(tile_frame, bg="#202020", width=260)
+        tile_scroll = ttk.Scrollbar(tile_frame, orient=tk.VERTICAL, command=self.tile_palette_canvas.yview)
+        self.tile_palette_canvas.configure(yscrollcommand=tile_scroll.set)
+        self.tile_palette_canvas.grid(row=0, column=0, sticky="nsew")
+        tile_scroll.grid(row=0, column=1, sticky="ns")
+        tile_frame.rowconfigure(0, weight=1)
+        tile_frame.columnconfigure(0, weight=1)
+        self.tile_palette_canvas.bind("<Button-1>", self.tile_palette_click)
+
+        object_controls = ttk.Frame(object_tab)
+        object_controls.pack(fill=tk.X, padx=6, pady=6)
+        object_values = ["exit_door", "player_start"] + [f"artifact_{i}" for i in range(6)]
+        self.object_combo = ttk.Combobox(
+            object_controls,
+            state="readonly",
+            textvariable=self.editor_object_var,
+            values=object_values,
+            width=18,
+        )
+        self.object_combo.pack(side=tk.LEFT)
+        self.object_combo.bind("<<ComboboxSelected>>", lambda _event: self.redraw_editor_object_palette())
+        ttk.Button(object_controls, text="Delete slot", command=self.delete_selected_header_object).pack(side=tk.LEFT, padx=(6, 0))
+
+        self.object_palette_canvas = tk.Canvas(object_tab, bg="#202020", width=260)
+        self.object_palette_canvas.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
+        self.object_palette_canvas.bind("<Button-1>", self.object_palette_click)
+
     def apply_overlay_preset(self, preset: str) -> None:
         if preset not in {"minimal", "logic", "debug"}:
             return
@@ -283,24 +377,32 @@ class LevelEditorApp(tk.Tk):
     def current_image(self, zoom: int | None = None):
         return self.project.renderer.render_room(self.current_level(), self.room_var.get(), self.options(zoom))
 
+    def current_room(self):
+        return self.current_level().part(self.part_var.get()).room(self.room_var.get())
+
     def set_part(self, index: int) -> None:
         self.part_var.set(index)
         self.part_combo.current(index)
         self.refresh_room_labels()
         self.redraw_room()
         self.redraw_objects_atlas()
+        self.redraw_tile_palette()
+        self.redraw_editor_object_palette()
 
     def set_level(self, index: int) -> None:
         self.level_var.set(index)
         self.refresh_room_labels()
         self.redraw_room()
         self.redraw_objects_atlas()
+        self.redraw_tile_palette()
+        self.redraw_editor_object_palette()
 
     def set_room(self, index: int) -> None:
         self.room_var.set(index)
         self.room_combo.current(index)
         self.redraw_room()
         self.redraw_objects_atlas()
+        self.redraw_editor_object_palette()
 
     def redraw_room(self) -> None:
         image = self.current_image()
@@ -337,6 +439,261 @@ class LevelEditorApp(tk.Tk):
             self.draw_trailing_overlay(room)
         elif self.overlay_var.get():
             self.draw_room_overlay(level, part, room)
+        self.redraw_editor_room()
+
+    def _parse_tile_value(self) -> int | None:
+        text = self.tile_value_var.get().strip()
+        if not text:
+            return None
+        try:
+            value = int(text, 16) if not text.lower().startswith("0x") else int(text, 0)
+        except ValueError:
+            messagebox.showerror("Invalid tile", f"Tile value must be a byte, got {text!r}.")
+            return None
+        if not 0 <= value <= 0xFF:
+            messagebox.showerror("Invalid tile", f"Tile value must be between 00 and FF, got {text!r}.")
+            return None
+        self.tile_value_var.set(f"{value:02X}")
+        return value
+
+    def _parse_selected_tile_silent(self) -> int | None:
+        text = self.tile_value_var.get().strip()
+        if not text:
+            return None
+        try:
+            value = int(text, 16) if not text.lower().startswith("0x") else int(text, 0)
+        except ValueError:
+            return None
+        return value if 0 <= value <= 0xFF else None
+
+    def select_tile_code(self, code: int) -> None:
+        self.editor_tool_var.set("terrain")
+        self.tile_value_var.set(f"{code & 0xFF:02X}")
+        self.redraw_tile_palette()
+        self._update_editor_info()
+
+    def select_editor_object(self, value: str) -> None:
+        self.editor_tool_var.set("object")
+        self.editor_object_var.set(value)
+        self.redraw_editor_object_palette()
+        self._update_editor_info()
+
+    def _brush_size(self) -> int:
+        try:
+            value = int(self.brush_size_var.get())
+        except (tk.TclError, ValueError):
+            value = 1
+        value = max(1, min(5, value))
+        self.brush_size_var.set(value)
+        return value
+
+    def _update_editor_info(self) -> None:
+        if self.editor_tool_var.get() == "terrain":
+            self.editor_info.set(f"tile {self.tile_value_var.get().upper()}  brush {self._brush_size()}x{self._brush_size()}")
+        else:
+            self.editor_info.set(self.editor_object_var.get().replace("_", " "))
+
+    def _screen_xy_from_event(self, event, canvas: tk.Canvas) -> tuple[int, int]:
+        zoom = self.zoom_var.get()
+        x = int(canvas.canvasx(event.x) // zoom)
+        y = int(canvas.canvasy(event.y) // zoom)
+        return x, y
+
+    def _cell_from_event(self, event, canvas: tk.Canvas | None = None) -> tuple[int, int] | None:
+        canvas = canvas or self.canvas
+        x_px, y_px = self._screen_xy_from_event(event, canvas)
+        x = x_px // CELL_SIZE
+        y = y_px // CELL_SIZE
+        if 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS:
+            return x, y
+        return None
+
+    def _set_dirty(self) -> None:
+        self.project.mark_level_dirty(self.current_level().index)
+        suffix = " *" if self.project.dirty else ""
+        self.title(f"Ancient Empires Level Editor{suffix}")
+
+    def paint_room(self, event) -> None:
+        if not self.edit_enabled_var.get() or self.mode_var.get() == "trailing_hex":
+            return
+        cell = self._cell_from_event(event, self.canvas)
+        value = self._parse_tile_value()
+        if cell is None or value is None:
+            return
+        x, y = cell
+        room = self.current_room()
+        if room.get(x, y) == value:
+            return
+        room.set(x, y, value)
+        self._set_dirty()
+        self.redraw_room()
+
+    def redraw_editor_room(self) -> None:
+        if not hasattr(self, "editor_canvas"):
+            return
+        image = self.project.renderer.render_room(
+            self.current_level(),
+            self.room_var.get(),
+            RenderOptions(mode="game", zoom=self.zoom_var.get(), grid=False, part_index=self.part_var.get()),
+        )
+        self.tk_editor_image = ImageTk.PhotoImage(image)
+        self.editor_canvas.delete("all")
+        self.editor_canvas.create_image(0, 0, anchor="nw", image=self.tk_editor_image)
+        self.editor_canvas.config(scrollregion=(0, 0, image.width, image.height))
+        self.draw_editor_selection_preview()
+        if self.editor_overlay_var.get():
+            level = self.current_level()
+            part = level.part(self.part_var.get())
+            room = part.room(self.room_var.get())
+            self.draw_editor_object_handles(level, part, room)
+        if self.editor_grid_var.get():
+            self.draw_editor_grid()
+        self._update_editor_info()
+
+    def draw_editor_selection_preview(self) -> None:
+        if self.editor_tool_var.get() == "terrain":
+            value = self._parse_selected_tile_silent()
+            if value is None:
+                return
+            x = 8
+            y = 8
+            size = 28
+            self.editor_canvas.create_rectangle(x, y, x + 78, y + 42, fill="#111111", outline="#d8e8ff", stipple="gray50")
+            self.editor_canvas.create_text(x + 38, y + 7, text=f"Tile {value:02X}", fill="#ffffff", font=("Consolas", 10))
+            self.editor_canvas.create_rectangle(x + 10, y + 24, x + 10 + size, y + 24 + 8, outline="#d8e8ff", fill="")
+        else:
+            self.editor_canvas.create_rectangle(8, 8, 132, 34, fill="#111111", outline="#d8e8ff", stipple="gray50")
+            self.editor_canvas.create_text(14, 14, anchor="nw", text=self.editor_object_var.get().replace("_", " "), fill="#ffffff", font=("Segoe UI", 9))
+
+    def draw_editor_grid(self) -> None:
+        zoom = self.zoom_var.get()
+        width = ROOM_COLUMNS * CELL_SIZE * zoom
+        height = ROOM_ROWS * CELL_SIZE * zoom
+        minor = "#6f8fb0"
+        major = "#b6d4f0"
+        for x in range(ROOM_COLUMNS + 1):
+            px = x * CELL_SIZE * zoom
+            colour = major if x % 4 == 0 else minor
+            self.editor_canvas.create_line(px, 0, px, height, fill=colour, stipple="gray75")
+        for y in range(ROOM_ROWS + 1):
+            py = y * CELL_SIZE * zoom
+            colour = major if y % 4 == 0 else minor
+            self.editor_canvas.create_line(0, py, width, py, fill=colour, stipple="gray75")
+
+    def _draw_editor_handle(self, x: int, y: int, label: str, colour: str) -> None:
+        zoom = self.zoom_var.get()
+        sx = x * zoom
+        sy = y * zoom
+        r = 5
+        self.editor_canvas.create_oval(sx - r, sy - r, sx + r, sy + r, outline=colour, fill="", width=2)
+        self.editor_canvas.create_text(sx + 7, sy - 8, anchor="nw", text=label, fill=colour, font=("Segoe UI", 8))
+
+    def draw_editor_object_handles(self, level, part, room) -> None:
+        door = header_exit_door(part.header)
+        if door and door.room_index == room.index:
+            self._draw_editor_handle(door.x_raw * 2, door.y_raw, "Exit", "#ffffff")
+        start = header_player_start(part.header)
+        if start and room.index == 0:
+            self._draw_editor_handle(start.x_raw * 2, start.y_raw, "Start", "#7cff6b")
+        for cand in header_object_candidates(part.header):
+            if cand.room_plus_one == room.index + 1:
+                self._draw_editor_handle(cand.x_raw * 2, cand.y_raw, f"A{cand.index}", "#ff40ff")
+
+    def paint_editor_tile(self, event) -> None:
+        cell = self._cell_from_event(event, self.editor_canvas)
+        value = self._parse_tile_value()
+        if cell is None or value is None:
+            return
+        cx, cy = cell
+        room = self.current_room()
+        brush = self._brush_size()
+        half = brush // 2
+        changed = False
+        for yy in range(cy - half, cy - half + brush):
+            for xx in range(cx - half, cx - half + brush):
+                if not (0 <= xx < ROOM_COLUMNS and 0 <= yy < ROOM_ROWS):
+                    continue
+                if room.get(xx, yy) == value:
+                    continue
+                room.set(xx, yy, value)
+                changed = True
+        if not changed:
+            return
+        self._set_dirty()
+        self.redraw_room()
+
+    def editor_click(self, event) -> None:
+        if self.editor_tool_var.get() == "terrain":
+            self.paint_editor_tile(event)
+        else:
+            self.place_editor_object(event)
+
+    def editor_drag(self, event) -> None:
+        if self.editor_tool_var.get() == "terrain":
+            self.paint_editor_tile(event)
+
+    def editor_pick_tile(self, event) -> None:
+        cell = self._cell_from_event(event, self.editor_canvas)
+        if cell is None:
+            return
+        x, y = cell
+        value = self.current_room().get(x, y)
+        self.select_tile_code(value)
+        self.status.set(f"Picked tile {value:02X} at x={x} y={y}")
+
+    def _clamp_byte(self, value: int) -> int:
+        return max(0, min(0xFF, int(value)))
+
+    def place_editor_object(self, event) -> None:
+        x, y = self._screen_xy_from_event(event, self.editor_canvas)
+        if not (0 <= x < ROOM_COLUMNS * CELL_SIZE and 0 <= y < ROOM_ROWS * CELL_SIZE):
+            return
+        part = self.current_level().part(self.part_var.get())
+        room = self.current_room()
+        obj = self.editor_object_var.get()
+
+        if obj == "exit_door":
+            x_raw = self._clamp_byte(round((x + 12) / 2))
+            y_raw = self._clamp_byte(y + 16)
+            part.set_exit_door(room.index, x_raw, y_raw)
+        elif obj == "player_start":
+            x_raw = self._clamp_byte(round((x + 4) / 2))
+            y_raw = self._clamp_byte(y + 16)
+            part.set_player_start(x_raw, y_raw)
+        elif obj.startswith("artifact_"):
+            slot = int(obj.split("_", 1)[1])
+            x_raw = self._clamp_byte(round((x + 8) / 2))
+            y_raw = self._clamp_byte(y + 16)
+            part.set_artifact_slot(slot, room.index, x_raw, y_raw)
+        else:
+            return
+
+        self._set_dirty()
+        self.redraw_room()
+        self.redraw_editor_object_palette()
+        self.status.set(f"Placed {obj} at x={x} y={y}")
+
+    def delete_selected_header_object(self) -> None:
+        obj = self.editor_object_var.get()
+        if not obj.startswith("artifact_"):
+            self.status.set("Only artifact slots can be deleted in this MVP.")
+            return
+        slot = int(obj.split("_", 1)[1])
+        part = self.current_level().part(self.part_var.get())
+        part.clear_artifact_slot(slot)
+        self._set_dirty()
+        self.redraw_room()
+        self.redraw_editor_object_palette()
+        self.status.set(f"Deleted artifact slot {slot}")
+
+    def pick_tile(self, event) -> None:
+        cell = self._cell_from_event(event)
+        if cell is None:
+            return
+        x, y = cell
+        value = self.current_room().get(x, y)
+        self.tile_value_var.set(f"{value:02X}")
+        self.status.set(self.status.get() + f" | picked tile={value:02X} at x={x} y={y}")
 
     def draw_codes_overlay(self, room) -> None:
         if not self.overlay_labels_var.get():
@@ -723,6 +1080,110 @@ class LevelEditorApp(tk.Tk):
 
         self.objects_canvas.config(scrollregion=(0, 0, 12 + 4 * 170, y + 20))
 
+    def redraw_tile_palette(self) -> None:
+        if not hasattr(self, "tile_palette_canvas"):
+            return
+        self.tile_palette_canvas.delete("all")
+        self.tk_tile_images = []
+        selected = self._parse_selected_tile_silent()
+        part = self.current_level().part(self.part_var.get())
+        theme = part.theme
+        normal_codes = sorted(self.project.renderer.code_to_sprite.keys())
+        special_codes = [0x07, 0x0F, 0x1F, 0x90, 0xA0, 0xB0, 0xC0]
+        codes = []
+        for code in normal_codes + special_codes:
+            if code not in codes:
+                codes.append(code)
+        self.tile_palette_codes = codes
+
+        cell_w = 76
+        cell_h = 58
+        cols = 3
+        for idx, code in enumerate(codes):
+            col = idx % cols
+            row = idx // cols
+            x = 8 + col * cell_w
+            y = 8 + row * cell_h
+            fill = "#3a3a3a" if code != selected else "#4f6f8f"
+            self.tile_palette_canvas.create_rectangle(x, y, x + cell_w - 8, y + cell_h - 8, outline="#777777", fill=fill)
+            sprite = None
+            sprite_index = self.project.renderer.code_to_sprite.get(code)
+            if sprite_index is not None:
+                sprite = self.project.graphics.terrain_sprite(theme, sprite_index)
+            elif code in {0x90, 0xA0, 0xB0, 0xC0}:
+                rope_rid = {0x90: 5, 0xA0: 6, 0xB0: 7, 0xC0: 8}[code]
+                sprite = self.project.graphics.sprite("AE000", rope_rid, 0)
+            elif code in {0x0F, 0x1F}:
+                sprite = self.project.graphics.sprite("AE000", 38, 0 if code == 0x0F else 12)
+            if sprite is not None:
+                thumb = sprite.copy()
+                scale = min(2, max(1, 28 // max(1, max(thumb.size))))
+                thumb = thumb.resize((max(1, thumb.width * scale), max(1, thumb.height * scale)), Image.Resampling.NEAREST)
+                tk_img = ImageTk.PhotoImage(thumb)
+                self.tk_tile_images.append(tk_img)
+                self.tile_palette_canvas.create_image(x + 34, y + 22, image=tk_img)
+            self.tile_palette_canvas.create_text(x + 4, y + 38, anchor="nw", text=f"{code:02X}", fill="#ffffff", font=("Consolas", 9))
+
+        rows = (len(codes) + cols - 1) // cols
+        self.tile_palette_canvas.config(scrollregion=(0, 0, cols * cell_w + 12, rows * cell_h + 12))
+
+    def tile_palette_click(self, event) -> None:
+        if not hasattr(self, "tile_palette_codes"):
+            return
+        cell_w = 76
+        cell_h = 58
+        x = int(self.tile_palette_canvas.canvasx(event.x) - 8)
+        y = int(self.tile_palette_canvas.canvasy(event.y) - 8)
+        if x < 0 or y < 0:
+            return
+        col = x // cell_w
+        row = y // cell_h
+        idx = row * 3 + col
+        if 0 <= idx < len(self.tile_palette_codes):
+            code = self.tile_palette_codes[idx]
+            self.select_tile_code(code)
+
+    def editor_object_specs(self):
+        part = self.current_level().part(self.part_var.get())
+        theme = part.theme
+        return [
+            ("exit_door", "Exit door", "AE001", 21 + theme, 0),
+            ("player_start", "Player start", "AE000", 4, 0),
+            *[(f"artifact_{i}", f"Artifact {i}", "AE000", 44, 0) for i in range(6)],
+        ]
+
+    def redraw_editor_object_palette(self) -> None:
+        if not hasattr(self, "object_palette_canvas"):
+            return
+        self.object_palette_canvas.delete("all")
+        self.tk_editor_object_images = []
+        specs = self.editor_object_specs()
+        y = 8
+        for value, label, archive, resource_id, sprite_index in specs:
+            fill = "#4f6f8f" if value == self.editor_object_var.get() else "#2b2b2b"
+            self.object_palette_canvas.create_rectangle(8, y, 238, y + 52, outline="#777777", fill=fill)
+            sprite = self.project.graphics.sprite(archive, resource_id, sprite_index)
+            if sprite is not None:
+                thumb = sprite.copy()
+                scale = min(2, max(1, 32 // max(1, max(thumb.size))))
+                thumb = thumb.resize((max(1, thumb.width * scale), max(1, thumb.height * scale)), Image.Resampling.NEAREST)
+                tk_img = ImageTk.PhotoImage(thumb)
+                self.tk_editor_object_images.append(tk_img)
+                self.object_palette_canvas.create_image(28, y + 26, image=tk_img)
+            self.object_palette_canvas.create_text(56, y + 8, anchor="nw", text=label, fill="#ffffff", font=("Segoe UI", 9))
+            self.object_palette_canvas.create_text(56, y + 28, anchor="nw", text=f"{archive}:{resource_id:03d}:{sprite_index}", fill="#b8e0ff", font=("Segoe UI", 8))
+            y += 60
+        self.object_palette_canvas.config(scrollregion=(0, 0, 250, y + 8))
+
+    def object_palette_click(self, event) -> None:
+        specs = self.editor_object_specs()
+        y = int(self.object_palette_canvas.canvasy(event.y) - 8)
+        if y < 0:
+            return
+        idx = y // 60
+        if 0 <= idx < len(specs):
+            self.select_editor_object(specs[idx][0])
+
     def redraw_bank_sheet(self) -> None:
         rid = self.bank_var.get() or next(iter(self.project.graphics.banks.keys()), "AE001:021")
         sheet = self.project.graphics.make_bank_sheet(rid, self.project.graphics.banks.get(rid, []))
@@ -732,6 +1193,9 @@ class LevelEditorApp(tk.Tk):
         self.bank_canvas.config(scrollregion=(0, 0, sheet.width, sheet.height))
 
     def click_room(self, event) -> None:
+        if self.edit_enabled_var.get() and self.mode_var.get() != "trailing_hex":
+            self.paint_room(event)
+            return
         zoom = self.zoom_var.get()
         if self.mode_var.get() == "trailing_hex":
             cols = 19
@@ -748,6 +1212,55 @@ class LevelEditorApp(tk.Tk):
         if 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS:
             value = self.current_level().part(self.part_var.get()).room(self.room_var.get()).get(x, y)
             self.status.set(self.status.get() + f" | click x={x} y={y} tile={value:02X}/{value}")
+
+    def _after_save(self, path: Path) -> None:
+        self.title("Ancient Empires Level Editor")
+        self.refresh_room_labels()
+        self.redraw_room()
+        self.redraw_objects_atlas()
+        self.redraw_tile_palette()
+        self.redraw_editor_object_palette()
+        self.status.set(f"Saved AE001.DAT edits to {path}")
+
+    def save_ae001(self) -> None:
+        if not self.project.dirty:
+            self.status.set("No edits to save.")
+            return
+        try:
+            path = self.project.save_ae001()
+        except OSError as exc:
+            messagebox.showerror("Save failed", str(exc))
+            return
+        self._after_save(path)
+
+    def save_ae001_as(self) -> None:
+        path = filedialog.asksaveasfilename(
+            defaultextension=".DAT",
+            initialfile="AE001_edited.DAT",
+            filetypes=[("DAT archives", "*.DAT"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            saved = self.project.save_ae001(Path(path), backup=False)
+        except OSError as exc:
+            messagebox.showerror("Save failed", str(exc))
+            return
+        self._after_save(saved)
+
+    def close_window(self) -> None:
+        if self.project.dirty:
+            choice = messagebox.askyesnocancel(
+                "Unsaved edits",
+                "Save AE001.DAT edits before closing?",
+            )
+            if choice is None:
+                return
+            if choice:
+                self.save_ae001()
+                if self.project.dirty:
+                    return
+        self.destroy()
 
     def export_current(self) -> None:
         diff = DIFFICULTY_LABELS[self.part_var.get()].lower()

@@ -99,4 +99,5 @@ segments when the current subset recognizes them.
 2. Trace the EXE tables for tile-code-to-sprite and compact3-code-to-sprite
    lookup.
 3. Expand actor script decoding against rooms with obvious movement paths.
-4. Build a write model for terrain edits first, then gated payload edits.
+4. Expand the current terrain/header-object write model only after each payload
+   family has round-trip coverage.

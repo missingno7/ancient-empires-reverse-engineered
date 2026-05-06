@@ -96,6 +96,9 @@ format notes.
 - Native Tk overlay labels and relationship lines, separate from the scaled
   room bitmap.
 - Overlay presets for minimal, logic and debug views.
+- Editor tab with tile atlas painting plus first header-object placement for
+  player start, exit door and artifact slots. The editor view has a toggleable
+  soft grid, object handles and brush sizes.
 - Object atlas for recognized actors, pickups, controls, puzzle objects and
   movement objects.
 - Graphics-bank viewer and sheet exporter.
@@ -130,7 +133,7 @@ docs/
 ## Still Unsolved
 
 - exact EXE lookup table for all terrain and visual object codes;
-- full write-back model for editing rooms safely;
+- full write-back model for non-terrain payload editing;
 - exact gameplay semantics for every trigger/control byte;
 - complete actor/enemy behavior scripts;
 - collectible schemas beyond confirmed rendered cases.

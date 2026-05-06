@@ -103,6 +103,32 @@ class LevelPart:
     def room(self, index: int) -> Room:
         return self.rooms[index]
 
+    def _set_header_bytes(self, offset: int, values: list[int]) -> None:
+        header = bytearray(self.header)
+        for i, value in enumerate(values):
+            header[offset + i] = value & 0xFF
+        self.header = bytes(header)
+
+    def set_player_start(self, x_raw: int, y_raw: int) -> None:
+        self._set_header_bytes(0x03, [x_raw, y_raw])
+
+    def set_exit_door(self, room_index: int, x_raw: int, y_raw: int) -> None:
+        self._set_header_bytes(0x05, [room_index, x_raw, y_raw])
+
+    def set_artifact_slot(self, slot: int, room_index: int, x_raw: int, y_raw: int) -> None:
+        if not 0 <= slot < 6:
+            raise ValueError(f"artifact slot out of range: {slot}")
+        self._set_header_bytes(0x08 + slot, [room_index + 1])
+        self._set_header_bytes(0x0E + slot, [x_raw])
+        self._set_header_bytes(0x14 + slot, [y_raw])
+
+    def clear_artifact_slot(self, slot: int) -> None:
+        if not 0 <= slot < 6:
+            raise ValueError(f"artifact slot out of range: {slot}")
+        self._set_header_bytes(0x08 + slot, [0])
+        self._set_header_bytes(0x0E + slot, [0])
+        self._set_header_bytes(0x14 + slot, [0])
+
 
 class Level:
     """Decoded AE001 level resource.
@@ -183,6 +209,16 @@ class Level:
 
     def room(self, index: int, part_index: int = 0) -> Room:
         return self.parts[part_index].room(index)
+
+    def to_bytes(self) -> bytes:
+        """Serialize the current editable level model back to decoded bytes."""
+        data = bytearray(self.decoded)
+        for part in self.parts:
+            data[part.base_offset:part.base_offset + LEVEL_PART_HEADER_SIZE] = part.header
+            for room in part.rooms:
+                start = room.terrain_offset
+                data[start:start + ROOM_TILE_COUNT] = bytes(room.tiles)
+        return bytes(data)
 
 
 def load_levels(ae001: DatArchive, count: int = 20) -> list[Level]:

@@ -8,8 +8,10 @@ level resources, render recognizable static rooms, and show native overlay
 labels for the currently understood gameplay objects.
 
 The editor is not yet a safe full level writer. Treat rendering and overlays as
-the canonical read path, and add write-back only after the corresponding parser
-data is proven.
+the canonical read path. MVP1 write-back edits the 38x18 room tile bytes plus
+the known header object slots for player start, exit door and artifacts. Changed
+level resources are stored back into `AE001.DAT` as plain uncompressed
+resources.
 
 ## Start Here
 
@@ -20,6 +22,8 @@ data is proven.
 - `ae_editor/renderer.py` is the static room renderer.
 - `ae_editor/overlay.py` builds editor overlay geometry and relationship lines.
 - `ae_editor/gui.py` wires the Tk UI, tabs, object atlas and overlay presets.
+  The `Editor` tab is the active editing surface; the level viewer stays mostly
+  read-only/diagnostic.
 - `docs/level_format.md` is the canonical current format note.
 
 ## Validation Loop
@@ -64,5 +68,8 @@ Useful smoke rooms:
 - Recover EXE-derived sprite anchor/origin tables and replace remaining
   screenshot-tuned offsets.
 - Convert the current room model into an explicit editable data model.
-- Add guarded write-back for terrain-only edits before broader payload editing.
+- Add guarded write-back for more object families before broader payload
+  editing.
+- Extend editing beyond terrain only after the corresponding payload parser is
+  proven and round-trip tested.
 - Decode more actor script opcodes and connect movement/path overlays to them.

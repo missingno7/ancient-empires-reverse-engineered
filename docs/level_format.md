@@ -187,3 +187,26 @@ The static renderer currently draws:
 13. known extra pickups;
 14. visible actor records;
 15. player start marker in room 0.
+
+## MVP Editing
+
+The current editor writes terrain tile bytes:
+
+```text
+room terrain = part_base + 0x40 + room_index * 1000 + 0x02
+length       = 38 * 18
+```
+
+Changed level resources are written back to `AE001.DAT` as plain uncompressed
+resources (`flags=0`). Untouched resources are preserved byte-for-byte.
+
+The editor also writes these known header object slots:
+
+```text
+header[0x03..0x04]  player start
+header[0x05..0x07]  exit door
+header[0x08..0x19]  six artifact slots
+```
+
+Payload editing is intentionally deferred until those structures have stronger
+round-trip coverage.
