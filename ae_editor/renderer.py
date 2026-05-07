@@ -530,12 +530,8 @@ class RoomRenderer:
         return None
 
     def _draw_player_start(self, image: Image.Image, room: Room, header: bytes) -> None:
-        # Static room previews draw the configured start only in room 0.  Runtime
-        # player position can of course be elsewhere after movement.
-        if room.index != 0:
-            return
         start = header_player_start(header)
-        if start is None:
+        if start is None or room.index != start.room_index:
             return
         sprite = self.graphics.sprite("AE000", 4, 0)
         if sprite is None:

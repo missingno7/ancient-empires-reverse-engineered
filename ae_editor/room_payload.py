@@ -563,12 +563,17 @@ def _is_actor_padding_end(block: bytes | bytearray, pc: int) -> bool:
 
 def _actor_entry_offsets(block: bytes | bytearray) -> list[int]:
     entries: set[int] = set()
-    count = _actor_count(bytearray(block))
+    raw = bytearray(block)
+    count = _actor_count(raw)
+    record_end = 1 + count * ACTOR_RECORD_SIZE
     for index in range(count):
         rec = _actor_record_offset(index)
         for field in (0x0D, 0x0F, 0x17):
-            value = _read_actor_u16(bytearray(block), rec, field)
-            if 0 <= value < ACTOR_TABLE_SIZE:
+            value = _read_actor_u16(raw, rec, field)
+            # saved_pc=0 is the common "no saved return" value.  More
+            # generally, actor bytecode lives after the actor records, so values
+            # inside the actor table are not script-space entry points.
+            if record_end <= value < ACTOR_TABLE_SIZE:
                 entries.add(value)
     return sorted(entries)
 
@@ -703,7 +708,7 @@ def actor_script_space(part) -> ActorScriptSpace:
             value = _read_actor_u16(block, rec, field)
             if name == "saved_pc" and value == 0:
                 continue
-            if 0 <= value < ACTOR_TABLE_SIZE:
+            if record_end <= value < ACTOR_TABLE_SIZE:
                 entries.append(ActorScriptEntryPoint(index, name, value))
 
     instructions: list[ActorScriptSpaceInstruction] = []
@@ -864,38 +869,80 @@ def add_actor_record(
     hidden: int,
     frame_min: int,
     frame_max: int,
-    script_bytes: bytes = b"\x00",
+    script_bytes: bytes | None = b"\x00",
+    script_offset: int | None = None,
+    restart_script_offset: int | None = None,
+    saved_script_offset: int = 0,
 ) -> int:
+    """Append an actor instance to the global actor table.
+
+    Actors are instance/state records.  Their behavior is not owned by the
+    record; ``script_offset``/``restart_script_offset`` are pointers into the
+    shared actor bytecode space for the whole level part.
+
+    If ``script_offset`` is provided, the new actor reuses an existing script
+    entry and no bytecode is appended.  If it is omitted, ``script_bytes`` is
+    appended to the end of the shared script space and the new actor points at
+    that fresh routine.
+    """
     block = _actor_block(part)
     count = _actor_count(block)
     if count >= (ACTOR_TABLE_SIZE - 1) // ACTOR_RECORD_SIZE:
         raise ValueError("actor table is full")
+    if script_offset is not None and not (0 <= script_offset < ACTOR_TABLE_SIZE):
+        raise ValueError(f"script offset out of range: 0x{script_offset:04X}")
+    if restart_script_offset is not None and not (0 <= restart_script_offset < ACTOR_TABLE_SIZE):
+        raise ValueError(f"restart script offset out of range: 0x{restart_script_offset:04X}")
+    if not (0 <= saved_script_offset < ACTOR_TABLE_SIZE):
+        raise ValueError(f"saved script offset out of range: 0x{saved_script_offset:04X}")
+
     script_offsets = []
     for index in range(count):
-        rec = _actor_record_offset(index)
-        value = _read_actor_u16(block, rec, 0x0D)
-        if value:
-            script_offsets.append(value)
+        rec_existing = _actor_record_offset(index)
+        for field in (0x0D, 0x0F, 0x17):
+            value = _read_actor_u16(block, rec_existing, field)
+            if value:
+                script_offsets.append(value)
     new_record_end = 1 + (count + 1) * ACTOR_RECORD_SIZE
     first_script = min(script_offsets) if script_offsets else ACTOR_TABLE_SIZE
     used_end = _actor_script_used_end(block)
+
+    # Inserting a new actor record can push the script stream forward if there
+    # is no pre-existing gap between actor records and script bytes.  Existing
+    # actor entry pointers must be adjusted, and an explicitly shared target
+    # must be mapped through the same shift.
     if new_record_end > first_script:
         gap = new_record_end - first_script
         if used_end + gap > ACTOR_TABLE_SIZE:
             raise ValueError("no free actor record slot before script data")
         block[first_script + gap:used_end + gap] = bytes(block[first_script:used_end])
         block[first_script:first_script + gap] = b"\x00" * gap
+
+        def map_shifted(value: int | None) -> int | None:
+            if value is None:
+                return None
+            return value + gap if value >= first_script else value
+
         for index in range(count):
             rec_existing = _actor_record_offset(index)
             for field in (0x0D, 0x0F, 0x17):
                 value = _read_actor_u16(block, rec_existing, field)
                 if value and value >= first_script:
                     _write_actor_u16(block, rec_existing, field, value + gap)
+        script_offset = map_shifted(script_offset)
+        restart_script_offset = map_shifted(restart_script_offset)
+        saved_script_offset = map_shifted(saved_script_offset) or 0
         used_end += gap
 
-    script_offset = max(used_end, new_record_end)
-    if script_offset + len(script_bytes) > ACTOR_TABLE_SIZE:
-        raise ValueError("actor script block is full")
+    if script_offset is None:
+        script_bytes = b"\x00" if script_bytes is None else script_bytes
+        script_offset = max(used_end, new_record_end)
+        if script_offset + len(script_bytes) > ACTOR_TABLE_SIZE:
+            raise ValueError("actor script block is full")
+    else:
+        script_bytes = None
+    if restart_script_offset is None:
+        restart_script_offset = script_offset
 
     rec = _actor_record_offset(count)
     block[rec:rec + ACTOR_RECORD_SIZE] = b"\x00" * ACTOR_RECORD_SIZE
@@ -909,8 +956,10 @@ def add_actor_record(
     block[rec + 0x0B] = frame_min & 0xFF
     block[rec + 0x0C] = frame_max & 0xFF
     _write_actor_u16(block, rec, 0x0D, script_offset)
-    _write_actor_u16(block, rec, 0x17, script_offset)
-    block[script_offset:script_offset + len(script_bytes)] = script_bytes
+    _write_actor_u16(block, rec, 0x0F, saved_script_offset)
+    _write_actor_u16(block, rec, 0x17, restart_script_offset)
+    if script_bytes is not None:
+        block[script_offset:script_offset + len(script_bytes)] = script_bytes
     block[0] = count + 1
     _write_actor_block(part, block)
     return count
@@ -961,6 +1010,7 @@ def delete_actor_record(
     script_offset: int | None = None,
     script_length: int = 0,
     delete_script_region: bool = False,
+    neutralize_actor_refs: bool = False,
 ) -> None:
     block = _actor_block(part)
     count = _actor_count(block)
@@ -978,12 +1028,23 @@ def delete_actor_record(
     # private byte range.
     script_start = actor_script if script_offset is None else script_offset
     script_end = script_start + max(0, script_length)
-    for ref_pc in _actor_refs_to_index(block, actor_index):
-        # set_actor_mode_* is a 2-byte side-effect aimed at this actor.
-        # Replacing it with two yields preserves script layout while removing a
-        # stale reference before actor indexes are compacted.
-        block[ref_pc:ref_pc + 2] = b"\x00\x00"
-    _write_actor_block(part, block)
+    refs_to_deleted = _actor_refs_to_index(block, actor_index)
+    if refs_to_deleted and not neutralize_actor_refs:
+        refs = ", ".join(f"0x{pc:04X}" for pc in refs_to_deleted[:8])
+        more = "..." if len(refs_to_deleted) > 8 else ""
+        raise ValueError(
+            f"actor A{actor_index} is still referenced by set_actor_mode instructions at {refs}{more}; "
+            "remove/retarget those references first, or use an explicit force-neutralize action"
+        )
+    if refs_to_deleted:
+        for ref_pc in refs_to_deleted:
+            # set_actor_mode_* is a 2-byte side-effect aimed at this actor.
+            # Replacing it with two yields preserves script layout while removing
+            # a stale reference before actor indexes are compacted.  This is only
+            # used for an explicit force-neutralize delete; plain actor deletion
+            # must not silently rewrite shared script space.
+            block[ref_pc:ref_pc + 2] = b"\x00\x00"
+        _write_actor_block(part, block)
 
     shared_script = False
     if delete_script_region and script_length > 0:
@@ -1034,7 +1095,11 @@ class RoomTransitionLinks:
 
 
 def room_transition_links(part) -> list[RoomTransitionLinks]:
-    raw_part = getattr(part, "raw", b"")
+    raw = bytearray(getattr(part, "raw", b""))
+    header = getattr(part, "header", b"")
+    if header:
+        raw[:len(header)] = header
+    raw_part = bytes(raw)
     if len(raw_part) < 0x42:
         return []
     # AEPROG copies the level-part payload to DS:4374 with the two-byte level
@@ -1549,30 +1614,31 @@ def header_exit_door(header: bytes) -> HeaderExitDoor | None:
 
 @dataclass(frozen=True)
 class HeaderPlayerStart:
-    """Best-known player start candidate stored in the level-part header.
+    """Player start stored in the level-part header.
 
-    The first two position-like bytes after the part magic/theme align with
-    known starting-room screenshots: x is the same half-screen unit used by
-    compact/control objects, while y is a screen-space baseline-ish value.
-    This is still a static preview marker, not runtime player state.
+    The original game always starts in room 0.  AEPROG.EXE reads raw
+    header[0x03]/[0x04] as x/y and initializes the current room separately to 0;
+    raw header[0x01] is not the start-room field.
     """
 
+    room_index: int
     x_raw: int
     y_raw: int
 
     @property
     def label(self) -> str:
-        return f"player_start x={self.x_raw:02X} y={self.y_raw:02X}"
+        return f"player_start room={self.room_index} x={self.x_raw:02X} y={self.y_raw:02X}"
 
 
 def header_player_start(header: bytes) -> HeaderPlayerStart | None:
     if len(header) < 5:
         return None
+    room_index = 0
     x_raw = header[3]
     y_raw = header[4]
     if x_raw == 0 and y_raw == 0:
         return None
-    return HeaderPlayerStart(x_raw, y_raw)
+    return HeaderPlayerStart(room_index, x_raw, y_raw)
 
 
 def set_laser_crystal_entry(room: Room, index: int, *, x_raw: int, y: int, code: int) -> None:

@@ -155,3 +155,8 @@ The editor now models buttons/switches/jello as control commands with typed targ
 - `M0`, `M1`, ... are reserved for mirror/reflector-like targets observed in raw rooms.
 
 A control can target multiple objects, for example `P0,CV0`. The raw body is still shown for reverse-engineering, but normal editing should use the typed target field where possible.
+
+
+## Reverse-engineering docs
+
+- `docs/actor_script_space.md` explains the shared actor bytecode model and safe editing rules.

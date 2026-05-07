@@ -249,6 +249,9 @@ class LevelEditorApp(tk.Tk):
         self.scripting_address_var = tk.StringVar(value="")
         self.scripting_opcode_var = tk.StringVar(value="")
         self.actor_template_var = tk.StringVar(value=ACTOR_TEMPLATE_SPECS[0].key)
+        self.actor_script_mode_var = tk.StringVar(value="new")
+        self.actor_script_address_var = tk.StringVar(value="")
+        self.actor_script_reset_address_var = tk.StringVar(value="")
         self.editor_selected_ref: tuple[str, int | None] | None = None
         self.editor_drag_offset: tuple[int, int] | None = None
         self.scripting_selected_actor_index: int | None = None
@@ -633,10 +636,21 @@ class LevelEditorApp(tk.Tk):
 
         ttk.Label(
             actor_tab,
-            text="Choose an actor family, then click in the room to place it. Behavior editing lives in Script space.",
+            text="Choose an actor family, then click in the room to place it. Actor behavior is an entry pointer into the shared Script space; new actors can either get a fresh wait routine or reuse an existing entry.",
             wraplength=260,
             justify=tk.LEFT,
         ).pack(fill=tk.X, padx=6, pady=(6, 4))
+        behavior = ttk.LabelFrame(actor_tab, text="New actor behavior")
+        behavior.pack(fill=tk.X, padx=6, pady=(0, 6))
+        ttk.Radiobutton(behavior, text="New blank/wait script", variable=self.actor_script_mode_var, value="new").pack(anchor="w", padx=6, pady=(4, 0))
+        ttk.Radiobutton(behavior, text="Share selected actor's script_pc", variable=self.actor_script_mode_var, value="share_selected").pack(anchor="w", padx=6)
+        addr_row = ttk.Frame(behavior)
+        addr_row.pack(fill=tk.X, padx=6, pady=(0, 4))
+        ttk.Radiobutton(addr_row, text="Use address", variable=self.actor_script_mode_var, value="address").pack(side=tk.LEFT)
+        ttk.Label(addr_row, text="start").pack(side=tk.LEFT, padx=(6, 2))
+        ttk.Entry(addr_row, textvariable=self.actor_script_address_var, width=8).pack(side=tk.LEFT)
+        ttk.Label(addr_row, text="reset").pack(side=tk.LEFT, padx=(8, 2))
+        ttk.Entry(addr_row, textvariable=self.actor_script_reset_address_var, width=8).pack(side=tk.LEFT)
         self.actor_palette_canvas = tk.Canvas(actor_tab, bg="#202020", width=260)
         actor_scroll = ttk.Scrollbar(actor_tab, orient=tk.VERTICAL, command=self.actor_palette_canvas.yview)
         self.actor_palette_canvas.configure(yscrollcommand=actor_scroll.set)
@@ -912,7 +926,8 @@ class LevelEditorApp(tk.Tk):
                 self.control_settings_frame.pack(fill=tk.X)
             else:
                 self.object_settings_frame.pack(fill=tk.X)
-            self.palette_selection_var.set(f"Object placement: {obj}")
+            prefix = "Room data" if self.editor_object_var.get() == "room_links" else "Object placement"
+            self.palette_selection_var.set(f"{prefix}: {obj}")
         elif tool == "decor":
             self.palette_selection_var.set(f"Decor decals: code {self.decor_code_var.get().upper()}")
         elif tool == "actor":
@@ -972,6 +987,19 @@ class LevelEditorApp(tk.Tk):
 
     def _actor_by_index(self, part, index: int):
         return next((actor for actor in parse_actor_table(part) if actor.index == index), None)
+
+    def _actor_selected_for_script_sharing(self):
+        part = self.current_level().part(self.part_var.get())
+        if self.editor_selected_ref is not None and self.editor_selected_ref[0] == "actor":
+            actor = self._actor_by_index(part, int(self.editor_selected_ref[1]))
+            if actor is not None:
+                return actor
+        if self.scripting_selected_actor_index is not None:
+            actor = self._actor_by_index(part, self.scripting_selected_actor_index)
+            if actor is not None:
+                return actor
+        actors = self._current_room_actors()
+        return actors[0] if actors else None
 
     def _format_actor_short(self, actor) -> str:
         if actor is None:
@@ -2241,7 +2269,7 @@ class LevelEditorApp(tk.Tk):
                 self._clear_property_values()
                 self._layout_property_panel()
                 return
-            self._layout_property_panel(rows=(True, True, False), apply=True)
+            self._layout_property_panel(rows=(True, True, True), apply=True)
             sprite_ref = visual_sprite_ref(
                 entry,
                 theme=self.current_level().part(self.part_var.get()).theme,
@@ -2252,13 +2280,15 @@ class LevelEditorApp(tk.Tk):
             self.property_title_var.set(f"V{entry.index} decor decal")
             self.property_label_x_var.set("raw x")
             self.property_label_y_var.set("raw y")
-            self.property_label_len_var.set("code")
+            self.property_label_len_var.set("raw code")
             self.property_label_code_var.set("sprite")
+            self.property_label_props_var.set("flip")
             self.property_x_var.set(str(entry.x_raw))
             self.property_y_var.set(str(entry.y))
             self.property_len_var.set(f"{entry.code:02X}")
             self.property_code_var.set(f"{sprite_ref.archive}:{sprite_ref.resource_id:03d}:{sprite_ref.sprite_index}")
-            self.property_note_var.set(sprite_ref.note or "Theme visual compact3 entry.")
+            self.property_props_var.set("1" if entry.code & 0x40 else "0")
+            self.property_note_var.set((sprite_ref.note or "Theme visual compact3 entry.") + "  Flip edits bit 0x40 while preserving the raw code/layer bits.")
         elif kind == "actor":
             idx = ref[1]
             actors = [a for a in actor_records_for_room(self.current_level().part(self.part_var.get()), room.index) if a.index == idx]
@@ -2346,6 +2376,23 @@ class LevelEditorApp(tk.Tk):
             reverse = "yes" if entry.code & 0x40 else "no"
             auto = "yes" if entry.code & 0x80 else "no"
             self.property_note_var.set(f"Section_c reflector entry. Controls rotate it with R{entry.index} target byte {0x40 | entry.index:02X}. Code bits: 0..4=orientation/frame ({entry.code & 0x1F}), 0x40=reverse rotation ({reverse}), 0x80=auto-rotate ({auto}). Controlled-by is informational; edit links on the selected button/switch Targets field.")
+        elif kind == "room_links":
+            links = transition_links_for_room(self.current_level().part(self.part_var.get()), room.index)
+            self._layout_property_panel(rows=(True, True, False), apply=True)
+            self.property_title_var.set(f"Room {room.index:02d} links")
+            self.property_label_x_var.set("left")
+            self.property_label_y_var.set("right")
+            self.property_label_len_var.set("up")
+            self.property_label_code_var.set("down")
+            def fmt(value: int | None) -> str:
+                if value is None or value == 0:
+                    return "-"
+                return str(value - 1)
+            self.property_x_var.set(fmt(None if links is None else links.left))
+            self.property_y_var.set(fmt(None if links is None else links.right))
+            self.property_len_var.set(fmt(None if links is None else links.up))
+            self.property_code_var.set(fmt(None if links is None else links.down))
+            self.property_note_var.set("Room navigation data. Values are zero-based room ids; '-' means no link. Stored format is one-based, but the editor hides that.")
         elif kind == "known_pickup":
             idx = ref[1]
             pickups = self._known_extra_pickups_for_room(self.current_level().part(self.part_var.get()), room)
@@ -2395,9 +2442,9 @@ class LevelEditorApp(tk.Tk):
                 self.property_title_var.set("Player start")
                 self.property_x_var.set(str(start.x_raw))
                 self.property_y_var.set(str(start.y_raw))
-                self.property_len_var.set("0")
+                self.property_len_var.set(str(start.room_index))
                 self.property_code_var.set("-")
-                self.property_note_var.set("Header object. Player start belongs to room 0 in the current model.")
+                self.property_note_var.set("Header object. The original game always starts in room 00; only raw x/y are editable.")
             else:
                 slot = ref[1]
                 cands = [cand for cand in header_object_candidates(self.current_level().part(self.part_var.get()).header) if cand.index == slot]
@@ -2497,6 +2544,26 @@ class LevelEditorApp(tk.Tk):
                 set_control_command_body(room, idx, bytes(body), allow_resize=True)
                 new_targets = [decode_control_target(value).label for value in body[4:]]
                 self.status.set(f"Updated C{idx}: targets={','.join(new_targets)} body={bytes(body).hex(' ')}")
+            elif kind == "room_links":
+                part = self.current_level().part(self.part_var.get())
+                def parse_room_link(text: str, current_stored: int) -> int:
+                    raw = text.strip()
+                    if raw in {"", "-", "none", "None", "NONE"}:
+                        return -1
+                    return max(0, min(ROOM_COUNT - 1, self._parse_int_property(raw, default=max(0, current_stored - 1))))
+                links = transition_links_for_room(part, room.index)
+                cur_left = 0 if links is None else links.left
+                cur_right = 0 if links is None else links.right
+                cur_up = 0 if links is None else links.up
+                cur_down = 0 if links is None else links.down
+                part.set_room_transition_links(
+                    room.index,
+                    left=parse_room_link(self.property_x_var.get(), cur_left),
+                    right=parse_room_link(self.property_y_var.get(), cur_right),
+                    up=parse_room_link(self.property_len_var.get(), cur_up),
+                    down=parse_room_link(self.property_code_var.get(), cur_down),
+                )
+                self.status.set(f"Updated room {room.index:02d} links.")
             elif kind == "decor":
                 entry = self._decor_from_ref(room, ref)
                 if entry is None:
@@ -2505,9 +2572,13 @@ class LevelEditorApp(tk.Tk):
                 x_raw = self._parse_int_property(self.property_x_var.get(), default=entry.x_raw) & 0xFF
                 y_raw = self._parse_int_property(self.property_y_var.get(), default=entry.y) & 0xFF
                 code = self._parse_int_property(self.property_len_var.get(), default=entry.code) & 0xFF
+                flip_text = self.property_props_var.get().strip().lower()
+                if flip_text:
+                    flip = flip_text in {"1", "true", "yes", "y", "on", "flip", "flipped"}
+                    code = (code | 0x40) if flip else (code & ~0x40)
                 set_visual_compact3_entry(room, entry.index, x_raw=x_raw, y=y_raw, code=code)
                 self.decor_code_var.set(f"{code:02X}")
-                self.status.set(f"Updated V{entry.index}: code={code:02X} x={x_raw} y={y_raw}")
+                self.status.set(f"Updated V{entry.index}: code={code:02X} flip={'yes' if code & 0x40 else 'no'} x={x_raw} y={y_raw}")
             elif kind == "actor":
                 idx = ref[1]
                 part = self.current_level().part(self.part_var.get())
@@ -2537,10 +2608,11 @@ class LevelEditorApp(tk.Tk):
                 self.status.set(f"Updated exit door: room={room_index} x={x_raw} y={y_raw}")
             elif kind == "player_start":
                 part = self.current_level().part(self.part_var.get())
+                start = header_player_start(part.header)
                 x_raw = self._parse_int_property(self.property_x_var.get(), default=0) & 0xFF
                 y_raw = self._parse_int_property(self.property_y_var.get(), default=0) & 0xFF
                 part.set_player_start(x_raw, y_raw)
-                self.status.set(f"Updated player start: x={x_raw} y={y_raw}")
+                self.status.set(f"Updated player start: room=00 x={x_raw} y={y_raw}")
             elif kind == "artifact":
                 slot = ref[1]
                 part = self.current_level().part(self.part_var.get())
@@ -2693,8 +2765,9 @@ class LevelEditorApp(tk.Tk):
         if door and door.room_index == room.index:
             handles.append(EditorHandle(("exit_door", None), door.x_raw * 2, door.y_raw, "Exit", "#ffffff"))
         start = header_player_start(part.header)
-        if start and room.index == 0:
+        if start and room.index == start.room_index:
             handles.append(EditorHandle(("player_start", None), start.x_raw * 2, start.y_raw, "Start", "#7cff6b"))
+        handles.append(EditorHandle(("room_links", room.index), ROOM_COLUMNS * CELL_SIZE - 14, 14, "Links", "#ffe080"))
         for cand in header_object_candidates(part.header):
             if cand.room_plus_one == room.index + 1:
                 handles.append(EditorHandle(("artifact", cand.index), cand.x_raw * 2, cand.y_raw, f"D{cand.index}", "#ff40ff"))
@@ -2723,8 +2796,6 @@ class LevelEditorApp(tk.Tk):
             suffix = "" if not targets else "→" + ",".join(t.label for t in targets)
             handles.append(EditorHandle(("control", cmd.record.index), cx + 8, cy + 8, f"{prefix}{cmd.record.index}{suffix}", "#00e0ff"))
         for actor in actor_records_for_room(part, room.index):
-            if actor.hidden and not self.overlay_hidden_var.get():
-                continue
             ax, ay = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
             handles.append(EditorHandle(("actor", actor.index), ax + 12, ay + 8, f"A{actor.index}", "#7cff6b" if not actor.hidden else "#7a7a7a"))
         cv_cells = set()
@@ -2966,6 +3037,11 @@ class LevelEditorApp(tk.Tk):
                 self.editor_tool_var.set("object")
                 if hasattr(self, "editor_palettes"):
                     self.editor_palettes.select(1)
+            elif kind == "room_links":
+                self.editor_object_var.set("room_links")
+                self.editor_tool_var.set("object")
+                if hasattr(self, "editor_palettes"):
+                    self.editor_palettes.select(1)
             else:
                 self.editor_object_var.set(kind)
             self.status.set(f"Selected {handle.label}")
@@ -2994,7 +3070,7 @@ class LevelEditorApp(tk.Tk):
             part.set_exit_door(room.index, self._clamp_byte(round(x / 2)), self._clamp_byte(y))
         elif kind == "player_start":
             if room.index != 0:
-                self.status.set("Player start belongs to room 0 in the current header model.")
+                self.status.set("Player start is hard-coded by the game to room 00; switch to room 00 to move it.")
                 return
             part.set_player_start(self._clamp_byte(round(x / 2)), self._clamp_byte(y))
         elif kind == "artifact" and slot is not None:
@@ -3153,7 +3229,26 @@ class LevelEditorApp(tk.Tk):
         spec = ACTOR_TEMPLATE_BY_KEY.get(self.actor_template_var.get(), ACTOR_TEMPLATE_SPECS[0])
         part = self.current_level().part(self.part_var.get())
         room = self.current_room()
+        script_offset = None
+        restart_script_offset = None
+        script_bytes: bytes | None = b"\x00"
+        script_note = "new wait script"
+        mode = self.actor_script_mode_var.get()
         try:
+            if mode == "share_selected":
+                source_actor = self._actor_selected_for_script_sharing()
+                if source_actor is None:
+                    raise ValueError("no source actor selected to share script_pc")
+                script_offset = source_actor.script_offset
+                restart_script_offset = source_actor.restart_script_offset
+                script_bytes = None
+                script_note = f"shared script_pc 0x{script_offset:04X} from A{source_actor.index}"
+            elif mode == "address":
+                script_offset = self._parse_actor_addr(self.actor_script_address_var.get())
+                reset_text = self.actor_script_reset_address_var.get().strip()
+                restart_script_offset = script_offset if not reset_text else self._parse_actor_addr(reset_text)
+                script_bytes = None
+                script_note = f"existing script_pc 0x{script_offset:04X}, restart 0x{restart_script_offset:04X}"
             idx = add_actor_record(
                 part,
                 room_index=room.index,
@@ -3165,9 +3260,11 @@ class LevelEditorApp(tk.Tk):
                 hidden=0,
                 frame_min=spec.frame_min,
                 frame_max=spec.frame_max,
-                script_bytes=b"\x00",
+                script_bytes=script_bytes,
+                script_offset=script_offset,
+                restart_script_offset=restart_script_offset,
             )
-        except ValueError as exc:
+        except (ValueError, ActorScriptError) as exc:
             self.status.set(f"Cannot place actor: {exc}")
             return
         self.editor_selected_ref = ("actor", idx)
@@ -3177,7 +3274,7 @@ class LevelEditorApp(tk.Tk):
         self.redraw_room()
         self.redraw_actor_palette()
         self.refresh_actor_scripting_tab()
-        self.status.set(f"Placed actor A{idx} {spec.label} at x={x} y={y}; edit behavior in Script space.")
+        self.status.set(f"Placed actor A{idx} {spec.label} at x={x} y={y}; behavior: {script_note}.")
 
     def editor_pick_tile(self, event) -> None:
         # Right-click on an editable handle selects it. Right-click again or use
@@ -3259,9 +3356,18 @@ class LevelEditorApp(tk.Tk):
             y_raw = self._clamp_byte(y + 16)
             part.set_exit_door(room.index, x_raw, y_raw)
         elif obj == "player_start":
+            if room.index != 0:
+                self.status.set("Player start is hard-coded by the game to room 00; switch to room 00 to place it.")
+                return
             x_raw = self._clamp_byte(round((x + 4) / 2))
             y_raw = self._clamp_byte(y + 16)
             part.set_player_start(x_raw, y_raw)
+        elif obj == "room_links":
+            self.editor_selected_ref = ("room_links", room.index)
+            self.editor_drag_offset = None
+            self.redraw_editor_room()
+            self.status.set(f"Selected room {room.index:02d} links for editing.")
+            return
         elif obj.startswith("artifact_"):
             slot = int(obj.split("_", 1)[1])
             x_raw = self._clamp_byte(round((x + 8) / 2))
@@ -3594,6 +3700,13 @@ class LevelEditorApp(tk.Tk):
                 ],
             ),
             (
+                "Player / room data",
+                [
+                    ("Player start", "AE000", 4, 0, "header player start"),
+                    ("Room links", "AE000", 4, 0, "edit left/right/up/down room links"),
+                ],
+            ),
+            (
                 "Pickups",
                 [
                     *[(f"D{i} artifact", "AE000", 44, 0, f"artifact slot {i}") for i in range(6)],
@@ -3649,15 +3762,6 @@ class LevelEditorApp(tk.Tk):
                     ("Reflector orientation 9", "AE000", 19, 9, "section_c code: controls target Rn = 0x40|n"),
                 ],
             ),
-            (
-                "Ropes",
-                [
-                    ("Rope top", "AE000", 5, 0, "terrain 90"),
-                    ("Rope middle long", "AE000", 6, 0, "terrain A0"),
-                    ("Rope middle short", "AE000", 7, 0, "terrain B0"),
-                    ("Rope bottom", "AE000", 8, 0, "terrain C0"),
-                ],
-            ),
         ]
 
         dynamic = []
@@ -3666,8 +3770,6 @@ class LevelEditorApp(tk.Tk):
         room = part.room(self.room_var.get())
         actors = []
         for actor in actor_records_for_room(part, room.index):
-            if actor.hidden and not self.overlay_hidden_var.get():
-                continue
             actors.append((
                 f"A{actor.index} {actor.confirmed_name or 'actor'}",
                 "AE000",
@@ -3704,6 +3806,13 @@ class LevelEditorApp(tk.Tk):
             pickups.append((label, pickup.archive, pickup.resource_id, pickup.sprite_index, f"x={pickup.x} y={pickup.y} room-tail marker"))
         if pickups:
             dynamic.append(("Current room: pickups", pickups))
+
+        start = header_player_start(part.header)
+        if start is not None and start.room_index == room.index:
+            dynamic.append((
+                "Current room: player start",
+                [("Player start", "AE000", 4, 0, f"room={start.room_index} x={start.x_raw} y={start.y_raw}")],
+            ))
 
         door = header_exit_door(part.header)
         if door is not None and door.room_index == room.index:
@@ -3760,6 +3869,10 @@ class LevelEditorApp(tk.Tk):
                 return f"artifact_{slot}" if 0 <= slot < 6 else None
             return None
         lower_note = note.lower()
+        if label == "Room links" or "room links" in lower_note:
+            return "room_links"
+        if label == "Player start" or "player start" in lower_note:
+            return "player_start"
         if lower_note.startswith("platform "):
             kind = lower_note.removeprefix("platform ").strip()
             return f"platform_{kind}" if kind in PLATFORM_KIND_FLAGS else None
@@ -3978,6 +4091,7 @@ class LevelEditorApp(tk.Tk):
         return [
             ("exit_door", "Exit door", "AE001", 21 + theme, 0),
             ("player_start", "Player start", "AE000", 4, 0),
+            ("room_links", "Room links", "AE000", 4, 0),
             ("ceiling_button", "Ceiling button", "AE000", 39, 0),
             ("floor_switch", "Floor switch", "AE000", 40, 0),
             ("jello", "Jello / light trigger", "AE000", 41, 0),

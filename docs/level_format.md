@@ -218,7 +218,7 @@ The static renderer currently draws:
 12. conditional exit door;
 13. known extra pickups;
 14. visible actor records;
-15. player start marker in room 0.
+15. player start marker in room 0; the original game does not expose a start-room field.
 
 ## MVP Editing
 
@@ -235,7 +235,7 @@ resources (`flags=0`). Untouched resources are preserved byte-for-byte.
 The editor also writes these known header object slots:
 
 ```text
-header[0x03..0x04]  player start
+header[0x03..0x04]  player start x/y; start room is hard-coded to room 0
 header[0x05..0x07]  exit door
 header[0x08..0x19]  six artifact slots
 ```

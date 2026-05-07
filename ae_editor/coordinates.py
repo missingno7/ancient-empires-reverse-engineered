@@ -58,7 +58,9 @@ def platform_xy(p: PlatformTriplet) -> tuple[int, int]:
     point is an object anchor, not bitmap top-left; orientation and sprite
     choice are *not* inferred from collision tile 0x07.
     """
-    return p.x_raw * 2 - 12, p.y - 12
+    # Screenshot calibration: the previous global anchor placed every visible
+    # platform 8 px too low.
+    return p.x_raw * 2 - 12, p.y - 20
 
 
 

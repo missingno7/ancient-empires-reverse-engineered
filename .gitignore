@@ -5,6 +5,8 @@ Decompile notes
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
+tools/__pycache__
+ae_editor/__pycache__
 *.py[codz]
 *$py.class
 

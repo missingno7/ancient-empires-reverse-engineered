@@ -111,8 +111,52 @@ class LevelPart:
             header[offset + i] = value & 0xFF
         self.header = bytes(header)
 
-    def set_player_start(self, x_raw: int, y_raw: int) -> None:
+    def set_player_start(self, x_raw: int, y_raw: int, room_index: int | None = None) -> None:
+        # Static analysis of AEPROG.EXE shows the runtime load routine copies
+        # the part header starting at raw header[0x02] into DS:4374.  The player
+        # spawn routine then reads DS:4375/DS:4376, i.e. raw header[0x03]/[0x04],
+        # for x/y and initializes current room separately to 0.  There is no
+        # confirmed editable start-room byte in the level data.
+        if room_index not in (None, 0):
+            raise ValueError("player start room is hard-coded by the game to room 0")
         self._set_header_bytes(0x03, [x_raw, y_raw])
+
+    def set_room_transition_links(
+        self,
+        room_index: int,
+        *,
+        left: int | None = None,
+        right: int | None = None,
+        up: int | None = None,
+        down: int | None = None,
+    ) -> None:
+        if not 0 <= room_index < ROOM_COUNT:
+            raise ValueError(f"room index out of range: {room_index}")
+
+        def stored(value: int | None, current: int) -> int:
+            if value is None:
+                return current
+            if value < 0:
+                return 0
+            if not 0 <= value < ROOM_COUNT:
+                raise ValueError(f"linked room out of range: {value}")
+            return value + 1
+
+        # Room links are addressed in the level-part payload, not just in the
+        # 0x40-byte header model.  The last two down-link bytes currently overlap
+        # the first room preamble in this parsed layout, so write through the
+        # generic part patcher to keep raw/header/room views in sync.
+        for offset, value in (
+            (0x1A + room_index, left),
+            (0x24 + room_index, right),
+            (0x2E + room_index, up),
+            (0x38 + room_index, down),
+        ):
+            if offset >= len(self.raw):
+                raise ValueError("level-part payload is too short for room links")
+            current = self.raw[offset]
+            self.set_part_bytes(offset, bytes([stored(value, current)]))
+
 
     def set_exit_door(self, room_index: int, x_raw: int, y_raw: int) -> None:
         self._set_header_bytes(0x05, [room_index, x_raw, y_raw])
