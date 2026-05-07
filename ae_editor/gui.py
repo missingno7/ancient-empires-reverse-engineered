@@ -516,11 +516,11 @@ class LevelEditorApp(tk.Tk):
         tile_tab = ttk.Frame(self.editor_palettes)
         object_tab = ttk.Frame(self.editor_palettes)
         decor_tab = ttk.Frame(self.editor_palettes)
-        actor_tab = ttk.Frame(self.editor_palettes)
+        room_data_tab = ttk.Frame(self.editor_palettes)
         self.editor_palettes.add(tile_tab, text="Tile brush")
-        self.editor_palettes.add(object_tab, text="Mechanics")
+        self.editor_palettes.add(object_tab, text="Objects")
         self.editor_palettes.add(decor_tab, text="Decor")
-        self.editor_palettes.add(actor_tab, text="Actors")
+        self.editor_palettes.add(room_data_tab, text="Room data")
         self.editor_palettes.bind("<<NotebookTabChanged>>", self.on_editor_palette_tab_changed)
 
         tile_settings_host = ttk.Frame(tile_tab)
@@ -604,7 +604,7 @@ class LevelEditorApp(tk.Tk):
         ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
 
         self.object_settings_frame = ttk.LabelFrame(mechanics_settings_host, text="Object placement")
-        ttk.Label(self.object_settings_frame, text="Choose an object from Object placement, then click in the room to place it. Use Select objects to move or delete existing objects.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=6)
+        ttk.Label(self.object_settings_frame, text="Choose an object from this palette to enter the placement tool. Use Select / move to edit existing objects; empty clicks never place while Select / move is active.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=6)
 
         tile_frame = ttk.Frame(tile_tab)
         tile_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(6, 0))
@@ -646,17 +646,16 @@ class LevelEditorApp(tk.Tk):
         decor_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.decor_palette_canvas.bind("<Button-1>", self.decor_palette_click)
 
+        self.actor_settings_frame = ttk.LabelFrame(mechanics_settings_host, text="New actor behavior")
         ttk.Label(
-            actor_tab,
-            text="Choose an actor family, then click in the room to place it. Actor behavior is an entry pointer into the shared Script space; new actors can either get a fresh wait routine or reuse an existing entry.",
+            self.actor_settings_frame,
+            text="Actors are normal placeable objects here. Their behavior is an entry pointer into the shared Script space.",
             wraplength=260,
             justify=tk.LEFT,
         ).pack(fill=tk.X, padx=6, pady=(6, 4))
-        behavior = ttk.LabelFrame(actor_tab, text="New actor behavior")
-        behavior.pack(fill=tk.X, padx=6, pady=(0, 6))
-        ttk.Radiobutton(behavior, text="New blank/wait script", variable=self.actor_script_mode_var, value="new").pack(anchor="w", padx=6, pady=(4, 0))
-        ttk.Radiobutton(behavior, text="Share selected actor's script_pc", variable=self.actor_script_mode_var, value="share_selected").pack(anchor="w", padx=6)
-        addr_row = ttk.Frame(behavior)
+        ttk.Radiobutton(self.actor_settings_frame, text="New blank/wait script", variable=self.actor_script_mode_var, value="new").pack(anchor="w", padx=6, pady=(0, 0))
+        ttk.Radiobutton(self.actor_settings_frame, text="Share selected actor's script_pc", variable=self.actor_script_mode_var, value="share_selected").pack(anchor="w", padx=6)
+        addr_row = ttk.Frame(self.actor_settings_frame)
         addr_row.pack(fill=tk.X, padx=6, pady=(0, 4))
         ttk.Radiobutton(addr_row, text="Use address", variable=self.actor_script_mode_var, value="address").pack(side=tk.LEFT)
         ttk.Label(addr_row, text="start").pack(side=tk.LEFT, padx=(6, 2))
@@ -665,12 +664,24 @@ class LevelEditorApp(tk.Tk):
         ttk.Label(addr_row, text="reset").pack(side=tk.LEFT, padx=(8, 2))
         ttk.Entry(addr_row, textvariable=self.actor_script_reset_address_var, width=8).pack(side=tk.LEFT)
         ttk.Label(addr_row, text="hex").pack(side=tk.LEFT, padx=(2, 0))
-        self.actor_palette_canvas = tk.Canvas(actor_tab, bg="#202020", width=260)
-        actor_scroll = ttk.Scrollbar(actor_tab, orient=tk.VERTICAL, command=self.actor_palette_canvas.yview)
-        self.actor_palette_canvas.configure(yscrollcommand=actor_scroll.set)
-        self.actor_palette_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(0, 6))
-        actor_scroll.pack(side=tk.RIGHT, fill=tk.Y, pady=(0, 6))
-        self.actor_palette_canvas.bind("<Button-1>", self.actor_palette_click)
+
+        self.room_data_settings_frame = ttk.LabelFrame(right, text="Room data")
+        ttk.Label(
+            self.room_data_settings_frame,
+            text="Room data contains metadata without a physical scene object, such as left/right/up/down room links.",
+            wraplength=260,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=6, pady=(6, 4))
+        ttk.Button(self.room_data_settings_frame, text="Edit current room links", command=self.select_room_links_mode).pack(fill=tk.X, padx=6, pady=(0, 6))
+
+        ttk.Label(
+            room_data_tab,
+            text="Room parameters / data. These are per-room fields, not objects in the scene.",
+            wraplength=260,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, padx=6, pady=(6, 4))
+        ttk.Button(room_data_tab, text="Edit current room links", command=self.select_room_links_mode).pack(fill=tk.X, padx=6, pady=(0, 6))
+        ttk.Label(room_data_tab, text="Select this tab to edit room links in the properties panel.", wraplength=260, justify=tk.LEFT).pack(fill=tk.X, padx=6, pady=(0, 6))
 
         prop_box = ttk.LabelFrame(right, text="Selected object properties")
         prop_box.pack(fill=tk.X, padx=6, pady=(0, 6))
@@ -871,14 +882,13 @@ class LevelEditorApp(tk.Tk):
             if self.editor_tool_var.get() != "terrain":
                 self.select_tile_brush_mode()
         elif selected == 1:
-            if self.editor_tool_var.get() not in {"select", "belt", "platform", "object"}:
+            if self.editor_tool_var.get() not in {"select", "belt", "platform", "object", "actor"}:
                 self.select_selection_mode()
         elif selected == 2:
             if self.editor_tool_var.get() != "decor":
                 self.select_decor_mode()
         elif selected == 3:
-            if self.editor_tool_var.get() != "actor":
-                self.select_actor_mode()
+            self.select_room_links_mode()
 
     def select_tile_brush_mode(self) -> None:
         self.editor_tool_var.set("terrain")
@@ -913,22 +923,39 @@ class LevelEditorApp(tk.Tk):
         self.editor_selected_ref = None
         self.editor_drag_offset = None
         if hasattr(self, "editor_palettes"):
-            self.editor_palettes.select(3)
+            self.editor_palettes.select(1)
         self.refresh_placeable_settings()
-        self.redraw_actor_palette()
+        self.redraw_editor_object_palette()
+        self.redraw_editor_room()
+
+    def select_room_links_mode(self) -> None:
+        self.editor_tool_var.set("room_data")
+        self.editor_selected_ref = ("room_links", self.current_room().index)
+        self.editor_drag_offset = None
+        if hasattr(self, "editor_palettes"):
+            try:
+                if self.editor_palettes.index(self.editor_palettes.select()) != 3:
+                    self.editor_palettes.select(3)
+            except tk.TclError:
+                self.editor_palettes.select(3)
+        self.refresh_placeable_settings()
+        self.refresh_property_panel()
         self.redraw_editor_room()
 
     def refresh_placeable_settings(self) -> None:
         if not hasattr(self, "select_settings_frame"):
             return
-        for frame in (
+        frames = [
             self.select_settings_frame,
             self.tile_settings_frame,
             self.belt_settings_frame,
             self.platform_settings_frame,
             self.control_settings_frame,
             self.object_settings_frame,
-        ):
+        ]
+        if hasattr(self, "actor_settings_frame"):
+            frames.append(self.actor_settings_frame)
+        for frame in frames:
             frame.pack_forget()
         tool = self.editor_tool_var.get()
         if tool == "terrain":
@@ -939,20 +966,22 @@ class LevelEditorApp(tk.Tk):
             self.palette_selection_var.set(f"Object placement: {self.belt_kind_var.get()} belt, length {self._belt_length()}")
         elif tool == "platform":
             self.platform_settings_frame.pack(fill=tk.X)
-            self.palette_selection_var.set(f"Mechanics: platform {self.platform_kind_var.get().replace('_', ' ')}")
+            self.palette_selection_var.set(f"Object placement: platform {self.platform_kind_var.get().replace('_', ' ')}")
         elif tool == "object":
             obj = self.editor_object_var.get().replace("_", " ")
             if self.editor_object_var.get() in {"ceiling_button", "floor_switch", "jello"}:
                 self.control_settings_frame.pack(fill=tk.X)
             else:
                 self.object_settings_frame.pack(fill=tk.X)
-            prefix = "Room data" if self.editor_object_var.get() == "room_links" else "Object placement"
-            self.palette_selection_var.set(f"{prefix}: {obj}")
+            self.palette_selection_var.set(f"Object placement: {obj}")
+        elif tool == "room_data":
+            self.palette_selection_var.set(f"Room data: room {self.current_room().index:02d} links")
         elif tool == "decor":
             self.palette_selection_var.set(f"Decor decals: code {self.decor_code_var.get().upper()}")
         elif tool == "actor":
+            self.actor_settings_frame.pack(fill=tk.X)
             spec = ACTOR_TEMPLATE_BY_KEY.get(self.actor_template_var.get(), ACTOR_TEMPLATE_SPECS[0])
-            self.palette_selection_var.set(f"Actor placement: {spec.label}")
+            self.palette_selection_var.set(f"Object placement: actor {spec.label}")
         else:
             self.select_settings_frame.pack(fill=tk.X)
             self.palette_selection_var.set("Object selection")
@@ -2922,6 +2951,10 @@ class LevelEditorApp(tk.Tk):
             text = f"Decor {self.decor_code_var.get().upper()}"
             self.editor_canvas.create_rectangle(8, 8, 132, 34, fill="#111111", outline="#d8e8ff", stipple="gray50")
             self.editor_canvas.create_text(14, 14, anchor="nw", text=text, fill="#ffffff", font=("Segoe UI", 9))
+        elif tool == "room_data":
+            text = f"Room {self.current_room().index:02d} data"
+            self.editor_canvas.create_rectangle(8, 8, 144, 34, fill="#111111", outline="#d8e8ff", stipple="gray50")
+            self.editor_canvas.create_text(14, 14, anchor="nw", text=text, fill="#ffffff", font=("Segoe UI", 9))
         else:
             self.editor_canvas.create_rectangle(8, 8, 132, 34, fill="#111111", outline="#d8e8ff", stipple="gray50")
             self.editor_canvas.create_text(14, 14, anchor="nw", text=self.editor_object_var.get().replace("_", " "), fill="#ffffff", font=("Segoe UI", 9))
@@ -3043,7 +3076,7 @@ class LevelEditorApp(tk.Tk):
         start = header_player_start(part.header)
         if start and room.index == start.room_index:
             handles.append(EditorHandle(("player_start", None), start.x_raw * 2, start.y_raw, "Start", "#7cff6b"))
-        handles.append(EditorHandle(("room_links", room.index), ROOM_COLUMNS * CELL_SIZE - 14, 14, "Links", "#ffe080"))
+        # Room links are edited from the Room data tab. They are not drawn as scene objects.
         for cand in header_object_candidates(part.header):
             if cand.room_plus_one == room.index + 1:
                 handles.append(EditorHandle(("artifact", cand.index), cand.x_raw * 2, cand.y_raw, f"D{cand.index}", "#ff40ff"))
@@ -3291,6 +3324,7 @@ class LevelEditorApp(tk.Tk):
         return None if best is None else best[1]
 
     def select_editor_handle(self, event) -> None:
+        keep_select_tool = self.editor_tool_var.get() == "select"
         handle = self.find_editor_handle(event)
         self.editor_selected_ref = None if handle is None else handle.ref
         self.editor_drag_offset = None
@@ -3308,42 +3342,62 @@ class LevelEditorApp(tk.Tk):
                 if platforms:
                     flag_to_kind = {0x40: "horizontal_left", 0x60: "horizontal_right", 0x80: "vertical_down", 0xA0: "vertical_up"}
                     self.platform_kind_var.set(flag_to_kind.get(platforms[0].flags & 0xF0, self.platform_kind_var.get()))
-                    self.editor_tool_var.set("platform")
-                    if hasattr(self, "editor_palettes"):
-                        self.editor_palettes.select(1)
+                    if not keep_select_tool:
+                        self.editor_tool_var.set("platform")
+                        if hasattr(self, "editor_palettes"):
+                            self.editor_palettes.select(1)
             elif kind == "decor" and slot is not None:
                 entry = self._decor_from_ref(self.current_room(), handle.ref)
                 if entry is not None:
                     self.decor_code_var.set(f"{entry.code:02X}")
-                    self.editor_tool_var.set("decor")
-                    if hasattr(self, "editor_palettes"):
-                        self.editor_palettes.select(2)
+                    if not keep_select_tool:
+                        self.editor_tool_var.set("decor")
+                        if hasattr(self, "editor_palettes"):
+                            self.editor_palettes.select(2)
             elif kind == "actor" and slot is not None:
                 self.actor_script_share_source_index = int(slot)
                 self.scripting_selected_actor_index = int(slot)
-                self.editor_tool_var.set("actor")
-                if hasattr(self, "editor_palettes"):
-                    self.editor_palettes.select(3)
+                if not keep_select_tool:
+                    self.editor_tool_var.set("actor")
+                    if hasattr(self, "editor_palettes"):
+                        self.editor_palettes.select(1)
             elif kind == "known_pickup":
                 self.editor_object_var.set("apple")
-                self.editor_tool_var.set("object")
-                if hasattr(self, "editor_palettes"):
-                    self.editor_palettes.select(1)
+                if not keep_select_tool:
+                    self.editor_tool_var.set("object")
+                    if hasattr(self, "editor_palettes"):
+                        self.editor_palettes.select(1)
             elif kind == "room_links":
-                self.editor_object_var.set("room_links")
-                self.editor_tool_var.set("object")
-                if hasattr(self, "editor_palettes"):
-                    self.editor_palettes.select(1)
+                if not keep_select_tool:
+                    self.editor_tool_var.set("room_data")
+                    if hasattr(self, "editor_palettes"):
+                        self.editor_palettes.select(3)
             elif kind == "symbol":
                 self.editor_object_var.set("symbol_1")
-                self.editor_tool_var.set("object")
-                if hasattr(self, "editor_palettes"):
-                    self.editor_palettes.select(1)
+                if not keep_select_tool:
+                    self.editor_tool_var.set("object")
+                    if hasattr(self, "editor_palettes"):
+                        self.editor_palettes.select(1)
             elif kind in {"green_block", "green_block_alt"}:
                 self.editor_object_var.set("green_block")
-                self.editor_tool_var.set("object")
-                if hasattr(self, "editor_palettes"):
-                    self.editor_palettes.select(1)
+                if not keep_select_tool:
+                    self.editor_tool_var.set("object")
+                    if hasattr(self, "editor_palettes"):
+                        self.editor_palettes.select(1)
+            elif kind == "control" and slot is not None:
+                cmd = next((cmd for cmd in control_commands(self.current_room()) if cmd.record.index == slot), None)
+                command_to_object = {0x00: "ceiling_button", 0x01: "floor_switch", 0x02: "jello"}
+                self.editor_object_var.set(command_to_object.get(None if cmd is None else cmd.command, "ceiling_button"))
+                if not keep_select_tool:
+                    self.editor_tool_var.set("object")
+                    if hasattr(self, "editor_palettes"):
+                        self.editor_palettes.select(1)
+            elif kind == "crystal":
+                self.editor_object_var.set("reflector_0")
+                if not keep_select_tool:
+                    self.editor_tool_var.set("object")
+                    if hasattr(self, "editor_palettes"):
+                        self.editor_palettes.select(1)
             else:
                 self.editor_object_var.set(kind)
             self.status.set(f"Selected {handle.label}")
@@ -3418,8 +3472,6 @@ class LevelEditorApp(tk.Tk):
                 # Moving it must not create, move, or remove 0x07 room tiles.
                 rec[2], rec[3] = raw_x, raw_y
             set_record12_green_block(room, slot, bytes(rec))
-        elif kind == "control" and slot is not None:
-            cmds = [cmd for cmd in control_commands(room) if cmd.record.index == slot]
         elif kind == "control" and slot is not None:
             cmds = [cmd for cmd in control_commands(room) if cmd.record.index == slot]
             if not cmds:
@@ -3664,16 +3716,18 @@ class LevelEditorApp(tk.Tk):
                 if platforms:
                     flag_to_kind = {0x40: "horizontal_left", 0x60: "horizontal_right", 0x80: "vertical_down", 0xA0: "vertical_up"}
                     self.platform_kind_var.set(flag_to_kind.get(platforms[0].flags & 0xF0, self.platform_kind_var.get()))
-                    self.editor_tool_var.set("platform")
-                    if hasattr(self, "editor_palettes"):
-                        self.editor_palettes.select(1)
+                    if not keep_select_tool:
+                        self.editor_tool_var.set("platform")
+                        if hasattr(self, "editor_palettes"):
+                            self.editor_palettes.select(1)
             elif kind == "decor" and slot is not None:
                 entry = self._decor_from_ref(self.current_room(), handle.ref)
                 if entry is not None:
                     self.decor_code_var.set(f"{entry.code:02X}")
-                    self.editor_tool_var.set("decor")
-                    if hasattr(self, "editor_palettes"):
-                        self.editor_palettes.select(2)
+                    if not keep_select_tool:
+                        self.editor_tool_var.set("decor")
+                        if hasattr(self, "editor_palettes"):
+                            self.editor_palettes.select(2)
             else:
                 self.editor_object_var.set(kind)
             if kind in {"belt", "conveyor"} and self.editor_tool_var.get() == "belt":
@@ -4085,7 +4139,7 @@ class LevelEditorApp(tk.Tk):
         """
         static = [
             (
-                "Actors / enemies",
+                "Actors",
                 [
                     ("Ant", "AE000", 20, 0, "020:0-1"),
                     ("Pill Projectile", "AE000", 20, 2, "020:2-7"),
@@ -4106,19 +4160,9 @@ class LevelEditorApp(tk.Tk):
                 ],
             ),
             (
-                "Projectiles / secondary actors",
-                [
-                    ("Pill Projectile", "AE000", 20, 2, "020:2-7"),
-                    ("Energy Orb", "AE000", 21, 0, "021:0-3"),
-                    ("Fireball", "AE000", 21, 4, "021:4-8"),
-                    ("Sparkles", "AE000", 22, 37, "022:37-40"),
-                ],
-            ),
-            (
-                "Player / room data",
+                "Player / header objects",
                 [
                     ("Player start", "AE000", 4, 0, "header player start"),
-                    ("Room links", "AE000", 4, 0, "edit left/right/up/down room links"),
                 ],
             ),
             (
@@ -4267,6 +4311,8 @@ class LevelEditorApp(tk.Tk):
             return f"platform_{self.platform_kind_var.get()}"
         if self.editor_tool_var.get() == "object":
             return self.editor_object_var.get()
+        if self.editor_tool_var.get() == "actor":
+            return f"actor:{self.actor_template_var.get()}"
         if self.editor_tool_var.get() == "decor":
             return f"decor_{self.decor_code_var.get().upper()}"
         return None
@@ -4284,8 +4330,6 @@ class LevelEditorApp(tk.Tk):
                 return f"artifact_{slot}" if 0 <= slot < 6 else None
             return None
         lower_note = note.lower()
-        if label == "Room links" or "room links" in lower_note:
-            return "room_links"
         if label == "Player start" or "player start" in lower_note:
             return "player_start"
         if lower_note.startswith("platform "):
@@ -4293,6 +4337,9 @@ class LevelEditorApp(tk.Tk):
             return f"platform_{kind}" if kind in PLATFORM_KIND_FLAGS else None
         if archive == "AE000" and resource_id == 19:
             return f"reflector_{sprite_index & 0x3F}"
+        for spec in ACTOR_TEMPLATE_SPECS:
+            if label == spec.label and (archive, resource_id, sprite_index) == (spec.archive, spec.resource_id, spec.sprite_index):
+                return f"actor:{spec.key}"
         for value, _label, a, rid, si in self.editor_object_specs():
             if (archive, resource_id, sprite_index) == (a, rid, si):
                 return value
@@ -4305,8 +4352,15 @@ class LevelEditorApp(tk.Tk):
         y = int(self.objects_canvas.canvasy(event.y))
         for x0, y0, x1, y1, value in self.objects_atlas_hitboxes:
             if x0 <= x <= x1 and y0 <= y <= y1:
-                self.select_editor_object(value)
-                self.status.set(f"Selected {value.replace('_', ' ')} from Objects atlas. Click in the editor to place it.")
+                if isinstance(value, str) and value.startswith("actor:"):
+                    actor_key = value.split(":", 1)[1]
+                    self.actor_template_var.set(actor_key)
+                    self.select_actor_mode()
+                    spec = ACTOR_TEMPLATE_BY_KEY.get(actor_key, ACTOR_TEMPLATE_SPECS[0])
+                    self.status.set(f"Selected actor {spec.label} from Objects atlas. Click in the editor to place it.")
+                else:
+                    self.select_editor_object(value)
+                    self.status.set(f"Selected {value.replace('_', ' ')} from Objects atlas. Click in the editor to place it.")
                 return
 
     def redraw_objects_atlas(self) -> None:
@@ -4506,7 +4560,6 @@ class LevelEditorApp(tk.Tk):
         return [
             ("exit_door", "Exit door", "AE001", 21 + theme, 0),
             ("player_start", "Player start", "AE000", 4, 0),
-            ("room_links", "Room links", "AE000", 4, 0),
             ("ceiling_button", "Ceiling button", "AE000", 39, 0),
             ("floor_switch", "Floor switch", "AE000", 40, 0),
             ("jello", "Jello / light trigger", "AE000", 41, 0),
@@ -4543,10 +4596,10 @@ class LevelEditorApp(tk.Tk):
         row_h = 58
         width = 238
 
-        self.object_palette_canvas.create_text(8, y, anchor="nw", text="Mechanics and gameplay objects", fill="#ffffff", font=category_font)
+        self.object_palette_canvas.create_text(8, y, anchor="nw", text="Objects", fill="#ffffff", font=category_font)
         y += 24
         for title, items in self.atlas_categories():
-            if title.startswith("Current room:"):
+            if title.startswith("Current room:") or title == "Actors":
                 continue
             placeable_items = [
                 (label, archive, resource_id, sprite_index, note, value)
@@ -4578,6 +4631,31 @@ class LevelEditorApp(tk.Tk):
                 self.object_palette_canvas.create_text(56, y + 27, anchor="nw", text="click to place", fill="#c8c8c8", font=note_font)
                 y += row_h
             y += 8
+
+        self.object_palette_canvas.create_text(8, y, anchor="nw", text="Actors", fill="#b8e0ff", font=category_font)
+        y += 22
+        for spec in ACTOR_TEMPLATE_SPECS:
+            value = f"actor:{spec.key}"
+            selected = value == self._current_palette_value()
+            fill = "#4f6f8f" if selected else "#343434"
+            outline = "#9ed0ff"
+            self.object_palette_canvas.create_rectangle(8, y, 8 + width, y + row_h - 6, outline=outline, fill=fill)
+            self.editor_object_palette_hitboxes.append((8, y, 8 + width, y + row_h - 6, value))
+            sprite = self.project.graphics.sprite(spec.archive, spec.resource_id, spec.sprite_index)
+            if sprite is not None:
+                thumb = sprite.copy()
+                max_size = 34
+                scale = min(max_size / max(1, thumb.width), max_size / max(1, thumb.height), 2.5)
+                if scale != 1:
+                    thumb = thumb.resize((max(1, int(thumb.width * scale)), max(1, int(thumb.height * scale))), Image.Resampling.NEAREST)
+                tk_img = ImageTk.PhotoImage(thumb)
+                self.tk_editor_object_images.append(tk_img)
+                self.object_palette_canvas.create_image(30, y + 25, image=tk_img)
+            self.object_palette_canvas.create_text(56, y + 7, anchor="nw", text=spec.label, fill="#ffffff", font=item_font)
+            note = f"actor frames={spec.frame_min:02X}-{spec.frame_max:02X}"
+            self.object_palette_canvas.create_text(56, y + 27, anchor="nw", text=note, fill="#c8c8c8", font=note_font)
+            y += row_h
+        y += 8
         self.object_palette_canvas.config(scrollregion=(0, 0, 260, y + 8))
 
     def object_palette_click(self, event) -> None:
@@ -4587,8 +4665,15 @@ class LevelEditorApp(tk.Tk):
         y = int(self.object_palette_canvas.canvasy(event.y))
         for x0, y0, x1, y1, value in self.editor_object_palette_hitboxes:
             if x0 <= x <= x1 and y0 <= y <= y1:
-                self.select_editor_object(value)
-                self.status.set(f"Selected {value.replace('_', ' ')}. Click in the editor to place it.")
+                if isinstance(value, str) and value.startswith("actor:"):
+                    actor_key = value.split(":", 1)[1]
+                    self.actor_template_var.set(actor_key)
+                    self.select_actor_mode()
+                    spec = ACTOR_TEMPLATE_BY_KEY.get(actor_key, ACTOR_TEMPLATE_SPECS[0])
+                    self.status.set(f"Selected actor {spec.label}. Click in the editor to place it.")
+                else:
+                    self.select_editor_object(value)
+                    self.status.set(f"Selected {value.replace('_', ' ')}. Click in the editor to place it.")
                 return
 
     def redraw_actor_palette(self) -> None:
@@ -4634,7 +4719,7 @@ class LevelEditorApp(tk.Tk):
                 self.editor_drag_offset = None
                 self.editor_tool_var.set("actor")
                 if hasattr(self, "editor_palettes"):
-                    self.editor_palettes.select(3)
+                    self.editor_palettes.select(1)
                 self.refresh_placeable_settings()
                 self.redraw_actor_palette()
                 self.redraw_editor_room()
