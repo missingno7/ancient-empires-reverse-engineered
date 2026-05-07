@@ -146,11 +146,11 @@ class RoomRenderer:
     ROPE_X_BIAS = 4
     SOLID_INVISIBLE_CODE = 0x07
 
-    # Real red apple pickups are encoded by the room-tail marker.  A few stock
-    # rooms in the shipped data use the same EXE marker but with level-global
-    # room ids that the editor does not yet normalize; keep those as fallback
-    # decoded apples so existing levels remain editable.  New placements always
-    # write the room-tail marker, never a fake compact3 sprite.
+    # Real red apple pickups are encoded by the room-tail marker checked by
+    # AEPROG at room+0x3E5..0x3E7.  Two stock rooms are kept as verified
+    # compatibility overrides because their shipped marker ids are level-global
+    # rather than the editor's local room index.  New placements still write the
+    # EXE marker, never a fake compact3 sprite.
     KNOWN_LEGACY_APPLES: ClassVar[dict[tuple[int, int, int], KnownExtraPickup]] = {
         (1, 0, 1): KnownExtraPickup("AE000", 45, 0, 196, 99),
         (18, 0, 0): KnownExtraPickup("AE000", 45, 0, 83, 46),
@@ -495,9 +495,9 @@ class RoomRenderer:
         if apple is not None:
             self._blit(image, sprite, apple.x_raw * 2, apple.y_raw)
             return
-        # Fallback for original shipped apples whose room id byte is not yet
-        # normalized by the editor.  If the marker was explicitly cleared, do
-        # not resurrect the fallback.
+        # Compatibility override for original shipped apples whose marker id is
+        # not the local room index used by the editor.  If the marker was
+        # explicitly cleared, do not resurrect the override.
         tail = room_tail_marker(room)
         if tail is None:
             return

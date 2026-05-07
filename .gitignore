@@ -1,12 +1,10 @@
 AE000.DAT*
 AE001.DAT*
 AEPROG.EXE
-AE.ICO
 Decompile notes
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
-ae_editor/__pycache__/
 *.py[codz]
 *$py.class
 

@@ -168,6 +168,26 @@ Confirmed frame families currently include ant, bat, green spitter, ladybug,
 scorpion shooter, spider and snake, plus several projectile/secondary actor
 frames.
 
+
+### Actor VM condition model
+
+A data pass over every stock actor script shows that condition opcodes
+`0x13..0x1B` guard exactly the immediately following VM command. When the
+condition is true the next command executes; when false, that one command is
+skipped and execution continues after it. The guarded command is usually a
+`jump` or `call`, but stock data also uses `yield`, `set_frame`, `return` and
+`set_actor_mode`. This is important for the Actors tab: do not model these as
+free-form "skip descriptor" records. Model them as structured guarded
+commands.
+
+Relative branches (`0x01`, `0x02`, loops `0x04..0x06`) use offsets relative to
+the next instruction.
+
+Observed VM opcodes in stock data are limited to `0x00..0x1B` excluding `0x06`;
+unknown byte values did not appear as script opcodes in the current actor entry
+point scan. Event ids are still semantic names to recover, but their structural
+shape is known: `0x07/0x08/0x09 id`.
+
 ## Render Order
 
 The static renderer currently draws:

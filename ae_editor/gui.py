@@ -12,6 +12,7 @@ from .constants import CELL_SIZE, ROOM_COUNT, ROOM_COLUMNS, ROOM_ROWS
 from .exporters import export_bank_sheets, export_probe_csv, export_room_previews
 from .overlay import build_room_overlay, control_ref_values, control_targets, decode_control_target
 from .coordinates import control_xy, actor_xy
+from .actor_scripts import decode_actor_script
 from .coordinates import platform_xy
 from .conveyors import iter_conveyor_runs
 from .project import AncientEmpiresProject
@@ -1369,13 +1370,25 @@ class LevelEditorApp(tk.Tk):
             self.property_len_var.set(f"{actor.frame_variant:02X}")
             self.property_code_var.set(f"{actor.frame:02X}")
             self.property_props_var.set(f"{actor.hidden:02X}")
+            decoded = decode_actor_script(self.current_level().part(self.part_var.get()), actor, max_bytes=96, max_segments=8)
             note_bits = []
             if binary_facing:
-                note_bits.append("facing is shown as a boolean variant")
+                note_bits.append("variant is shown as a boolean when it is 0/1")
             if binary_hidden:
-                note_bits.append("hidden is shown as a checkbox")
-            suffix = "; ".join(note_bits) or "raw actor bytes are shown because this actor uses non-binary state values"
-            self.property_note_var.set(f"Actor table is inspect-only for now; {suffix}.")
+                note_bits.append("hidden is shown as a checkbox when it is 0/1")
+            bool_text = ("; " + "; ".join(note_bits)) if note_bits else ""
+            dsl_preview = "\n".join(decoded.entry_dsl.strip().splitlines()[:8])
+            if decoded.entry_dsl and len(decoded.entry_dsl.strip().splitlines()) > 8:
+                dsl_preview += "\n    ..."
+            self.property_note_var.set(
+                "Actor table is inspect-only for now. Record layout: "
+                f"mode={actor.actor_type:02X}, room={actor.room_index}, delay={actor.delay}, cooldown={actor.cooldown}, "
+                f"frame_range={actor.frame_min:02X}-{actor.frame_max:02X}, script={actor.script_offset:04X}, "
+                f"saved_pc={actor.saved_script_offset:04X}, restart={actor.restart_script_offset:04X}, "
+                f"loops={actor.loop_counter_a}/{actor.loop_counter_b}/{actor.loop_counter_c}, "
+                f"contact={actor.contact_behavior:02X}, activated={actor.activated_flag:02X}. "
+                f"{decoded.summary}{bool_text}.\n\nActor DSL preview:\n{dsl_preview}"
+            )
         elif kind == "crystal":
             idx = ref[1]
             table = laser_crystal_table(room)
@@ -1386,7 +1399,7 @@ class LevelEditorApp(tk.Tk):
                 self._layout_property_panel()
                 return
             cmd_by_index = {cmd.record.index: cmd for cmd in control_commands(room)}
-            refs = [cmd.record.index for cmd in cmd_by_index.values() if any(t.kind == "mirror" and t.index == entry.index for t in control_targets(cmd))]
+            refs = [cmd.record.index for cmd in cmd_by_index.values() if any(t.kind == "reflector" and t.index == entry.index for t in control_targets(cmd))]
             def _ctrl_label(i: int) -> str:
                 cmd = cmd_by_index.get(i)
                 if cmd is None:
@@ -1403,15 +1416,17 @@ class LevelEditorApp(tk.Tk):
             self.property_title_var.set(f"Reflector R{entry.index}")
             self.property_label_x_var.set("raw x")
             self.property_label_y_var.set("raw y")
-            self.property_label_len_var.set("code")
-            self.property_label_code_var.set("sprite")
+            self.property_label_len_var.set("raw code")
+            self.property_label_code_var.set("orientation")
             self.property_label_props_var.set("controlled by")
             self.property_x_var.set(str(entry.x_raw))
             self.property_y_var.set(str(entry.y))
             self.property_len_var.set(f"{entry.code:02X}")
-            self.property_code_var.set(str(entry.code & 0x3F))
+            self.property_code_var.set(str(entry.code & 0x1F))
             self.property_props_var.set(controlled_by)
-            self.property_note_var.set("Section_c laser/reflector entry. Controls point here with R0/R1/... target bytes. code bits: 0..4=orientation/frame, 0x40=reverse rotation, 0x80=auto-rotate. Edit links on the selected button/switch Targets field.")
+            reverse = "yes" if entry.code & 0x40 else "no"
+            auto = "yes" if entry.code & 0x80 else "no"
+            self.property_note_var.set(f"Section_c reflector entry. Controls rotate it with R{entry.index} target byte {0x40 | entry.index:02X}. Code bits: 0..4=orientation/frame ({entry.code & 0x1F}), 0x40=reverse rotation ({reverse}), 0x80=auto-rotate ({auto}). Controlled-by is informational; edit links on the selected button/switch Targets field.")
         elif kind == "known_pickup":
             idx = ref[1]
             pickups = self._known_extra_pickups_for_room(self.current_level().part(self.part_var.get()), room)
@@ -1711,9 +1726,8 @@ class LevelEditorApp(tk.Tk):
         apple = room_apple_marker(room)
         if apple is not None:
             return [KnownExtraPickup("AE000", 45, 0, apple.x_raw * 2, apple.y_raw)]
-        # Keep stock apples selectable even before they are moved/re-saved into
-        # the normalized tail marker.  If the tail marker was explicitly cleared
-        # by Delete, hide the fallback.
+        # Compatibility override for shipped apples with non-local marker ids.
+        # A cleared zero marker means the user intentionally deleted the apple.
         from .room_payload import room_tail_marker
         if room_tail_marker(room) is None:
             return []
@@ -1785,9 +1799,6 @@ class LevelEditorApp(tk.Tk):
             for entry in visual_table.entries:
                 label = f"V{entry.index}:{entry.code:02X}"
                 colour = "#d4a8ff"
-                if entry.code == 0xFD:
-                    label = f"Apple V{entry.index}"
-                    colour = "#ff5050"
                 handles.append(EditorHandle(("decor", entry.index), entry.x_raw * 2, entry.y, label, colour))
         # Tile-only belt runs are physics footprints. Show them as a separate
         # grey handle only when no CV object covers them, because in-game they
@@ -2096,8 +2107,7 @@ class LevelEditorApp(tk.Tk):
             self.status.set("Actor table handles are selectable for inspection; movement editing is not enabled yet.")
             return
         elif kind == "known_pickup":
-            self.status.set("This apple is a verified read-only marker; original apple storage is still unknown, so the editor will not write fake apple records into the game data.")
-            return
+            set_room_apple_marker(room, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y))
         elif kind == "conveyor" and slot is not None:
             cv = self._cv_from_ref(room, self.editor_selected_ref)
             if cv is None:
@@ -2597,7 +2607,7 @@ class LevelEditorApp(tk.Tk):
                 "Pickups",
                 [
                     *[(f"D{i} artifact", "AE000", 44, 0, f"artifact slot {i}") for i in range(6)],
-                    ("Apple", "AE000", 45, 0, "real room-tail pickup"),
+                    ("Apple", "AE000", 45, 0, "room-tail pickup, max one per room"),
                 ],
             ),
             (
@@ -2642,11 +2652,11 @@ class LevelEditorApp(tk.Tk):
                 ],
             ),
             (
-                "Laser / reflectors",
+                "Reflectors / laser mirrors",
                 [
-                    ("Reflector 0", "AE000", 19, 0, "section_c compact3"),
-                    ("Reflector 2", "AE000", 19, 2, "special compact3 code 7D"),
-                    ("Reflector 9", "AE000", 19, 9, "section_c compact3"),
+                    ("Reflector orientation 0", "AE000", 19, 0, "section_c code: bits 0..4 orientation"),
+                    ("Reflector orientation 2", "AE000", 19, 2, "section_c code: add 0x40 reverse, 0x80 auto"),
+                    ("Reflector orientation 9", "AE000", 19, 9, "section_c code: controls target Rn = 0x40|n"),
                 ],
             ),
             (
@@ -2673,7 +2683,7 @@ class LevelEditorApp(tk.Tk):
                 "AE000",
                 self._actor_resource_id(actor.frame),
                 self._actor_sprite_index(actor.frame),
-                f"frame={actor.frame:02X} type={actor.actor_type} hidden={actor.hidden}",
+                f"frame={actor.frame:02X} mode={actor.actor_type} hidden={actor.hidden} script={actor.script_offset:04X}",
             ))
         if actors:
             dynamic.append(("Current room: actors", actors))

@@ -73,7 +73,7 @@ class ControlTarget:
             return f"P{self.index}"
         if self.kind == "conveyor":
             return f"CV{self.index}"
-        if self.kind == "mirror":
+        if self.kind == "reflector":
             return f"R{self.index}"
         return f"?{self.raw:02X}"
 
@@ -136,7 +136,7 @@ def decode_control_target(value: int) -> ControlTarget:
     Current reverse-engineering model:
       * 00..0F -> runtime platform slots P0..P15
       * 10..1F -> conveyor/CV slots CV0..CV15
-      * 40..4F -> reflector slots R0..R15
+      * 40..4F -> section_c reflector slots R0..R15
 
     The exact high-nibble classes may still grow, but keeping the raw byte while
     exposing the class makes trigger editing much less ambiguous than a flat
@@ -148,7 +148,7 @@ def decode_control_target(value: int) -> ControlTarget:
     if 0x10 <= value < 0x20:
         return ControlTarget(value, "conveyor", value - 0x10)
     if 0x40 <= value < 0x50:
-        return ControlTarget(value, "mirror", value - 0x40)
+        return ControlTarget(value, "reflector", value - 0x40)
     return ControlTarget(value, "unknown", value)
 
 
@@ -171,7 +171,7 @@ def control_ref_values(cmd: ControlCommand) -> list[int]:
     return [target.raw for target in control_targets(cmd)]
 
 
-def mirror_target_indices(level, part, room: Room, target_index: int) -> list[int]:
+def reflector_target_indices(level, part, room: Room, target_index: int) -> list[int]:
     # Static analysis confirms target byte 0x40|n rotates section_c entry n.
     return [target_index]
 
@@ -278,7 +278,7 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
 
 
     # Pre-index reflectors before processing control links, because control
-    # commands can target them with M0/M1/... bytes.  The visible points are
+    # commands can target them with R0/R1/... bytes (0x40|index).  The visible points are
     # still appended in the normal crystal overlay block below.
     _crystal_table_for_links = laser_crystal_table(room)
     if _crystal_table_for_links:
@@ -288,7 +288,7 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
                 f"R{_entry.index}",
                 _entry.x_raw * 2,
                 _entry.y,
-                f"R{_entry.index} idx={_entry.code & 0x3F:02X} raw={_entry.code:02X}",
+                f"R{_entry.index} orient={_entry.code & 0x1F:02X} flags={_entry.code & 0xE0:02X}",
                 "#44d7ff",
             )
 
@@ -319,9 +319,9 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
                 target = platform_by_index.get(target_ref.index)
             elif target_ref.kind == "conveyor":
                 target = conveyor_by_index.get(target_ref.index)
-            elif target_ref.kind == "mirror":
-                for mirror_index in mirror_target_indices(level, part, room, target_ref.index):
-                    target = crystal_by_index.get(mirror_index)
+            elif target_ref.kind == "reflector":
+                for reflector_index in reflector_target_indices(level, part, room, target_ref.index):
+                    target = crystal_by_index.get(reflector_index)
                     if target is None:
                         continue
                     links.append(
@@ -378,8 +378,36 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
         )
         actors.append(rect)
         actor_rects.append((actor, rect))
-        if decoded.segments and len(decoded.points) >= 2:
-            ox, oy = actor_origin(actor.frame_min)
+        traces = decoded.traces or []
+        if traces:
+            for trace_index, trace in enumerate(traces[:6]):
+                if not trace.segments or len(trace.points) < 2:
+                    continue
+                visible_points = [
+                    (max(-64, min(ROOM_WIDTH_PX + 64, px)), max(-64, min(ROOM_HEIGHT_PX + 64, py)))
+                    for px, py in trace.points
+                ]
+                for idx, (start_pt, end_pt) in enumerate(zip(visible_points, visible_points[1:])):
+                    if idx >= len(trace.segments):
+                        break
+                    seg = trace.segments[idx]
+                    cond = ""
+                    if trace.conditions:
+                        cond = " if " + "; ".join(trace.conditions[:2])
+                        if len(trace.conditions) > 2:
+                            cond += " ..."
+                    actor_paths.append(
+                        OverlayLine(
+                            "actor_path",
+                            f"A{actor.index}t{trace_index}p{idx}",
+                            start_pt,
+                            end_pt,
+                            f"A{actor.index}.{trace_index}.{idx} {seg.dx:+d},{seg.dy:+d}×{seg.duration}{cond}",
+                            "#7cff6b" if not hidden else "#7a7a7a",
+                            dashed=hidden or bool(trace.conditions),
+                        )
+                    )
+        elif decoded.segments and len(decoded.points) >= 2:
             visible_points = [
                 (max(-64, min(ROOM_WIDTH_PX + 64, px)), max(-64, min(ROOM_HEIGHT_PX + 64, py)))
                 for px, py in decoded.points
@@ -486,7 +514,7 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
                 f"R{entry.index}",
                 x,
                 y,
-                f"R{entry.index} idx={entry.code & 0x3F:02X} raw={entry.code:02X}",
+                f"R{entry.index} orient={entry.code & 0x1F:02X} flags={entry.code & 0xE0:02X}",
                 "#44d7ff",
             )
             crystals.append(point)

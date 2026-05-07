@@ -47,7 +47,14 @@ def main() -> None:
                     f"  A{actor.index:02d} {name:14s} start=({actor.x},{actor.y}) "
                     f"delay={actor.delay} script=0x{actor.script_offset:04x} {decoded.summary}"
                 )
-                if points:
+                if decoded.traces:
+                    for ti, trace in enumerate(decoded.traces[:6]):
+                        if not trace.segments:
+                            continue
+                        tpoints = " -> ".join(f"({x},{y})" for x, y in trace.points[:8])
+                        print(f"      trace {ti}: {trace.label}")
+                        print(f"          points {tpoints}")
+                elif points:
                     print(f"      points {points}")
 
 

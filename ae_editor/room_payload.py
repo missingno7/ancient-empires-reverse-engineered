@@ -366,7 +366,15 @@ class ActorTableRecord:
     frame_min: int
     frame_max: int
     script_offset: int
+    saved_script_offset: int
+    loop_counter_a: int
+    loop_counter_b: int
+    loop_counter_c: int
     restart_script_offset: int
+    contact_behavior: int
+    vertical_marker: int
+    activated_flag: int
+    runtime_tail: bytes
 
     @property
     def label(self) -> str:
@@ -374,7 +382,8 @@ class ActorTableRecord:
         return (
             f"actor[{self.index}] {name}room={self.room_index} x={self.x} y={self.y} "
             f"frame={self.frame:02X}:{self.frame_variant:02X} "
-            f"range={self.frame_min:02X}-{self.frame_max:02X} hidden={self.hidden}"
+            f"range={self.frame_min:02X}-{self.frame_max:02X} hidden={self.hidden} "
+            f"script={self.script_offset:04X} restart={self.restart_script_offset:04X}"
         )
 
     @property
@@ -414,7 +423,15 @@ def parse_actor_table(part) -> list[ActorTableRecord]:
                 frame_min=rec[11],
                 frame_max=rec[12],
                 script_offset=rec[13] | (rec[14] << 8),
+                saved_script_offset=rec[15] | (rec[16] << 8),
+                loop_counter_a=rec[17] | (rec[18] << 8),
+                loop_counter_b=rec[19] | (rec[20] << 8),
+                loop_counter_c=rec[21] | (rec[22] << 8),
                 restart_script_offset=rec[23] | (rec[24] << 8),
+                contact_behavior=rec[25],
+                vertical_marker=rec[26],
+                activated_flag=rec[27],
+                runtime_tail=rec[28:32],
             )
         )
     return out
@@ -997,7 +1014,9 @@ def add_laser_crystal_entry(room: Room, *, x_raw: int, y: int, code: int) -> int
     """Append an entry to section_c, the current reflector/crystal table.
 
     This mirrors add_visual_compact3_entry but targets section_c instead of the
-    visual/decor table.  Controls can then point at the new item with M<n>.
+    visual/decor table.  Controls can then point at the new item with R<n>
+    (encoded as target byte 0x40|n).  M<n> remains accepted by the GUI only as
+    a legacy alias.
     """
     table = laser_crystal_table(room)
     if table is None:
