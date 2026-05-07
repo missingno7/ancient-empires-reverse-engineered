@@ -3119,8 +3119,11 @@ class LevelEditorApp(tk.Tk):
             suffix = "" if not targets else "→" + ",".join(t.label for t in targets)
             handles.append(EditorHandle(("control", cmd.record.index), cx + 8, cy + 8, f"{prefix}{cmd.record.index}{suffix}", "#00e0ff"))
         for actor in actor_records_for_room(part, room.index):
-            ax, ay = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
-            handles.append(EditorHandle(("actor", actor.index), ax + 12, ay + 8, f"A{actor.index}", "#7cff6b" if not actor.hidden else "#7a7a7a"))
+            # Actor record x/y is the real runtime anchor.  Use that same point as
+            # the editor handle so dragging can write x/y back without introducing
+            # a per-frame offset.  The sprite top-left is derived via actor_xy()
+            # only for drawing/hit testing, not for the stored placement anchor.
+            handles.append(EditorHandle(("actor", actor.index), actor.x, actor.y, f"A{actor.index}", "#7cff6b" if not actor.hidden else "#7a7a7a"))
         cv_cells = set()
         for cv in parse_conveyor_visual_records(room):
             cv_cells |= cv.cells
@@ -3312,6 +3315,18 @@ class LevelEditorApp(tk.Tk):
         x, y = self._screen_xy_from_event(event, self.editor_canvas)
         part = self.current_level().part(self.part_var.get())
         room = self.current_room()
+
+        # Actors are larger than the small editor handle dot.  Let clicks anywhere
+        # inside the rendered sprite select the actor, while still dragging the
+        # stored actor-table anchor smoothly.  This avoids the old jumpy behavior
+        # where the visual handle was offset from the value being written back.
+        for actor in reversed(actor_records_for_room(part, room.index)):
+            ax, ay = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
+            # Most enemy sprites in this game fit in roughly a 24x24 box.  Use a
+            # slightly forgiving box because some frames have transparent margins.
+            if ax - 2 <= x <= ax + 26 and ay - 2 <= y <= ay + 26:
+                return EditorHandle(("actor", actor.index), actor.x, actor.y, f"A{actor.index}", "#7cff6b" if not actor.hidden else "#7a7a7a")
+
         best: tuple[int, EditorHandle] | None = None
         for handle in self.editor_object_handles(part, room):
             dx = handle.x - x
@@ -3418,6 +3433,7 @@ class LevelEditorApp(tk.Tk):
         room = self.current_room()
         kind = self.editor_selected_ref[0]
         slot = self.editor_selected_ref[1] if len(self.editor_selected_ref) > 1 else None
+        before_raw = part.raw
         before_header = part.header
         before_tiles = list(room.tiles)
         before_trailing = room.trailing
@@ -3514,7 +3530,7 @@ class LevelEditorApp(tk.Tk):
                 self.editor_drag_offset = None
                 self.redraw_editor_room()
                 return
-            set_actor_record_placement(part, actor.index, room_index=room.index, x=self._clamp_byte(x), y=self._clamp_byte(y))
+            set_actor_record_placement(part, actor.index, room_index=room.index, x=self._clamp_actor_x(x), y=self._clamp_actor_y(y))
             self.actor_script_share_source_index = actor.index
         elif kind == "known_pickup":
             set_room_apple_marker(room, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y))
@@ -3564,7 +3580,7 @@ class LevelEditorApp(tk.Tk):
         else:
             return
 
-        if part.header == before_header and room.tiles == before_tiles and room.trailing == before_trailing:
+        if part.raw == before_raw and part.header == before_header and room.tiles == before_tiles and room.trailing == before_trailing:
             return
         self._set_dirty()
         self.redraw_room()
@@ -3747,6 +3763,16 @@ class LevelEditorApp(tk.Tk):
 
     def _clamp_byte(self, value: int) -> int:
         return max(0, min(0xFF, int(value)))
+
+    def _clamp_actor_x(self, value: int) -> int:
+        # Actor record coordinates are pixel-space anchors stored as u16 values,
+        # unlike most static/mechanical records whose X coordinate is stored in
+        # half-pixel/raw units.  Do not clamp actor X to one byte during drag:
+        # 0xFF is still visibly short of the 304px-wide room.
+        return max(0, min(ROOM_COLUMNS * CELL_SIZE - 1, int(value)))
+
+    def _clamp_actor_y(self, value: int) -> int:
+        return max(0, min(ROOM_ROWS * CELL_SIZE - 1, int(value)))
 
     def place_editor_decor(self, event) -> None:
         x, y = self._screen_xy_from_event(event, self.editor_canvas)
