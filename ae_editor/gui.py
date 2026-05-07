@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
@@ -32,6 +33,7 @@ from .object_mapping import visual_sprite_ref
 from .tile_mapping import AUTO_SOLID_TILE_CODES, CONVEYOR_PHYSICS_TILE_CODES, ROPE_TILE_CODES
 from .room_payload import (
     actor_records_for_room,
+    add_actor_record,
     control_commands,
     header_exit_door,
     header_object_candidates,
@@ -61,6 +63,10 @@ from .room_payload import (
     cv_geometry_to_raw,
     transition_links_for_room,
     visual_compact3_table,
+    patch_actor_script_region,
+    room_cell_for_runtime_offset,
+    runtime_offset_for_room_cell,
+    tile_at_runtime_offset,
 )
 
 DIFFICULTY_LABELS = ["Explorer", "Expert"]
@@ -96,10 +102,10 @@ SCRIPT_PARAM_SPECS = {
     0x0E: (("dx", "dx"), ("dy", "dy"), ("frame_delta", "frame delta")),
     0x0F: (("x_raw", "x raw"), ("y", "y"), ("frame_delta", "frame delta")),
     0x10: (("x_raw", "x raw"), ("y", "y"), ("frame", "frame"), ("room", "room")),
-    0x13: (("offset", "offset"),),
-    0x14: (("offset", "offset"),),
-    0x15: (("offset", "offset"),),
-    0x16: (("offset", "offset"),),
+    0x13: (("room", "room"), ("x", "tile x"), ("y", "tile y")),
+    0x14: (("room", "room"), ("x", "tile x"), ("y", "tile y")),
+    0x15: (("room", "room"), ("x", "tile x"), ("y", "tile y")),
+    0x16: (("room", "room"), ("x", "tile x"), ("y", "tile y")),
     0x17: (("value", "value"),),
     0x18: (("value", "value"),),
     0x19: (("value", "value"),),
@@ -128,6 +134,22 @@ class EditorHandle:
     colour: str
 
 
+@dataclass(frozen=True)
+class ActorTemplateSpec:
+    key: str
+    label: str
+    archive: str
+    resource_id: int
+    sprite_index: int
+    frame_min: int
+    frame_max: int
+    actor_type: int = 0
+
+    @property
+    def frame(self) -> int:
+        return self.frame_min
+
+
 OVERLAY_OPTION_SPECS = (
     OverlayOptionSpec("Platforms", "show_platforms_var", True, True, True, True),
     OverlayOptionSpec("Platform paths", "show_platform_paths_var", False, False, True, True),
@@ -146,6 +168,26 @@ OVERLAY_OPTION_SPECS = (
     OverlayOptionSpec("Crystals", "show_crystals_var", True, True, True, True),
     OverlayOptionSpec("Exits", "show_exits_var", False, False, False, True),
 )
+
+ACTOR_TEMPLATE_SPECS = (
+    ActorTemplateSpec("ant", "Ant", "AE000", 20, 0, 0x00, 0x01),
+    ActorTemplateSpec("pill_projectile", "Pill Projectile", "AE000", 20, 2, 0x02, 0x07, 1),
+    ActorTemplateSpec("bat", "Bat", "AE000", 20, 8, 0x08, 0x0E),
+    ActorTemplateSpec("praying_mantis", "Praying Mantis", "AE000", 20, 15, 0x0F, 0x16),
+    ActorTemplateSpec("energy_orb", "Energy Orb", "AE000", 21, 0, 0x17, 0x1A, 1),
+    ActorTemplateSpec("fireball", "Fireball", "AE000", 21, 4, 0x1B, 0x1F, 1),
+    ActorTemplateSpec("pegasus_frog", "Pegasus Frog", "AE000", 21, 9, 0x20, 0x2A),
+    ActorTemplateSpec("ladybug", "Ladybug", "AE000", 22, 0, 0x2B, 0x2C),
+    ActorTemplateSpec("scarab", "Scarab", "AE000", 22, 2, 0x2D, 0x31),
+    ActorTemplateSpec("scorpion", "Scorpion", "AE000", 22, 7, 0x32, 0x36),
+    ActorTemplateSpec("spider", "Spider", "AE000", 22, 12, 0x37, 0x3A),
+    ActorTemplateSpec("neon_spider", "Neon Spider", "AE000", 22, 16, 0x3B, 0x3E),
+    ActorTemplateSpec("snake", "Snake", "AE000", 22, 20, 0x3F, 0x41),
+    ActorTemplateSpec("flea", "Flea", "AE000", 22, 23, 0x42, 0x49),
+    ActorTemplateSpec("caterpillar", "Caterpillar", "AE000", 22, 31, 0x4A, 0x4F),
+    ActorTemplateSpec("sparkles", "Sparkles", "AE000", 22, 37, 0x50, 0x53, 1),
+)
+ACTOR_TEMPLATE_BY_KEY = {spec.key: spec for spec in ACTOR_TEMPLATE_SPECS}
 
 
 class LevelEditorApp(tk.Tk):
@@ -202,6 +244,7 @@ class LevelEditorApp(tk.Tk):
         self.scripting_status_var = tk.StringVar(value="")
         self.scripting_opcode_var = tk.StringVar(value="")
         self.scripting_label_var = tk.StringVar(value="")
+        self.actor_template_var = tk.StringVar(value=ACTOR_TEMPLATE_SPECS[0].key)
         self.editor_selected_ref: tuple[str, int | None] | None = None
         self.editor_drag_offset: tuple[int, int] | None = None
         self.scripting_selected_actor_index: int | None = None
@@ -582,7 +625,7 @@ class LevelEditorApp(tk.Tk):
 
         ttk.Label(
             actor_tab,
-            text="Current room actors are selectable for inspection. Placement and path editing can plug in here next.",
+            text="Choose an actor family, then click in the room to place it. Behavior editing lives in Actor scripting.",
             wraplength=260,
             justify=tk.LEFT,
         ).pack(fill=tk.X, padx=6, pady=(6, 4))
@@ -723,7 +766,7 @@ class LevelEditorApp(tk.Tk):
         ttk.Button(button_row, text="Apply", command=self.apply_script_instruction_edit).pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(button_row, text="Add", command=self.add_script_instruction).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
         ttk.Button(button_row, text="Remove", command=self.remove_script_instruction).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
-        ttk.Button(detail, text="Write same length", command=self.write_actor_script_bytes).grid(row=7, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
+        ttk.Button(detail, text="Write script", command=self.write_actor_script_bytes).grid(row=7, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 8))
         detail.columnconfigure(1, weight=1)
 
         bottom_tabs = ttk.Notebook(lower)
@@ -808,6 +851,8 @@ class LevelEditorApp(tk.Tk):
 
     def select_actor_mode(self) -> None:
         self.editor_tool_var.set("actor")
+        self.editor_selected_ref = None
+        self.editor_drag_offset = None
         if hasattr(self, "editor_palettes"):
             self.editor_palettes.select(3)
         self.refresh_placeable_settings()
@@ -846,7 +891,8 @@ class LevelEditorApp(tk.Tk):
         elif tool == "decor":
             self.palette_selection_var.set(f"Decor decals: code {self.decor_code_var.get().upper()}")
         elif tool == "actor":
-            self.palette_selection_var.set("Actors: select and inspect")
+            spec = ACTOR_TEMPLATE_BY_KEY.get(self.actor_template_var.get(), ACTOR_TEMPLATE_SPECS[0])
+            self.palette_selection_var.set(f"Actor placement: {spec.label}")
         else:
             self.select_settings_frame.pack(fill=tk.X)
             self.palette_selection_var.set("Object selection")
@@ -962,7 +1008,7 @@ class LevelEditorApp(tk.Tk):
 
         name = actor.confirmed_name or "actor"
         self.scripting_actor_title_var.set(f"A{actor.index} {name}  script={actor.script_offset:04X}")
-        self.scripting_summary_var.set(decoded.summary)
+        self.scripting_summary_var.set(self._format_runtime_offsets_in_text(decoded.summary))
         self.scripting_status_var.set(status)
         self.refresh_script_instruction_tree()
         self.refresh_script_branch_tree()
@@ -1006,12 +1052,65 @@ class LevelEditorApp(tk.Tk):
         return labels
 
     def _script_instruction_display(self, ins: Instruction, labels: dict[int, str]) -> str:
+        if ins.opcode in {0x13, 0x14, 0x15, 0x16} and ins.args:
+            return self._runtime_condition_text(ins.opcode, ins.args[0])
         if ins.target_label:
             if ins.opcode in {0x04, 0x05, 0x06}:
                 count = ins.args[0] if ins.args else 1
                 return f"{ins.mnemonic} {ins.target_label} count={count}"
             return f"{ins.mnemonic} {ins.target_label}"
         return instruction_to_dsl(ins, labels)
+
+    def _runtime_condition_text(self, opcode: int, offset: int) -> str:
+        checks = {
+            0x13: "solid: tile lowbits > 0",
+            0x14: "passable: tile lowbits = 0",
+            0x15: "grey conveyor: tile 0x0F / bit 0x10 clear",
+            0x16: "teal conveyor: tile 0x1F / bit 0x10 set",
+        }
+        cell = room_cell_for_runtime_offset(offset)
+        tile = tile_at_runtime_offset(self.current_level().part(self.part_var.get()), offset)
+        tile_text = "??" if tile is None else f"{tile:02X}"
+        if cell is None:
+            return f"{OPCODE_NAMES[opcode]} offset=0x{offset:04X} ({checks[opcode]}, tile={tile_text})"
+        room_index, x, y = cell
+        return f"{OPCODE_NAMES[opcode]} room={room_index} x={x} y={y} tile={tile_text} ({checks[opcode]})"
+
+    def _format_branch_conditions(self, conditions: tuple[str, ...]) -> str:
+        out: list[str] = []
+        for condition in conditions:
+            negated = condition.startswith("not(") and condition.endswith(")")
+            inner = condition[4:-1] if negated else condition
+            text = inner
+            marker = " offset="
+            if marker in inner:
+                prefix, offset_text = inner.split(marker, 1)
+                try:
+                    offset = int(offset_text[:4], 16)
+                except ValueError:
+                    offset = None
+                if offset is not None:
+                    cell = room_cell_for_runtime_offset(offset)
+                    tile = tile_at_runtime_offset(self.current_level().part(self.part_var.get()), offset)
+                    tile_text = "??" if tile is None else f"{tile:02X}"
+                    if cell is not None:
+                        room_index, x, y = cell
+                        text = f"{prefix} room={room_index} x={x} y={y} tile={tile_text}"
+            out.append(f"not({text})" if negated else text)
+        return " and ".join(out) or "always"
+
+    def _format_runtime_offsets_in_text(self, text: str) -> str:
+        def repl(match: re.Match[str]) -> str:
+            offset = int(match.group(1), 16)
+            cell = room_cell_for_runtime_offset(offset)
+            tile = tile_at_runtime_offset(self.current_level().part(self.part_var.get()), offset)
+            tile_text = "??" if tile is None else f"{tile:02X}"
+            if cell is None:
+                return f"offset={offset:04X} tile={tile_text}"
+            room_index, x, y = cell
+            return f"room={room_index} x={x} y={y} tile={tile_text}"
+
+        return re.sub(r"offset=([0-9A-Fa-f]{4})", repl, text)
 
     def refresh_script_instruction_tree(self) -> None:
         if not hasattr(self, "scripting_instruction_tree"):
@@ -1040,7 +1139,7 @@ class LevelEditorApp(tk.Tk):
         if decoded is None:
             return
         for idx, trace in enumerate(decoded.traces, start=1):
-            conditions = " and ".join(trace.conditions) or "always"
+            conditions = self._format_branch_conditions(trace.conditions)
             steps = "; ".join(seg.human_label for seg in trace.segments) or "no movement"
             if trace.loop_detected:
                 steps += " loop"
@@ -1118,7 +1217,7 @@ class LevelEditorApp(tk.Tk):
         if opcode == 0x10:
             return ["0", "0", "0x00", "0"]
         if opcode in {0x13, 0x14, 0x15, 0x16}:
-            return ["0x0000"]
+            return [str(self.room_var.get()), "0", "0"]
         return []
 
     def _script_param_values(self, ins: Instruction, labels: dict[int, str]) -> list[str]:
@@ -1144,7 +1243,11 @@ class LevelEditorApp(tk.Tk):
             x_raw, y, frame, room = ins.args
             return [str(x_raw), str(y), f"0x{frame:02X}", str(room)]
         if ins.opcode in {0x13, 0x14, 0x15, 0x16}:
-            return [f"0x{value:04X}" for value in ins.args]
+            cell = room_cell_for_runtime_offset(ins.args[0])
+            if cell is None:
+                return [f"offset=0x{ins.args[0]:04X}", "", ""]
+            room_index, x, y = cell
+            return [str(room_index), str(x), str(y)]
         return [str(value) for value in ins.args]
 
     def _parse_branch_target(self, text: str) -> tuple[int | None, str | None]:
@@ -1175,6 +1278,14 @@ class LevelEditorApp(tk.Tk):
             args = (count,) if target_label else (rel or 0, count)
         elif opcode in {0x0A, 0x0B}:
             args = (parse_actor_ref(values[0] or "A0"),)
+        elif opcode in {0x13, 0x14, 0x15, 0x16}:
+            if values[0].lower().startswith("offset="):
+                args = (parse_int(values[0].split("=", 1)[1]),)
+            else:
+                room_index = parse_int(values[0] or str(self.room_var.get()))
+                x = parse_int(values[1] or "0")
+                y = parse_int(values[2] or "0")
+                args = (runtime_offset_for_room_cell(room_index, x, y),)
         elif opcode in SCRIPT_PARAM_SPECS:
             args = tuple(parse_int(value or "0") for value in values[:len(SCRIPT_PARAM_SPECS[opcode])])
         else:
@@ -1249,22 +1360,17 @@ class LevelEditorApp(tk.Tk):
         encoded = self.update_script_dsl_preview()
         if encoded is None:
             return
-        if len(encoded) != self.scripting_original_len:
-            messagebox.showwarning(
-                "Length changed",
-                "This actor script assembled to a different byte length. The current writer only patches same-length script regions because actor scripts share one bytecode stream.",
-            )
-            return
         part = self.current_level().part(self.part_var.get())
         try:
-            part.set_part_bytes(self.scripting_script_start, encoded)
+            patch_actor_script_region(part, script_offset=actor.script_offset, old_length=self.scripting_original_len, new_bytes=encoded)
         except ValueError as exc:
             messagebox.showerror("Write failed", str(exc))
             return
         self._set_dirty()
         self.reload_selected_actor_script()
         self.redraw_room()
-        self.status.set(f"Wrote actor A{actor.index} script bytes at part offset 0x{self.scripting_script_start:04X}.")
+        delta = len(encoded) - self.scripting_original_len
+        self.status.set(f"Wrote actor A{actor.index} script at 0x{actor.script_offset:04X} ({delta:+d} bytes).")
 
     def set_part(self, index: int) -> None:
         self.part_var.set(index)
@@ -1332,7 +1438,7 @@ class LevelEditorApp(tk.Tk):
             f"room_quality={room.quality_label} terrain_off=0x{room.terrain_offset:04X} preamble={room.preamble.hex(' ')} "
             f"platforms=[{platforms}] controls={controls} actors={len(actors)} links={links.label if links else 'none'} "
             f"exit_door={door_txt} crystals={crystal_txt} visual={visual_txt} "
-            f"unique_tiles={unique} footer={part.footer.hex(' ')}"
+            f"unique_tiles={unique} separator={part.separator.hex(' ')}"
         )
         if self.show_collision_var.get() and self.mode_var.get() != "trailing_hex":
             self.draw_collision_overlay(self.canvas, room)
@@ -1952,7 +2058,7 @@ class LevelEditorApp(tk.Tk):
                 f"saved_pc={actor.saved_script_offset:04X}, restart={actor.restart_script_offset:04X}, "
                 f"loops={actor.loop_counter_a}/{actor.loop_counter_b}/{actor.loop_counter_c}, "
                 f"contact={actor.contact_behavior:02X}, activated={actor.activated_flag:02X}. "
-                f"{decoded.summary}{bool_text}.\n\nActor DSL preview:\n{dsl_preview}"
+                f"{self._format_runtime_offsets_in_text(decoded.summary)}{bool_text}.\n\nActor DSL preview:\n{dsl_preview}"
             )
         elif kind == "crystal":
             idx = ref[1]
@@ -2751,7 +2857,11 @@ class LevelEditorApp(tk.Tk):
             else:
                 self.place_editor_decor(event)
         elif tool == "actor":
-            self.select_editor_handle(event)
+            handle = self.find_editor_handle(event)
+            if handle is not None and handle.ref[0] == "actor":
+                self.select_editor_handle(event)
+            else:
+                self.place_editor_actor(event)
         else:
             self.place_editor_object(event)
 
@@ -2765,6 +2875,39 @@ class LevelEditorApp(tk.Tk):
             self.move_selected_editor_object(event)
         elif tool == "decor" and self.editor_selected_ref is not None and self.editor_selected_ref[0] == "decor":
             self.move_selected_editor_object(event)
+
+    def place_editor_actor(self, event) -> None:
+        x, y = self._screen_xy_from_event(event, self.editor_canvas)
+        if not (0 <= x < ROOM_COLUMNS * CELL_SIZE and 0 <= y < ROOM_ROWS * CELL_SIZE):
+            return
+        spec = ACTOR_TEMPLATE_BY_KEY.get(self.actor_template_var.get(), ACTOR_TEMPLATE_SPECS[0])
+        part = self.current_level().part(self.part_var.get())
+        room = self.current_room()
+        try:
+            idx = add_actor_record(
+                part,
+                room_index=room.index,
+                x=self._clamp_byte(x),
+                y=self._clamp_byte(y),
+                actor_type=spec.actor_type,
+                frame=spec.frame,
+                frame_variant=0,
+                hidden=0,
+                frame_min=spec.frame_min,
+                frame_max=spec.frame_max,
+                script_bytes=b"\x00",
+            )
+        except ValueError as exc:
+            self.status.set(f"Cannot place actor: {exc}")
+            return
+        self.editor_selected_ref = ("actor", idx)
+        self.scripting_selected_actor_index = idx
+        self.editor_drag_offset = None
+        self._set_dirty()
+        self.redraw_room()
+        self.redraw_actor_palette()
+        self.refresh_actor_scripting_tab()
+        self.status.set(f"Placed actor A{idx} {spec.label} at x={x} y={y}; edit behavior in Actor scripting.")
 
     def editor_pick_tile(self, event) -> None:
         # Right-click on an editable handle selects it. Right-click again or use
@@ -3641,24 +3784,18 @@ class LevelEditorApp(tk.Tk):
         self.actor_palette_canvas.delete("all")
         self.tk_actor_images = []
         self.actor_palette_hitboxes = []
-        part = self.current_level().part(self.part_var.get())
-        room = self.current_room()
-        actors = actor_records_for_room(part, room.index)
         y = 8
         title_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
         item_font = tkfont.Font(family="Segoe UI", size=9)
         note_font = tkfont.Font(family="Segoe UI", size=8)
-        self.actor_palette_canvas.create_text(8, y, anchor="nw", text="Current room actors", fill="#ffffff", font=title_font)
+        self.actor_palette_canvas.create_text(8, y, anchor="nw", text="Actor families", fill="#ffffff", font=title_font)
         y += 26
-        if not actors:
-            self.actor_palette_canvas.create_text(8, y, anchor="nw", text="No actors in this room.", fill="#c8c8c8", font=item_font)
-            y += 28
-        for actor in actors:
-            fill = "#4f6f8f" if self.editor_selected_ref == ("actor", actor.index) else "#343434"
-            outline = "#9ed0ff" if not actor.hidden else "#777777"
+        for spec in ACTOR_TEMPLATE_SPECS:
+            fill = "#4f6f8f" if self.actor_template_var.get() == spec.key else "#343434"
+            outline = "#9ed0ff"
             self.actor_palette_canvas.create_rectangle(8, y, 246, y + 52, outline=outline, fill=fill)
-            self.actor_palette_hitboxes.append((8, y, 246, y + 52, actor.index))
-            sprite = self.project.graphics.sprite("AE000", self._actor_resource_id(actor.frame), self._actor_sprite_index(actor.frame))
+            self.actor_palette_hitboxes.append((8, y, 246, y + 52, spec.key))
+            sprite = self.project.graphics.sprite(spec.archive, spec.resource_id, spec.sprite_index)
             if sprite is not None:
                 thumb = sprite.copy()
                 scale = min(2, max(1, 32 // max(1, max(thumb.size))))
@@ -3666,9 +3803,8 @@ class LevelEditorApp(tk.Tk):
                 tk_img = ImageTk.PhotoImage(thumb)
                 self.tk_actor_images.append(tk_img)
                 self.actor_palette_canvas.create_image(30, y + 25, image=tk_img)
-            name = actor.confirmed_name or "actor"
-            self.actor_palette_canvas.create_text(56, y + 7, anchor="nw", text=f"A{actor.index} {name}", fill="#ffffff", font=item_font)
-            note = f"frame={actor.frame:02X} var={actor.frame_variant:02X} hidden={actor.hidden}"
+            self.actor_palette_canvas.create_text(56, y + 7, anchor="nw", text=spec.label, fill="#ffffff", font=item_font)
+            note = f"frames={spec.frame_min:02X}-{spec.frame_max:02X} mode={spec.actor_type}"
             self.actor_palette_canvas.create_text(56, y + 27, anchor="nw", text=note, fill="#c8c8c8", font=note_font)
             y += 58
         self.actor_palette_canvas.config(scrollregion=(0, 0, 260, y + 8))
@@ -3678,9 +3814,10 @@ class LevelEditorApp(tk.Tk):
             return
         x = int(self.actor_palette_canvas.canvasx(event.x))
         y = int(self.actor_palette_canvas.canvasy(event.y))
-        for x0, y0, x1, y1, actor_index in self.actor_palette_hitboxes:
+        for x0, y0, x1, y1, actor_key in self.actor_palette_hitboxes:
             if x0 <= x <= x1 and y0 <= y <= y1:
-                self.editor_selected_ref = ("actor", actor_index)
+                self.actor_template_var.set(actor_key)
+                self.editor_selected_ref = None
                 self.editor_drag_offset = None
                 self.editor_tool_var.set("actor")
                 if hasattr(self, "editor_palettes"):
@@ -3688,7 +3825,8 @@ class LevelEditorApp(tk.Tk):
                 self.refresh_placeable_settings()
                 self.redraw_actor_palette()
                 self.redraw_editor_room()
-                self.status.set(f"Selected actor A{actor_index}.")
+                spec = ACTOR_TEMPLATE_BY_KEY.get(actor_key, ACTOR_TEMPLATE_SPECS[0])
+                self.status.set(f"Selected {spec.label}. Click in the editor to place it.")
                 return
 
     def redraw_bank_sheet(self) -> None:

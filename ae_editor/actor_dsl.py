@@ -20,6 +20,16 @@ from dataclasses import dataclass, field
 import re
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
+from .constants import (
+    LEVEL_PART_HEADER_SIZE,
+    ROOM_COLUMNS,
+    ROOM_COUNT,
+    ROOM_RECORD_SIZE,
+    ROOM_ROWS,
+    ROOM_TERRAIN_OFFSET,
+    RUNTIME_TILE_VISIBLE_X_BIAS,
+)
+
 
 class ActorScriptError(ValueError):
     """Raised when actor DSL/bytecode cannot be decoded or assembled safely."""
@@ -78,6 +88,29 @@ def parse_int(text: str) -> int:
     return int(text, 10)
 
 
+def runtime_offset_for_dsl_cell(room: int, x: int, y: int) -> int:
+    if not (0 <= room < ROOM_COUNT and 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS):
+        raise ActorScriptError(f"room tile out of range: room={room} x={x} y={y}")
+    raw_x = x - RUNTIME_TILE_VISIBLE_X_BIAS
+    if raw_x < 0:
+        raise ActorScriptError(f"runtime tile x {x} is before the visible room buffer origin")
+    return LEVEL_PART_HEADER_SIZE + room * ROOM_RECORD_SIZE + ROOM_TERRAIN_OFFSET + y * ROOM_COLUMNS + raw_x
+
+
+def dsl_cell_for_runtime_offset(offset: int) -> tuple[int, int, int] | None:
+    if offset < LEVEL_PART_HEADER_SIZE:
+        return None
+    rel = offset - LEVEL_PART_HEADER_SIZE
+    room = rel // ROOM_RECORD_SIZE
+    if not 0 <= room < ROOM_COUNT:
+        return None
+    in_record = rel % ROOM_RECORD_SIZE
+    terrain_rel = in_record - ROOM_TERRAIN_OFFSET
+    if not 0 <= terrain_rel < ROOM_COLUMNS * ROOM_ROWS:
+        return None
+    return room, (terrain_rel % ROOM_COLUMNS) + RUNTIME_TILE_VISIBLE_X_BIAS, terrain_rel // ROOM_COLUMNS
+
+
 # ---------------------------------------------------------------------------
 # Instruction model
 
@@ -102,10 +135,10 @@ OPCODE_NAMES: Dict[int, str] = {
     0x10: "move_to_room",
     0x11: "hide",
     0x12: "show",
-    0x13: "if_runtime_lowbits_set",
-    0x14: "if_runtime_lowbits_clear",
-    0x15: "if_runtime_bit10_clear",
-    0x16: "if_runtime_bit10_set",
+    0x13: "if_tile_solid",
+    0x14: "if_tile_passable",
+    0x15: "if_conveyor_grey",
+    0x16: "if_conveyor_teal",
     0x17: "if_player_x_gt",
     0x18: "if_player_x_lt",
     0x19: "if_player_y_gt",
@@ -113,6 +146,12 @@ OPCODE_NAMES: Dict[int, str] = {
     0x1B: "if_random_lt",
 }
 NAME_TO_OPCODE = {name: opcode for opcode, name in OPCODE_NAMES.items()}
+NAME_TO_OPCODE.update({
+    "if_runtime_lowbits_set": 0x13,
+    "if_runtime_lowbits_clear": 0x14,
+    "if_runtime_bit10_clear": 0x15,
+    "if_runtime_bit10_set": 0x16,
+})
 
 
 def opcode_size(opcode: int) -> int:
@@ -253,10 +292,13 @@ class ActorScript:
                 labels[ins.offset] = ins.label
 
         lines: List[str] = []
+        guard_next = False
         for ins in self.instructions:
             if ins.offset in labels:
                 lines.append(f"{labels[ins.offset]}:")
-            lines.append("    " + instruction_to_dsl(ins, labels))
+            indent = "        " if guard_next else "    "
+            lines.append(indent + instruction_to_dsl(ins, labels))
+            guard_next = 0x13 <= ins.opcode <= 0x1B
         return "\n".join(lines) + "\n"
 
 
@@ -397,6 +439,10 @@ def instruction_to_dsl(ins: Instruction, labels_by_offset: Dict[int, str]) -> st
     if op == 0x12:
         return "show"
     if op in {0x13, 0x14, 0x15, 0x16}:
+        cell = dsl_cell_for_runtime_offset(ins.args[0])
+        if cell is not None:
+            room, x, y = cell
+            return f"{name} room={room} x={x} y={y}"
         return f"{name} offset=0x{ins.args[0]:04X}"
     if op in {0x17, 0x18, 0x19, 0x1A, 0x1B}:
         return f"{name} value={ins.args[0]}"
@@ -497,9 +543,22 @@ def parse_dsl(text: str) -> ActorScript:
                 add(0x11)
             elif cmd == "show":
                 add(0x12)
-            elif cmd in {"if_runtime_lowbits_set", "if_runtime_lowbits_clear", "if_runtime_bit10_clear", "if_runtime_bit10_set"}:
+            elif cmd in {
+                "if_tile_solid",
+                "if_tile_passable",
+                "if_conveyor_grey",
+                "if_conveyor_teal",
+                "if_runtime_lowbits_set",
+                "if_runtime_lowbits_clear",
+                "if_runtime_bit10_clear",
+                "if_runtime_bit10_set",
+            }:
                 kwargs = parse_args(rest)
-                add(NAME_TO_OPCODE[cmd], (parse_int(kwargs["offset"]),))
+                if {"room", "x", "y"} <= set(kwargs):
+                    offset = runtime_offset_for_dsl_cell(parse_int(kwargs["room"]), parse_int(kwargs["x"]), parse_int(kwargs["y"]))
+                else:
+                    offset = parse_int(kwargs["offset"])
+                add(NAME_TO_OPCODE[cmd], (offset,))
             elif cmd in {"if_player_x_gt", "if_player_x_lt", "if_player_y_gt", "if_player_y_lt", "if_random_lt"}:
                 kwargs = parse_args(rest)
                 add(NAME_TO_OPCODE[cmd], (parse_int(kwargs["value"]),))

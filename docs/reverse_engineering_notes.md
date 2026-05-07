@@ -34,7 +34,9 @@ archives:
 
 `AE001.DAT` resources `0..19` are the 20 caverns. Each level resource contains
 two difficulty parts: Explorer and Expert. Each part has a 0x40-byte header,
-13 fixed room records of 1000 bytes, and a 4-byte footer.
+10 fixed room records of 1000 bytes, a 4-byte separator, and a 3000-byte actor
+block at part offset `0x2754`. Earlier notes that described 13 room records were
+parsing the actor block as three garbage pseudo-rooms.
 
 The room terrain grid is 38 by 18 cells. Rendering uses 8 px cells, producing a
 304 by 144 px static room viewport before zoom.

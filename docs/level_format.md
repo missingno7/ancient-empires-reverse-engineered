@@ -17,8 +17,9 @@ Each part is parsed as:
 
 ```text
 0x0000..0x003F  part header
-0x0040..        13 room records * 1000 bytes
-...             4-byte footer
+0x0040..0x274F  10 room records * 1000 bytes
+0x2750..0x2753  4-byte separator
+0x2754..0x330B  actor block, 0x0BB8 bytes
 ```
 
 ## Room Records
@@ -37,8 +38,9 @@ The room viewport is:
 38 columns * 18 rows * 8 px cells = 304 * 144 px
 ```
 
-Some fixed room slots are empty or non-room data. The editor preserves all 13
-slots and classifies each as `room`, `empty`, or `data?`.
+Rooms 0..9 are the normal room records. Older editor builds exposed rooms
+10..12 by accidentally parsing the 3000-byte actor block as three extra room
+records; those pseudo-rooms are not real gameplay rooms.
 
 ## Part Header
 
@@ -182,6 +184,16 @@ commands.
 
 Relative branches (`0x01`, `0x02`, loops `0x04..0x06`) use offsets relative to
 the next instruction.
+
+Runtime tile condition offsets point into the room terrain buffer, whose x
+coordinate is two tiles left of the editor's visible room coordinates. In editor
+terms, actor VM offset `0x04A8` is room 1 tile `(14,3)`, while the raw buffer
+index within that row is x=12. Low terrain bits (`tile & 0x07`) model
+passability: `0` is passable, non-zero is solid. Ropes use zero low bits so they
+remain passable; `0x07` is an invisible solid tile. Conveyor footprints are
+terrain tiles plus a visual CV object: `0x0F` is the grey direction and `0x1F`
+is the teal direction. Moving platforms likewise combine a runtime object with
+`0x07` terrain tiles that move with it.
 
 Observed VM opcodes in stock data are limited to `0x00..0x1B` excluding `0x06`;
 unknown byte values did not appear as script opcodes in the current actor entry

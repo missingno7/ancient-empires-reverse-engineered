@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .constants import (
+    LEVEL_PART_ACTOR_BLOCK_SIZE,
     LEVEL_MAGIC,
     LEVEL_PART_COUNT,
-    LEVEL_PART_FOOTER_SIZE,
     LEVEL_PART_HEADER_SIZE,
+    LEVEL_PART_SEPARATOR_SIZE,
     ROOM_COLUMNS,
     ROOM_COUNT,
     ROOM_RECORD_SIZE,
@@ -53,27 +54,14 @@ class Room:
 
     @property
     def looks_like_room(self) -> bool:
-        """Lightweight quality flag for the viewer, not a hard parser rule.
-
-        Each level part has 13 fixed records. Some late records are unused,
-        placeholder, or non-room data in early caverns. We keep them browsable
-        but label them instead of pretending every record is a valid room.
-        """
-        if self.looks_empty:
-            return False
-        # Most confirmed rooms have lots of low terrain codes and only a small
-        # amount of special/control markers. Garbage records tend to contain a
-        # much wider byte range.
-        common = sum(1 for value in self.tiles if value <= 0x0F or value in {0x80, 0x90, 0xA0, 0xB0, 0xC0})
-        return common >= int(len(self.tiles) * 0.75)
+        """All parsed records are real rooms; this only flags empty slots."""
+        return not self.looks_empty
 
     @property
     def quality_label(self) -> str:
         if self.looks_empty:
             return "empty"
-        if self.looks_like_room:
-            return "room"
-        return "data?"
+        return "room"
 
 
 @dataclass
@@ -83,11 +71,12 @@ class LevelPart:
     Current best-known layout per part:
 
         0x40 header
-        13 room records × 1000 bytes
+        10 room records × 1000 bytes
             +0x000..0x001: unknown per-room bytes
             +0x002..0x2ad: 38×18 terrain bytes, row-major
             +0x2ae..0x3e7: unknown room payload, likely actors/triggers/decor
-        4 byte footer, usually zero
+        4 byte separator
+        0x0bb8 byte actor block
 
     The two parts are exposed as Explorer / Expert difficulty variants. Some
     rooms are shared/similar, while later caverns can diverge substantially.
@@ -98,7 +87,7 @@ class LevelPart:
     raw: bytes
     header: bytes
     rooms: list[Room]
-    footer: bytes
+    separator: bytes
 
     @property
     def theme(self) -> int:
@@ -106,7 +95,12 @@ class LevelPart:
 
     @property
     def expected_size(self) -> int:
-        return LEVEL_PART_HEADER_SIZE + ROOM_COUNT * ROOM_RECORD_SIZE + LEVEL_PART_FOOTER_SIZE
+        return (
+            LEVEL_PART_HEADER_SIZE
+            + ROOM_COUNT * ROOM_RECORD_SIZE
+            + LEVEL_PART_SEPARATOR_SIZE
+            + LEVEL_PART_ACTOR_BLOCK_SIZE
+        )
 
     def room(self, index: int) -> Room:
         return self.rooms[index]
@@ -162,9 +156,10 @@ class LevelPart:
             room.tiles = list(record[terrain_start:terrain_end])
             room.trailing = record[terrain_end:]
 
-        footer_start = LEVEL_PART_HEADER_SIZE + ROOM_COUNT * ROOM_RECORD_SIZE
-        if offset < len(self.raw) and offset + len(payload) > footer_start:
-            self.footer = self.raw[footer_start:]
+        separator_start = LEVEL_PART_HEADER_SIZE + ROOM_COUNT * ROOM_RECORD_SIZE
+        separator_end = separator_start + LEVEL_PART_SEPARATOR_SIZE
+        if offset < separator_end and offset + len(payload) > separator_start:
+            self.separator = self.raw[separator_start:separator_end]
 
 
 class Level:
@@ -212,9 +207,10 @@ class Level:
                     trailing=record[ROOM_TERRAIN_OFFSET + ROOM_TILE_COUNT:],
                 )
             )
-        footer_start = LEVEL_PART_HEADER_SIZE + ROOM_COUNT * ROOM_RECORD_SIZE
-        footer = raw[footer_start:]
-        return LevelPart(part_index, base, raw, header, rooms, footer)
+        separator_start = LEVEL_PART_HEADER_SIZE + ROOM_COUNT * ROOM_RECORD_SIZE
+        separator_end = separator_start + LEVEL_PART_SEPARATOR_SIZE
+        separator = raw[separator_start:separator_end]
+        return LevelPart(part_index, base, raw, header, rooms, separator)
 
     @property
     def theme(self) -> int:
@@ -226,16 +222,17 @@ class Level:
         return self.parts[0].header
 
     @property
-    def footer(self) -> bytes:
-        return b"".join(part.footer for part in self.parts)
-
-    @property
     def rooms(self) -> list[Room]:
         return self.parts[0].rooms
 
     @property
     def expected_size(self) -> int:
-        return LEVEL_PART_COUNT * (LEVEL_PART_HEADER_SIZE + ROOM_COUNT * ROOM_RECORD_SIZE + LEVEL_PART_FOOTER_SIZE)
+        return LEVEL_PART_COUNT * (
+            LEVEL_PART_HEADER_SIZE
+            + ROOM_COUNT * ROOM_RECORD_SIZE
+            + LEVEL_PART_SEPARATOR_SIZE
+            + LEVEL_PART_ACTOR_BLOCK_SIZE
+        )
 
     @property
     def size_is_expected(self) -> bool:
@@ -251,12 +248,15 @@ class Level:
         """Serialize the current editable level model back to decoded bytes."""
         data = bytearray(self.decoded)
         for part in self.parts:
-            data[part.base_offset:part.base_offset + LEVEL_PART_HEADER_SIZE] = part.header
+            part_data = bytearray(part.raw)
+            part_data[:LEVEL_PART_HEADER_SIZE] = part.header
             for room in part.rooms:
-                start = room.terrain_offset
-                data[start:start + ROOM_TILE_COUNT] = bytes(room.tiles)
-                tail_start = start + ROOM_TILE_COUNT
-                data[tail_start:tail_start + len(room.trailing)] = room.trailing
+                record_start = LEVEL_PART_HEADER_SIZE + room.index * ROOM_RECORD_SIZE
+                terrain_start = record_start + ROOM_TERRAIN_OFFSET
+                part_data[terrain_start:terrain_start + ROOM_TILE_COUNT] = bytes(room.tiles)
+                tail_start = terrain_start + ROOM_TILE_COUNT
+                part_data[tail_start:tail_start + len(room.trailing)] = room.trailing
+            data[part.base_offset:part.base_offset + self.part_size] = part_data
         return bytes(data)
 
 

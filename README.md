@@ -72,16 +72,18 @@ Each difficulty part currently parses as:
 
 ```text
 0x40-byte part header
-13 room records * 1000 bytes
+10 room records * 1000 bytes
   +0x000..0x001  room preamble / metadata
   +0x002..0x2AD  terrain: 38 * 18 bytes, row-major
   +0x2AE..0x3E7  room payload: platforms, controls, compact3 sections
-0x04 footer
+0x04 separator
+0x0BB8 actor block
 ```
 
-Some caverns use fewer than all 13 fixed room slots. The editor still exposes
-all slots and labels them as `room`, `empty`, or `data?` so research data is not
-hidden.
+The old 13-room interpretation was a parser artifact: the 3000-byte actor block
+is the same size as three room records, so it used to appear as garbage rooms
+10..12. The editor now exposes only rooms 0..9 and treats the actor block as its
+own section.
 
 See [docs/level_format.md](docs/level_format.md) for the current canonical
 format notes.

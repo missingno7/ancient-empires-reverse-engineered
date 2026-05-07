@@ -21,15 +21,29 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from .constants import CELL_SIZE, ROOM_COLUMNS, ROOM_COUNT, ROOM_ROWS, ROOM_SCREEN_HEIGHT_PX, ROOM_SCREEN_WIDTH_PX
+from .constants import (
+    CELL_SIZE,
+    LEVEL_PART_ACTOR_BLOCK_OFFSET,
+    LEVEL_PART_ACTOR_BLOCK_SIZE,
+    LEVEL_PART_HEADER_SIZE,
+    ROOM_COLUMNS,
+    ROOM_COUNT,
+    ROOM_RECORD_SIZE,
+    ROOM_ROWS,
+    ROOM_SCREEN_HEIGHT_PX,
+    ROOM_SCREEN_WIDTH_PX,
+    ROOM_TERRAIN_OFFSET,
+    ROOM_TILE_COUNT,
+    RUNTIME_TILE_VISIBLE_X_BIAS,
+)
 from .conveyors import BeltKind, ConveyorRecord, ConveyorVisualRecord, DEFAULT_CONVEYOR_FLAGS
 from .level_format import Room
 
 PAYLOAD_DIRECTORY_OFFSET = 0x1E
 PLATFORM_TRIPLET_COUNT = 10
 PLATFORM_TRIPLET_SIZE = 3
-ACTOR_TABLE_OFFSET = 0x2754
-ACTOR_TABLE_SIZE = 0x0BB8
+ACTOR_TABLE_OFFSET = LEVEL_PART_ACTOR_BLOCK_OFFSET
+ACTOR_TABLE_SIZE = LEVEL_PART_ACTOR_BLOCK_SIZE
 ACTOR_RECORD_SIZE = 0x20
 CONFIRMED_ACTOR_FRAME_NAMES = {
     0x00: "Ant",
@@ -439,6 +453,174 @@ def parse_actor_table(part) -> list[ActorTableRecord]:
 
 def actor_records_for_room(part, room_index: int) -> list[ActorTableRecord]:
     return [record for record in parse_actor_table(part) if record.room_index == room_index]
+
+
+def runtime_offset_for_room_cell(room_index: int, x: int, y: int) -> int:
+    if not (0 <= room_index < ROOM_COUNT and 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS):
+        raise ValueError(f"room tile out of range: room={room_index} x={x} y={y}")
+    raw_x = x - RUNTIME_TILE_VISIBLE_X_BIAS
+    if raw_x < 0:
+        raise ValueError(f"runtime tile x {x} is before the visible room buffer origin")
+    return LEVEL_PART_HEADER_SIZE + room_index * ROOM_RECORD_SIZE + ROOM_TERRAIN_OFFSET + y * ROOM_COLUMNS + raw_x
+
+
+def room_cell_for_runtime_offset(offset: int) -> tuple[int, int, int] | None:
+    if offset < LEVEL_PART_HEADER_SIZE:
+        return None
+    rel = offset - LEVEL_PART_HEADER_SIZE
+    room_index = rel // ROOM_RECORD_SIZE
+    if not 0 <= room_index < ROOM_COUNT:
+        return None
+    in_record = rel % ROOM_RECORD_SIZE
+    terrain_rel = in_record - ROOM_TERRAIN_OFFSET
+    if not 0 <= terrain_rel < ROOM_TILE_COUNT:
+        return None
+    raw_x = terrain_rel % ROOM_COLUMNS
+    return room_index, raw_x + RUNTIME_TILE_VISIBLE_X_BIAS, terrain_rel // ROOM_COLUMNS
+
+
+def tile_at_runtime_offset(part, offset: int) -> int | None:
+    cell = room_cell_for_runtime_offset(offset)
+    if cell is None:
+        return None
+    room_index, x, y = cell
+    if not 0 <= x < ROOM_COLUMNS:
+        return None
+    return part.room(room_index).get(x, y)
+
+
+def _actor_block(part) -> bytearray:
+    raw_part = getattr(part, "raw", b"")
+    block = bytearray(raw_part[ACTOR_TABLE_OFFSET:ACTOR_TABLE_OFFSET + ACTOR_TABLE_SIZE])
+    if len(block) < ACTOR_TABLE_SIZE:
+        block.extend(b"\x00" * (ACTOR_TABLE_SIZE - len(block)))
+    return block
+
+
+def _write_actor_block(part, block: bytearray) -> None:
+    if len(block) != ACTOR_TABLE_SIZE:
+        raise ValueError(f"actor block size changed: {len(block)} != {ACTOR_TABLE_SIZE}")
+    part.set_part_bytes(ACTOR_TABLE_OFFSET, bytes(block))
+
+
+def _actor_count(block: bytearray) -> int:
+    return min(block[0] if block else 0, (ACTOR_TABLE_SIZE - 1) // ACTOR_RECORD_SIZE)
+
+
+def _actor_record_offset(index: int) -> int:
+    return 1 + index * ACTOR_RECORD_SIZE
+
+
+def _read_actor_u16(block: bytearray, record_offset: int, field: int) -> int:
+    return block[record_offset + field] | (block[record_offset + field + 1] << 8)
+
+
+def _write_actor_u16(block: bytearray, record_offset: int, field: int, value: int) -> None:
+    block[record_offset + field] = value & 0xFF
+    block[record_offset + field + 1] = (value >> 8) & 0xFF
+
+
+def _actor_script_used_end(block: bytearray) -> int:
+    count = _actor_count(block)
+    record_end = 1 + count * ACTOR_RECORD_SIZE
+    last_nonzero = 0
+    for idx, value in enumerate(block):
+        if value:
+            last_nonzero = idx + 1
+    return max(record_end, last_nonzero)
+
+
+def patch_actor_script_region(part, *, script_offset: int, old_length: int, new_bytes: bytes) -> None:
+    """Replace an actor script region and shift following script bytes in-place."""
+    if old_length < 0:
+        raise ValueError("old script length cannot be negative")
+    if script_offset < 0 or script_offset + old_length > ACTOR_TABLE_SIZE:
+        raise ValueError(f"actor script region out of range: offset={script_offset:#x} len={old_length}")
+    block = _actor_block(part)
+    delta = len(new_bytes) - old_length
+    if delta > 0 and _actor_script_used_end(block) + delta > ACTOR_TABLE_SIZE:
+        raise ValueError("actor script block has no room for the larger script")
+
+    old_end = script_offset + old_length
+    block[script_offset:old_end] = new_bytes
+    if len(block) < ACTOR_TABLE_SIZE:
+        block.extend(b"\x00" * (ACTOR_TABLE_SIZE - len(block)))
+    elif len(block) > ACTOR_TABLE_SIZE:
+        del block[ACTOR_TABLE_SIZE:]
+
+    if delta:
+        count = _actor_count(block)
+        for index in range(count):
+            rec = _actor_record_offset(index)
+            for field in (0x0D, 0x0F, 0x17):
+                value = _read_actor_u16(block, rec, field)
+                if value and value >= old_end:
+                    _write_actor_u16(block, rec, field, value + delta)
+    _write_actor_block(part, block)
+
+
+def add_actor_record(
+    part,
+    *,
+    room_index: int,
+    x: int,
+    y: int,
+    actor_type: int,
+    frame: int,
+    frame_variant: int,
+    hidden: int,
+    frame_min: int,
+    frame_max: int,
+    script_bytes: bytes = b"\x00",
+) -> int:
+    block = _actor_block(part)
+    count = _actor_count(block)
+    if count >= (ACTOR_TABLE_SIZE - 1) // ACTOR_RECORD_SIZE:
+        raise ValueError("actor table is full")
+    script_offsets = []
+    for index in range(count):
+        rec = _actor_record_offset(index)
+        value = _read_actor_u16(block, rec, 0x0D)
+        if value:
+            script_offsets.append(value)
+    new_record_end = 1 + (count + 1) * ACTOR_RECORD_SIZE
+    first_script = min(script_offsets) if script_offsets else ACTOR_TABLE_SIZE
+    used_end = _actor_script_used_end(block)
+    if new_record_end > first_script:
+        gap = new_record_end - first_script
+        if used_end + gap > ACTOR_TABLE_SIZE:
+            raise ValueError("no free actor record slot before script data")
+        block[first_script + gap:used_end + gap] = bytes(block[first_script:used_end])
+        block[first_script:first_script + gap] = b"\x00" * gap
+        for index in range(count):
+            rec_existing = _actor_record_offset(index)
+            for field in (0x0D, 0x0F, 0x17):
+                value = _read_actor_u16(block, rec_existing, field)
+                if value and value >= first_script:
+                    _write_actor_u16(block, rec_existing, field, value + gap)
+        used_end += gap
+
+    script_offset = max(used_end, new_record_end)
+    if script_offset + len(script_bytes) > ACTOR_TABLE_SIZE:
+        raise ValueError("actor script block is full")
+
+    rec = _actor_record_offset(count)
+    block[rec:rec + ACTOR_RECORD_SIZE] = b"\x00" * ACTOR_RECORD_SIZE
+    block[rec + 0x00] = actor_type & 0xFF
+    block[rec + 0x01] = room_index & 0xFF
+    _write_actor_u16(block, rec, 0x02, x & 0xFFFF)
+    _write_actor_u16(block, rec, 0x04, y & 0xFFFF)
+    block[rec + 0x06] = frame & 0xFF
+    block[rec + 0x07] = frame_variant & 0xFF
+    block[rec + 0x08] = hidden & 0xFF
+    block[rec + 0x0B] = frame_min & 0xFF
+    block[rec + 0x0C] = frame_max & 0xFF
+    _write_actor_u16(block, rec, 0x0D, script_offset)
+    _write_actor_u16(block, rec, 0x17, script_offset)
+    block[script_offset:script_offset + len(script_bytes)] = script_bytes
+    block[0] = count + 1
+    _write_actor_block(part, block)
+    return count
 
 
 @dataclass(frozen=True)

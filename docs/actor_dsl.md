@@ -71,8 +71,19 @@ The DSL covers the current researched actor VM opcode set `0x00..0x1B`:
 - `set_frames`, `set_frame`
 - `move`, `move_to`, `move_to_room`
 - `hide`, `show`
-- `if_runtime_lowbits_set`, `if_runtime_lowbits_clear`
-- `if_runtime_bit10_clear`, `if_runtime_bit10_set`
+- `if_tile_solid`, `if_tile_passable`
+- `if_conveyor_grey`, `if_conveyor_teal`
+
+The runtime tile checks can be written as visible editor coordinates:
+
+```text
+if_tile_solid room=1 x=14 y=3
+if_tile_passable room=1 x=14 y=3
+```
+
+These assemble to the underlying runtime buffer offset. The actor VM room buffer
+keeps two left-edge tile columns that the editor view has cropped away, so
+`room=1 x=14 y=3` maps to runtime offset `0x04A8`.
 - `if_player_x_gt`, `if_player_x_lt`, `if_player_y_gt`, `if_player_y_lt`
 - `if_random_lt`
 

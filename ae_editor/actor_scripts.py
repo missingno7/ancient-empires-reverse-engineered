@@ -266,10 +266,10 @@ def _decode_command(data: bytes, pc: int) -> ActorScriptCommand:
     elif opcode in {0x13, 0x14, 0x15, 0x16} and len(raw) >= 3:
         off = _u16(b(1), b(2))
         tests = {
-            0x13: "runtime[offset] & 07 != 0",
-            0x14: "runtime[offset] & 07 == 0",
-            0x15: "runtime[offset] & 10 == 0",
-            0x16: "runtime[offset] & 10 != 0",
+            0x13: "tile is solid",
+            0x14: "tile is passable",
+            0x15: "conveyor tile is grey",
+            0x16: "conveyor tile is teal",
         }
         label = f"if {tests[opcode]} offset={off:04X} then next_cmd"
     elif opcode in {0x17, 0x18, 0x19, 0x1A} and len(raw) >= 2:

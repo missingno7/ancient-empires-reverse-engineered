@@ -77,8 +77,9 @@ Each part:
 
 ```text
 0x40-byte header
-13 room records * 1000 bytes
-4-byte footer
+10 room records * 1000 bytes
+4-byte separator
+0x0BB8 actor block
 ```
 
 Each room record:
