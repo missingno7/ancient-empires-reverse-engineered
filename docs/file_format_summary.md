@@ -95,7 +95,7 @@ so the room bitmap is `304 * 144` px before zoom.
 
 Current payload parsing starts at trailing offset `0x1E`, after the ten 3-byte
 platform records. It decodes length-prefixed control records, puzzle marker
-tables, record12 puzzle panels, laser crystal tables and the main compact3
+tables, record12 green-block mechanisms, laser crystal tables and the main compact3
 visual table.
 
 The part header also stores the conditional exit door in bytes `0x05..0x07`.

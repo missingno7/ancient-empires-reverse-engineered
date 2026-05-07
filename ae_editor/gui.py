@@ -45,6 +45,14 @@ from .room_payload import (
     room_apple_marker,
     set_room_apple_marker,
     clear_room_apple_marker,
+    section_a_symbol_table,
+    set_section_a_symbol_entry,
+    add_section_a_symbol_entry,
+    delete_section_a_symbol_entry,
+    record12_green_block_records,
+    set_record12_green_block,
+    add_record12_green_block,
+    delete_record12_green_block,
     PLATFORM_TRIPLET_SIZE,
     clear_runtime_triplet_slot,
     first_free_runtime_triplet_slot,
@@ -88,7 +96,7 @@ PLATFORM_KIND_FLAGS = {
     "vertical_up": 0xA0,
 }
 DELETE_SELECTION_HINT = (
-    "Select an artifact, platform, CV, belt, control, actor, decor decal, or reflector first."
+    "Select an artifact, platform, CV, belt, control, actor, symbol, green block, decor decal, or reflector first."
 )
 SCRIPT_PARAM_SPECS = {
     0x01: (("target", "target"),),
@@ -96,9 +104,9 @@ SCRIPT_PARAM_SPECS = {
     0x04: (("target", "target"), ("count", "count")),
     0x05: (("target", "target"), ("count", "count")),
     0x06: (("target", "target"), ("count", "count")),
-    0x07: (("id", "id"),),
-    0x08: (("id", "id"),),
-    0x09: (("id", "id"),),
+    0x07: (("id", "sound id"),),
+    0x08: (("id", "control id"),),
+    0x09: (("id", "symbol id"),),
     0x0A: (("actor", "actor"),),
     0x0B: (("actor", "actor"),),
     0x0C: (("min", "min frame"), ("max", "max frame")),
@@ -160,11 +168,11 @@ OVERLAY_OPTION_SPECS = (
     OverlayOptionSpec("Conveyors", "show_conveyors_var", False, False, True, True),
     OverlayOptionSpec("Controls", "show_controls_var", True, True, True, True),
     OverlayOptionSpec("Trigger links", "show_trigger_links_var", False, False, True, True),
-    OverlayOptionSpec("Puzzle markers", "show_puzzle_markers_var", True, True, True, True),
-    OverlayOptionSpec("Puzzle blocks", "show_puzzle_blocks_var", True, True, True, True),
-    OverlayOptionSpec("Puzzle dest", "show_puzzle_destinations_var", False, False, True, True),
-    OverlayOptionSpec("Puzzle links", "show_puzzle_links_var", False, False, True, True),
-    OverlayOptionSpec("Puzzle moves", "show_puzzle_move_links_var", True, True, True, True),
+    OverlayOptionSpec("Symbol buttons", "show_puzzle_markers_var", True, True, True, True),
+    OverlayOptionSpec("Green block alternate", "show_puzzle_blocks_var", True, True, True, True),
+    OverlayOptionSpec("Green block default", "show_puzzle_destinations_var", True, True, True, True),
+    OverlayOptionSpec("Symbol links", "show_puzzle_links_var", False, False, True, True),
+    OverlayOptionSpec("Green block moves", "show_puzzle_move_links_var", True, True, True, True),
     OverlayOptionSpec("Actors", "show_actors_var", True, True, True, True),
     OverlayOptionSpec("Actor paths", "show_actor_paths_var", False, False, True, True),
     OverlayOptionSpec("Projectile links", "show_projectile_links_var", True, False, True, True),
@@ -2002,6 +2010,46 @@ class LevelEditorApp(tk.Tk):
                 changed = True
         return changed
 
+    def _green_block_footprint_cells_from_xy(self, x_px: int, y_px: int) -> set[tuple[int, int]]:
+        # Green sequence blocks use a 6x2 invisible-solid footprint (tile 07).
+        # The sprite is 56px wide, but collision is the inner 48px strip.
+        start_x = max(0, min(ROOM_COLUMNS - 1, (x_px + 4) // CELL_SIZE))
+        start_y = max(0, min(ROOM_ROWS - 1, y_px // CELL_SIZE))
+        return {
+            (x, y)
+            for y in range(start_y, min(ROOM_ROWS, start_y + 2))
+            for x in range(start_x, min(ROOM_COLUMNS, start_x + 6))
+        }
+
+    def _green_block_footprint_cells(self, rec: bytes, *, alternate: bool = False) -> set[tuple[int, int]]:
+        if len(rec) < (4 if alternate else 2):
+            return set()
+        base = 2 if alternate else 0
+        x_px, y_px = self._green_block_xy_from_raw(rec[base], rec[base + 1])
+        return self._green_block_footprint_cells_from_xy(x_px, y_px)
+
+    def _clear_green_block_footprint(self, room, rec: bytes, *, alternate: bool = False) -> bool:
+        changed = False
+        for x, y in self._green_block_footprint_cells(rec, alternate=alternate):
+            if room.get(x, y) == COLLISION_TILE_CODE:
+                room.set(x, y, 0)
+                changed = True
+        return changed
+
+    def _write_green_block_footprint(self, room, rec: bytes, *, alternate: bool = False) -> bool:
+        changed = False
+        for x, y in self._green_block_footprint_cells(rec, alternate=alternate):
+            if room.get(x, y) != COLLISION_TILE_CODE:
+                room.set(x, y, COLLISION_TILE_CODE)
+                changed = True
+        return changed
+
+    def _rewrite_green_block_footprints(self, room, rec: bytes) -> bool:
+        # Only the PD/default green-block position is backed by real 0x07
+        # collision tiles in the room data.  PB/alternate is a target position
+        # stored in the record12 mechanism and must not rewrite the tile map.
+        return self._write_green_block_footprint(room, rec, alternate=False)
+
     def _platforms_touching_cells(self, room, cells: set[tuple[int, int]]) -> list:
         return [platform for platform in parse_platform_triplets(room) if platform.visible and self._platform_footprint_cells(platform) & cells]
 
@@ -2238,6 +2286,57 @@ class LevelEditorApp(tk.Tk):
             self.property_code_var.set(f"{pl.flags:02X}")
             self.property_props_var.set("")
             self.property_note_var.set(f"Controlled by: {controlled_by}. Target slot is fixed. Buttons/switches point here with P0/P1/... target bytes; edit links on the selected control's Targets field. Flags 40/60 are horizontal families, 80/A0 vertical families.")
+        elif kind == "symbol":
+            idx = ref[1]
+            table = section_a_symbol_table(room)
+            entry = None if table is None or idx is None else next((e for e in table.entries if e.index == idx), None)
+            if entry is None:
+                self.property_title_var.set("Selected symbol no longer exists")
+                self._clear_property_values()
+                self._layout_property_panel()
+                return
+            symbol_id = (entry.code & 0x07) + 1
+            self._layout_property_panel(rows=(True, True, False), apply=True)
+            self.property_title_var.set(f"S{symbol_id} / M{entry.index}")
+            self.property_label_x_var.set("raw x")
+            self.property_label_y_var.set("raw y")
+            self.property_label_len_var.set("symbol")
+            self.property_label_code_var.set("raw code")
+            self.property_x_var.set(str(entry.x_raw))
+            self.property_y_var.set(str(entry.y))
+            self.property_len_var.set(str(symbol_id))
+            self.property_code_var.set(f"{entry.code:02X}")
+            self.property_note_var.set("Section_a symbol button/emitter. Actor emit_symbol N sends the same 1-based symbol id as pressing S1..S7 in the room. Raw code is stored zero-based in bits 0..2.")
+        elif kind in {"green_block", "green_block_alt"}:
+            idx = ref[1]
+            _off, records = record12_green_block_records(room)
+            if idx is None or not 0 <= idx < len(records):
+                self.property_title_var.set("Selected green block no longer exists")
+                self._clear_property_values()
+                self._layout_property_panel()
+                return
+            rec = records[idx]
+            if len(rec) < 12:
+                self.property_title_var.set("Selected green block is malformed")
+                self._clear_property_values()
+                self._layout_property_panel()
+                return
+            self._layout_property_panel(rows=(True, True, True), apply=True)
+            self.property_title_var.set(f"Green block PB{idx}/PD{idx}")
+            self.property_label_x_var.set("default x")
+            self.property_label_y_var.set("default y")
+            self.property_label_len_var.set("alt x")
+            self.property_label_code_var.set("alt y")
+            self.property_label_props_var.set("sequence")
+            dx, dy = self._green_block_xy_from_raw(rec[0], rec[1])
+            ax, ay = self._green_block_xy_from_raw(rec[2], rec[3])
+            self.property_x_var.set(str(dx))
+            self.property_y_var.set(str(dy))
+            self.property_len_var.set(str(ax))
+            self.property_code_var.set(str(ay))
+            self.property_props_var.set(self._format_symbol_sequence(rec))
+            raw = rec.hex(" ")
+            self.property_note_var.set(f"Record12 green sequence block. PD/default uses byte0/1; PB/alternate uses byte2/3. Sequence is up to 5 one-based symbol ids; 0 terminates. Raw: {raw}")
         elif kind == "control":
             idx = ref[1]
             cmds = [cmd for cmd in control_commands(room) if cmd.record.index == idx]
@@ -2518,6 +2617,39 @@ class LevelEditorApp(tk.Tk):
                 if new_platforms:
                     self._write_platform_footprint(room, new_platforms[0])
                 self.status.set(f"Updated P{slot}: flags={flags:02X} x={x_raw} y={y_raw}")
+            elif kind == "symbol":
+                idx = ref[1]
+                table = section_a_symbol_table(room)
+                entry = None if table is None or idx is None else next((e for e in table.entries if e.index == idx), None)
+                if entry is None:
+                    self.status.set("Selected symbol no longer exists.")
+                    return
+                x_raw = self._parse_int_property(self.property_x_var.get(), default=entry.x_raw) & 0xFF
+                y_raw = self._parse_int_property(self.property_y_var.get(), default=entry.y) & 0xFF
+                symbol_id = max(1, min(7, self._parse_int_property(self.property_len_var.get(), default=(entry.code & 0x07) + 1)))
+                code = (entry.code & ~0x07) | ((symbol_id - 1) & 0x07)
+                set_section_a_symbol_entry(room, entry.index, x_raw=x_raw, y=y_raw, code=code)
+                self.status.set(f"Updated symbol M{entry.index}: S{symbol_id} x={x_raw * 2} y={y_raw}")
+            elif kind in {"green_block", "green_block_alt"}:
+                idx = ref[1]
+                _off, records = record12_green_block_records(room)
+                if idx is None or not 0 <= idx < len(records):
+                    self.status.set("Selected green block no longer exists.")
+                    return
+                rec = bytearray(records[idx])
+                dx = self._parse_int_property(self.property_x_var.get(), default=self._green_block_xy_from_raw(rec[0], rec[1])[0])
+                dy = self._parse_int_property(self.property_y_var.get(), default=self._green_block_xy_from_raw(rec[0], rec[1])[1])
+                ax = self._parse_int_property(self.property_len_var.get(), default=self._green_block_xy_from_raw(rec[2], rec[3])[0])
+                ay = self._parse_int_property(self.property_code_var.get(), default=self._green_block_xy_from_raw(rec[2], rec[3])[1])
+                old_rec = bytes(rec)
+                rec[0], rec[1] = self._green_block_raw_from_xy(dx, dy)
+                rec[2], rec[3] = self._green_block_raw_from_xy(ax, ay)
+                seq = self._parse_symbol_sequence_text(self.property_props_var.get(), self._record12_sequence(rec))
+                self._write_record12_sequence(rec, seq)
+                self._clear_green_block_footprint(room, old_rec, alternate=False)
+                self._rewrite_green_block_footprints(room, rec)
+                set_record12_green_block(room, idx, bytes(rec))
+                self.status.set(f"Updated green block {idx}: sequence={','.join(map(str, seq)) or '-'}")
             elif kind == "control":
                 idx = ref[1]
                 cmds = [cmd for cmd in control_commands(room) if cmd.record.index == idx]
@@ -2759,6 +2891,52 @@ class LevelEditorApp(tk.Tk):
         self.editor_canvas.create_oval(sx - r, sy - r, sx + r, sy + r, outline=handle.colour, fill=fill, width=width)
         self.editor_canvas.create_text(sx + 8, sy - 9, anchor="nw", text=handle.label, fill=handle.colour, font=("Segoe UI", 8))
 
+    def _green_block_xy_from_raw(self, raw_x: int, raw_y: int) -> tuple[int, int]:
+        return raw_x * 2 - 8, raw_y - 12
+
+    def _green_block_raw_from_xy(self, x: int, y: int) -> tuple[int, int]:
+        return self._clamp_byte(round((x + 8) / 2)), self._clamp_byte(y + 12)
+
+    def _record12_sequence(self, rec: bytes) -> list[int]:
+        values: list[int] = []
+        for value in rec[5:10]:
+            if value == 0:
+                break
+            values.append(value)
+        return values
+
+    def _format_symbol_sequence(self, rec: bytes) -> str:
+        return ",".join(str(v) for v in self._record12_sequence(rec))
+
+    def _parse_symbol_sequence_text(self, text: str, current: list[int]) -> list[int]:
+        raw = text.strip()
+        if not raw:
+            return current
+        parts = [p for p in re.split(r"[\s,;>\-]+", raw) if p]
+        values: list[int] = []
+        for part in parts:
+            lower = part.lower()
+            if lower.startswith("symbol"):
+                lower = lower.removeprefix("symbol")
+            if lower.startswith("m") and lower[1:].isdigit():
+                # Marker labels M0/M1 are zero-based editor labels; symbol ids
+                # in the green block sequence are one-based.
+                value = int(lower[1:]) + 1
+            else:
+                value = self._parse_int_property(lower, default=0)
+            if value == 0:
+                break
+            if not 1 <= value <= 7:
+                raise ValueError("symbol ids must be 1..7; 0 terminates the sequence")
+            values.append(value)
+            if len(values) >= 5:
+                break
+        return values
+
+    def _write_record12_sequence(self, rec: bytearray, values: list[int]) -> None:
+        for i in range(5):
+            rec[5 + i] = values[i] if i < len(values) else 0
+
     def editor_object_handles(self, part, room) -> list[EditorHandle]:
         handles: list[EditorHandle] = []
         door = header_exit_door(part.header)
@@ -2777,6 +2955,20 @@ class LevelEditorApp(tk.Tk):
         for platform in parse_platform_triplets(room):
             if platform.visible:
                 handles.append(EditorHandle(("platform", platform.index), platform.x_raw * 2, platform.y, f"P{platform.index}", "#ffb000"))
+        symbol_table = section_a_symbol_table(room)
+        if symbol_table is not None:
+            for entry in symbol_table.entries:
+                symbol_id = (entry.code & 0x07) + 1
+                handles.append(EditorHandle(("symbol", entry.index), entry.x_raw * 2, entry.y, f"S{symbol_id}", "#ffd84d"))
+        _gb_offset, green_records = record12_green_block_records(room)
+        for idx, rec in enumerate(green_records):
+            if len(rec) >= 2:
+                dx, dy = self._green_block_xy_from_raw(rec[0], rec[1])
+                handles.append(EditorHandle(("green_block", idx), dx + 28, dy + 8, f"PD{idx}", "#ffd84d"))
+            if len(rec) >= 4:
+                ax, ay = self._green_block_xy_from_raw(rec[2], rec[3])
+                handles.append(EditorHandle(("green_block_alt", idx), ax + 28, ay + 8, f"PB{idx}", "#c8a840"))
+
         for cmd in control_commands(room):
             if cmd.command is None or cmd.x_raw is None or cmd.y_raw is None:
                 continue
@@ -3042,6 +3234,16 @@ class LevelEditorApp(tk.Tk):
                 self.editor_tool_var.set("object")
                 if hasattr(self, "editor_palettes"):
                     self.editor_palettes.select(1)
+            elif kind == "symbol":
+                self.editor_object_var.set("symbol_1")
+                self.editor_tool_var.set("object")
+                if hasattr(self, "editor_palettes"):
+                    self.editor_palettes.select(1)
+            elif kind in {"green_block", "green_block_alt"}:
+                self.editor_object_var.set("green_block")
+                self.editor_tool_var.set("object")
+                if hasattr(self, "editor_palettes"):
+                    self.editor_palettes.select(1)
             else:
                 self.editor_object_var.set(kind)
             self.status.set(f"Selected {handle.label}")
@@ -3086,6 +3288,38 @@ class LevelEditorApp(tk.Tk):
             platforms = [p for p in parse_platform_triplets(room) if p.index == slot]
             if platforms:
                 self._write_platform_footprint(room, platforms[0])
+        elif kind == "symbol" and slot is not None:
+            table = section_a_symbol_table(room)
+            entry = None if table is None else next((e for e in table.entries if e.index == slot), None)
+            if entry is None:
+                self.status.set("Selected symbol no longer exists.")
+                self.editor_selected_ref = None
+                self.editor_drag_offset = None
+                self.redraw_editor_room()
+                return
+            set_section_a_symbol_entry(room, entry.index, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y), code=entry.code)
+        elif kind in {"green_block", "green_block_alt"} and slot is not None:
+            _off, records = record12_green_block_records(room)
+            if not 0 <= slot < len(records):
+                self.status.set("Selected green block no longer exists.")
+                self.editor_selected_ref = None
+                self.editor_drag_offset = None
+                self.redraw_editor_room()
+                return
+            rec = bytearray(records[slot])
+            old_rec = bytes(rec)
+            raw_x, raw_y = self._green_block_raw_from_xy(x - 28, y - 8)
+            if kind == "green_block":
+                self._clear_green_block_footprint(room, old_rec, alternate=False)
+                rec[0], rec[1] = raw_x, raw_y
+                self._rewrite_green_block_footprints(room, rec)
+            else:
+                # PB/alternate is only a destination stored in the mechanism.
+                # Moving it must not create, move, or remove 0x07 room tiles.
+                rec[2], rec[3] = raw_x, raw_y
+            set_record12_green_block(room, slot, bytes(rec))
+        elif kind == "control" and slot is not None:
+            cmds = [cmd for cmd in control_commands(room) if cmd.record.index == slot]
         elif kind == "control" and slot is not None:
             cmds = [cmd for cmd in control_commands(room) if cmd.record.index == slot]
             if not cmds:
@@ -3209,7 +3443,22 @@ class LevelEditorApp(tk.Tk):
             else:
                 self.place_editor_actor(event)
         else:
-            self.place_editor_object(event)
+            handle = self.find_editor_handle(event)
+            if handle is not None and handle.ref[0] in {
+                "exit_door",
+                "player_start",
+                "artifact",
+                "known_pickup",
+                "room_links",
+                "symbol",
+                "green_block",
+                "green_block_alt",
+                "control",
+                "crystal",
+            }:
+                self.select_editor_handle(event)
+            else:
+                self.place_editor_object(event)
 
     def editor_drag(self, event) -> None:
         tool = self.editor_tool_var.get()
@@ -3220,6 +3469,18 @@ class LevelEditorApp(tk.Tk):
         elif tool == "platform" and self.editor_selected_ref is not None and self.editor_selected_ref[0] == "platform":
             self.move_selected_editor_object(event)
         elif tool == "decor" and self.editor_selected_ref is not None and self.editor_selected_ref[0] == "decor":
+            self.move_selected_editor_object(event)
+        elif tool == "object" and self.editor_selected_ref is not None and self.editor_selected_ref[0] in {
+            "exit_door",
+            "player_start",
+            "artifact",
+            "known_pickup",
+            "symbol",
+            "green_block",
+            "green_block_alt",
+            "control",
+            "crystal",
+        }:
             self.move_selected_editor_object(event)
 
     def place_editor_actor(self, event) -> None:
@@ -3380,6 +3641,35 @@ class LevelEditorApp(tk.Tk):
             self.editor_selected_ref = ("known_pickup", 0)
             self.editor_drag_offset = None
             self.status.set(f"Placed apple at x={x_raw * 2} y={y_raw}. The game supports one red apple marker per room; placing it again moves/replaces it.")
+        elif obj.startswith("symbol_"):
+            try:
+                symbol_id = int(obj.split("_", 1)[1])
+            except ValueError:
+                self.status.set("Invalid symbol kind.")
+                return
+            try:
+                idx = add_section_a_symbol_entry(room, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y), code=(symbol_id - 1) & 0x07)
+            except ValueError as exc:
+                self.status.set(f"Cannot place symbol: {exc}")
+                return
+            self.editor_selected_ref = ("symbol", idx)
+            self.editor_drag_offset = None
+            self.status.set(f"Placed S{symbol_id} / M{idx} at x={x} y={y}.")
+        elif obj == "green_block":
+            dx_raw, dy_raw = self._green_block_raw_from_xy(x - 28, y - 8)
+            # New blocks default to an alternate position one tile-row above,
+            # and a one-symbol sequence. The properties panel can refine both.
+            ax_raw, ay_raw = self._green_block_raw_from_xy(max(0, x - 28), max(0, y - 40))
+            raw = bytes([dx_raw, dy_raw, ax_raw, ay_raw, 0, 1, 0, 0, 0, 0, 0, 0])
+            try:
+                idx = add_record12_green_block(room, raw)
+            except ValueError as exc:
+                self.status.set(f"Cannot place green block: {exc}")
+                return
+            self._rewrite_green_block_footprints(room, raw)
+            self.editor_selected_ref = ("green_block", idx)
+            self.editor_drag_offset = None
+            self.status.set(f"Placed green block PB{idx}/PD{idx}. Edit alternate position and sequence in properties.")
         elif obj.startswith("reflector_"):
             try:
                 sprite_index = int(obj.split("_", 1)[1]) & 0x3F
@@ -3456,6 +3746,21 @@ class LevelEditorApp(tk.Tk):
             if not self._clear_belt_composite(room, ref):
                 self.status.set("Selected belt no longer exists.")
                 return "break"
+        elif kind == "symbol":
+            room = self.current_room()
+            if slot is None:
+                self.status.set(DELETE_SELECTION_HINT)
+                return "break"
+            delete_section_a_symbol_entry(room, slot)
+        elif kind in {"green_block", "green_block_alt"}:
+            room = self.current_room()
+            if slot is None:
+                self.status.set(DELETE_SELECTION_HINT)
+                return "break"
+            _off, records = record12_green_block_records(room)
+            if 0 <= slot < len(records):
+                self._clear_green_block_footprint(room, records[slot], alternate=False)
+            delete_record12_green_block(room, slot)
         elif kind == "control":
             room = self.current_room()
             delete_control_command(room, slot)
@@ -3734,13 +4039,13 @@ class LevelEditorApp(tk.Tk):
                 ],
             ),
             (
-                "Puzzle symbols",
-                [(f"Symbol {i}", "AE000", 10 + i, 0, f"AE000:{10 + i:03d}:0") for i in range(7)],
+                "Symbol buttons",
+                [(f"S{i + 1}", "AE000", 10 + i, 0, f"symbol {i + 1}") for i in range(7)],
             ),
             (
-                "Puzzle / moving blocks",
+                "Green block mechanisms",
                 [
-                    ("Puzzle sequence block", "AE000", 17, 0, "section_b record12"),
+                    ("Green sequence block", "AE000", 17, 0, "record12: default byte0/1, alternate byte2/3, sequence byte5..9, 0 terminates"),
                 ],
             ),
             (
@@ -4095,6 +4400,8 @@ class LevelEditorApp(tk.Tk):
             ("ceiling_button", "Ceiling button", "AE000", 39, 0),
             ("floor_switch", "Floor switch", "AE000", 40, 0),
             ("jello", "Jello / light trigger", "AE000", 41, 0),
+            *[(f"symbol_{i}", f"S{i}", "AE000", 9 + i, 0) for i in range(1, 8)],
+            ("green_block", "Green sequence block", "AE000", 17, 0),
             ("apple", "Apple", "AE000", 45, 0),
             ("reflector_0", "Reflector 0", "AE000", 19, 0),
             ("reflector_2", "Reflector 2", "AE000", 19, 2),

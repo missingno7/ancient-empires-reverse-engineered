@@ -68,7 +68,7 @@ directory currently decodes:
 
 - length-prefixed control records;
 - puzzle marker compact3 table;
-- record12 puzzle panel records;
+- record12 green-block mechanism records;
 - laser crystal compact3 table;
 - main visual compact3 table.
 

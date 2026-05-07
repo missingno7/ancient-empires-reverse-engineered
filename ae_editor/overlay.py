@@ -130,6 +130,24 @@ def _invisible_clusters(room: Room) -> list[tuple[int, int, int, int]]:
     return clusters
 
 
+def _green_block_xy(raw_x: int, raw_y: int) -> tuple[int, int]:
+    return raw_x * 2 - 8, raw_y - 12
+
+
+def _record12_default_rect(rec: bytes) -> tuple[int, int, int, int] | None:
+    if len(rec) < 2:
+        return None
+    x, y = _green_block_xy(rec[0], rec[1])
+    return x, y, 56, 16
+
+
+def _record12_alternate_rect(rec: bytes) -> tuple[int, int, int, int] | None:
+    if len(rec) < 4:
+        return None
+    x, y = _green_block_xy(rec[2], rec[3])
+    return x, y, 56, 16
+
+
 def decode_control_target(value: int) -> ControlTarget:
     """Decode one target byte used by button/switch/jello commands.
 
@@ -203,9 +221,13 @@ def _match_projectile_source(actor: ActorTableRecord, actor_rects: list[tuple[Ac
 
 
 def _sequence_label_from_record(rec: bytes, markers) -> str:
-    if len(rec) < 9 or not markers:
+    if len(rec) < 10 or not markers:
         return ""
-    seq_vals = [value for value in rec[5:9] if value]
+    seq_vals: list[int] = []
+    for value in rec[5:10]:
+        if value == 0:
+            break
+        seq_vals.append(value)
     if not seq_vals:
         return ""
     parts: list[str] = []
@@ -214,8 +236,8 @@ def _sequence_label_from_record(rec: bytes, markers) -> str:
         if marker is None:
             parts.append(str(value))
         else:
-            idx, entry = marker
-            parts.append(f"M{idx}")
+            _idx, entry = marker
+            parts.append(f"S{(entry.code & 0x07) + 1}")
     return " -> ".join(parts)
 
 
@@ -448,44 +470,51 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
         markers = list(enumerate(directory.sections.section_a.entries))
         panel_centers: list[tuple[int, int]] = []
         if directory.sections.section_b_records:
-            invisible_regions = _invisible_clusters(room)
             for rec_index, rec in enumerate(directory.sections.section_b_records):
-                if len(rec) < 4:
+                default_rect = _record12_default_rect(rec)
+                alternate_rect = _record12_alternate_rect(rec)
+                if default_rect is None:
                     continue
-                panel_x = rec[1] * 2 - 4
-                panel_y = rec[3] + 8
-                panel_centers.append((panel_x + 28, panel_y + 8))
+                dx, dy, dw, dh = default_rect
+                panel_centers.append((dx + dw // 2, dy + dh // 2))
                 seq_label = _sequence_label_from_record(rec, markers)
-                block_rect = OverlayRect(
-                    "puzzle_block",
-                    f"PB{rec_index}",
-                    panel_x,
-                    panel_y,
-                    56,
-                    16,
-                    f"PB{rec_index}" + (f" seq={seq_label}" if seq_label else ""),
+
+                # event09 operates on the record12 green-block mechanism.
+                # byte0/byte1 are the default/current position seen in-game;
+                # byte2/byte3 are the alternate position the block swaps to after
+                # the configured symbol sequence is emitted/pressed.
+                default = OverlayRect(
+                    "puzzle_dest",
+                    f"PD{rec_index}",
+                    dx,
+                    dy,
+                    dw,
+                    dh,
+                    (f"seq={seq_label}" if seq_label else f"PD{rec_index}"),
                     "#ffd84d",
                 )
-                puzzle_blocks.append(block_rect)
-                if seq_label:
-                    controls.append(OverlayPoint("puzzle_panel", f"PB{rec_index}", panel_x + 28, panel_y + 8, f"PB{rec_index} seq={seq_label}", "#ffd84d"))
-                if rec_index < len(invisible_regions):
-                    dx, dy, dw, dh = invisible_regions[rec_index]
-                    dest = OverlayRect("puzzle_dest", f"PD{rec_index}", dx, dy, dw, dh, f"PD{rec_index}", "#ffd84d", hidden=True)
-                    puzzle_destinations.append(dest)
-                    links.append(OverlayLine("puzzle_move", f"{block_rect.ident}->{dest.ident}", block_rect.center, dest.center, f"{block_rect.ident}->{dest.ident}", "#ffd84d", dashed=True))
+                puzzle_destinations.append(default)
+                # Do not add a second point label on top of the default block.
+                # The rectangle label already carries PDn + sequence info; adding
+                # a puzzle_panel point made labels look duplicated in the editor.
+
+                if alternate_rect is not None:
+                    ax, ay, aw, ah = alternate_rect
+                    alt = OverlayRect("puzzle_block", f"PB{rec_index}", ax, ay, aw, ah, f"PB{rec_index} alternate", "#ffd84d", hidden=True)
+                    puzzle_blocks.append(alt)
         for marker_index, entry in markers:
             mx = entry.x_raw * 2
             my = entry.y
-            controls.append(OverlayPoint("puzzle_marker", f"M{marker_index}", mx, my, f"M{marker_index} code={entry.code}", "#ffd84d"))
+            symbol_id = (entry.code & 0x07) + 1
+            controls.append(OverlayPoint("puzzle_marker", f"S{symbol_id}", mx, my, f"S{symbol_id} / M{marker_index}", "#ffd84d"))
             for panel_index, center in enumerate(panel_centers):
                 links.append(
                     OverlayLine(
                         "puzzle_link",
-                        f"M{marker_index}->PB{panel_index}",
+                        f"S{symbol_id}->PB{panel_index}",
                         (mx, my),
                         center,
-                        f"M{marker_index}->PB{panel_index}",
+                        f"S{symbol_id}->PB{panel_index}",
                         "#ffd84d",
                         dashed=True,
                     )

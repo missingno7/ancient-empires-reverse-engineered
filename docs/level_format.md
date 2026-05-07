@@ -109,7 +109,7 @@ The EXE-style variable payload starts at trailing offset `0x1E`:
 +0x1E  directory count / selector family
 ...    length-prefixed control records
 ...    section_a compact3 table, puzzle markers
-...    section_b record12 table, puzzle panels
+...    section_b record12 table, green-block mechanisms
 ...    section_c compact3 table, laser crystals
 ...    visual compact3 table, theme/global visuals
 ```

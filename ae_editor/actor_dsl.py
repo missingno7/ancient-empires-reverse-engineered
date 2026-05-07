@@ -123,9 +123,9 @@ OPCODE_NAMES: Dict[int, str] = {
     0x04: "loop_a",
     0x05: "loop_b",
     0x06: "loop_c",
-    0x07: "event_07",
-    0x08: "event_08",
-    0x09: "event_09",
+    0x07: "play_sound",
+    0x08: "trigger_control",
+    0x09: "emit_symbol",
     0x0A: "set_actor_mode_1",
     0x0B: "set_actor_mode_0",
     0x0C: "set_frames",
@@ -146,7 +146,12 @@ OPCODE_NAMES: Dict[int, str] = {
     0x1B: "if_random_lt",
 }
 NAME_TO_OPCODE = {name: opcode for opcode, name in OPCODE_NAMES.items()}
+# Backward-compatible aliases accepted by the DSL/parser.
 NAME_TO_OPCODE.update({
+    "event_07": 0x07,
+    "event_08": 0x08,
+    "event_09": 0x09,
+
     "if_runtime_lowbits_set": 0x13,
     "if_runtime_lowbits_clear": 0x14,
     "if_runtime_bit10_clear": 0x15,
@@ -515,7 +520,7 @@ def parse_dsl(text: str) -> ActorScript:
                     add(op, (parse_int(target[4:]), count))
                 else:
                     add(op, (count,), target_label=target)
-            elif cmd in {"event_07", "event_08", "event_09"}:
+            elif cmd in {"play_sound", "trigger_control", "emit_symbol", "event_07", "event_08", "event_09"}:
                 kwargs = parse_args(rest)
                 add(NAME_TO_OPCODE[cmd], (parse_int(kwargs["id"]),))
             elif cmd in {"set_actor_mode_1", "set_actor_mode_0"}:

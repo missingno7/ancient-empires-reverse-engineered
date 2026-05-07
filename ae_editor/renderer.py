@@ -31,17 +31,49 @@ from .object_mapping import visual_render_layer, visual_sprite_ref
 from .tile_mapping import CONVEYOR_PHYSICS_TILE_CODES
 
 
-def _record12_panel_xy(rec: bytes) -> tuple[int, int] | None:
+def _green_block_xy(raw_x: int, raw_y: int) -> tuple[int, int]:
+    """Convert event09/puzzle-block raw coordinates to screen pixels.
+
+    AEPROG's event09 handler uses byte0/byte1 as the current/default
+    6-tile block position and byte2/byte3 as the alternate position.
+    Collision is written through the runtime tile map as x/4 - 1,
+    y/8 - 1, 6 cells wide by 2 cells high.  That corresponds to
+    pixel x = raw_x * 2 - 8 and y = raw_y - 12 for the visible block.
+    """
+    return raw_x * 2 - 8, raw_y - 12
+
+
+def _record12_default_xy(rec: bytes) -> tuple[int, int] | None:
+    if len(rec) < 2:
+        return None
+    return _green_block_xy(rec[0], rec[1])
+
+
+def _record12_alternate_xy(rec: bytes) -> tuple[int, int] | None:
     if len(rec) < 4:
         return None
-    # Observed layout family: byte1 behaves as half-x, byte3 as y.
-    return rec[1] * 2 - 4, rec[3] + 8
+    return _green_block_xy(rec[2], rec[3])
+
+
+def _record12_panel_xy(rec: bytes) -> tuple[int, int] | None:
+    # Backward-compatible name used by older code: this is the default/current
+    # green-block position, not a separate panel location.
+    return _record12_default_xy(rec)
 
 
 def _record12_sequence_values(rec: bytes) -> list[int]:
-    if len(rec) < 9:
-        return []
-    return [value for value in rec[5:9] if value]
+    """Return the 1-based symbol sequence stored in a record12 green block.
+
+    Current model: bytes 5..9 are the configured symbol ids; 0 terminates
+    the sequence early.  Bytes after that are preserved but not treated as
+    gameplay sequence data by the editor.
+    """
+    values: list[int] = []
+    for value in rec[5:10]:
+        if value == 0:
+            break
+        values.append(value)
+    return values
 
 
 def _invisible_clusters(room: Room) -> list[tuple[int, int, int, int]]:
@@ -71,13 +103,22 @@ def _draw_sequence_on_panel(graphics, panel: Image.Image, seq_values: list[int])
         return panel
     out = panel.copy()
     symbols = []
-    for value in seq_values[:4]:
+    for value in seq_values[:5]:
         sprite = graphics.sprite("AE000", 9 + value, 0)
         if sprite is not None:
             symbols.append(sprite)
     if not symbols:
         return out
     total_w = sum(s.width for s in symbols) + max(0, len(symbols) - 1) * 1
+    if total_w > out.width:
+        scale = max(1, min(s.width for s in symbols) - 1) / max(1, max(s.width for s in symbols))
+        scaled = []
+        for sprite in symbols:
+            w = max(1, int(sprite.width * scale))
+            h = max(1, int(sprite.height * scale))
+            scaled.append(sprite.resize((w, h), Image.Resampling.NEAREST))
+        symbols = scaled
+        total_w = sum(s.width for s in symbols) + max(0, len(symbols) - 1) * 1
     x = max(0, (out.width - total_w) // 2)
     for sprite in symbols:
         y = max(0, (out.height - sprite.height) // 2)
@@ -368,23 +409,26 @@ class RoomRenderer:
         panel = self.graphics.sprite("AE000", 17, 0)
         if panel is None:
             return
-        invisible_regions = _invisible_clusters(room)
-        draw = ImageDraw.Draw(image)
         for i, rec in enumerate(directory.sections.section_b_records):
-            xy = _record12_panel_xy(rec)
-            if xy is None:
+            default_xy = _record12_default_xy(rec)
+            alternate_xy = _record12_alternate_xy(rec)
+            if default_xy is None:
                 continue
-            x, y = xy
+            x, y = default_xy
             seq_values = _record12_sequence_values(rec)
             panel_img = _draw_sequence_on_panel(self.graphics, panel, seq_values)
+
+            # The current/default position is byte0/byte1.  The alternate
+            # position is byte2/byte3 and is shown as a ghost, because event09
+            # swaps the two positions only when the configured symbol sequence
+            # has been emitted/pressed.
             self._blit(image, panel_img, x, y)
-            if i < len(invisible_regions):
-                dx, dy, dw, dh = invisible_regions[i]
-                ghost = _draw_sequence_on_panel(self.graphics, panel, seq_values).copy()
+            if alternate_xy is not None:
+                ax, ay = alternate_xy
+                ghost = panel_img.copy()
                 alpha = ghost.getchannel("A").point(lambda a: min(a, 96))
                 ghost.putalpha(alpha)
-                self._blit(image, ghost, dx, dy)
-                draw.line((x + panel.width // 2, y + panel.height // 2, dx + dw // 2, dy + dh // 2), fill=(255, 216, 77, 220), width=2)
+                self._blit(image, ghost, ax, ay)
 
     def _draw_laser_crystals(self, image: Image.Image, room: Room) -> None:
         table = laser_crystal_table(room)

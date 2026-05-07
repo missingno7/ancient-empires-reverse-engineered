@@ -1425,6 +1425,116 @@ def parse_exe_payload_directory(room: Room) -> ExePayloadDirectory | None:
     return ExePayloadDirectory(base, directory_count, selected_index, variable_start, ptr, records, sections)
 
 
+
+
+def section_a_symbol_table(room: Room) -> Compact3Table | None:
+    """Return section_a, the compact3 table of event09 symbol buttons/emitters."""
+    directory = parse_exe_payload_directory(room)
+    if directory and directory.sections and directory.sections.section_a is not None:
+        return directory.sections.section_a
+    return None
+
+
+def set_section_a_symbol_entry(room: Room, index: int, *, x_raw: int, y: int, code: int) -> None:
+    table = section_a_symbol_table(room)
+    if table is None or not 0 <= index < len(table.entries):
+        raise ValueError(f"symbol index out of range: {index}")
+    off = table.entries[index].source_offset
+    room.set_trailing_bytes(off, [x_raw & 0xFF, y & 0xFF, code & 0xFF])
+
+
+def add_section_a_symbol_entry(room: Room, *, x_raw: int, y: int, code: int) -> int:
+    table = section_a_symbol_table(room)
+    if table is None:
+        raise ValueError("room has no editable symbol table")
+    if table.count >= 32:
+        raise ValueError("symbol table is full")
+    original_len = len(room.trailing)
+    data = bytearray(room.trailing)
+    insert_at = table.offset + 1 + table.count * 3
+    data[table.offset] = table.count + 1
+    data[insert_at:insert_at] = bytes([x_raw & 0xFF, y & 0xFF, code & 0xFF])
+    padding_start = _payload_padding_start(room)
+    shifted_padding_start = padding_start + 3 if padding_start >= insert_at else padding_start
+    _delete_padding_bytes_after_insert(data, shifted_padding_start, 3, original_len)
+    _replace_trailing(room, data)
+    return table.count
+
+
+def delete_section_a_symbol_entry(room: Room, index: int) -> None:
+    table = section_a_symbol_table(room)
+    if table is None or not 0 <= index < len(table.entries):
+        raise ValueError(f"symbol index out of range: {index}")
+    original_len = len(room.trailing)
+    data = bytearray(room.trailing)
+    off = table.entries[index].source_offset
+    del data[off:off + 3]
+    data[table.offset] = max(0, data[table.offset] - 1)
+    old_trailing = room.trailing
+    room.trailing = bytes(data[:original_len - 3])
+    padding_start = _payload_padding_start(room)
+    room.trailing = old_trailing
+    padding_start = max(0, min(len(data), padding_start))
+    data[padding_start:padding_start] = b"\x00" * 3
+    del data[original_len:]
+    room.trailing = bytes(data)
+
+
+def record12_green_block_records(room: Room) -> tuple[int | None, list[bytes]]:
+    """Return the green-block record12 offset and records for editor support."""
+    directory = parse_exe_payload_directory(room)
+    if not directory or not directory.sections:
+        return None, []
+    return directory.sections.section_b_offset, list(directory.sections.section_b_records)
+
+
+def set_record12_green_block(room: Room, index: int, raw: bytes) -> None:
+    offset, records = record12_green_block_records(room)
+    if offset is None or not 0 <= index < len(records):
+        raise ValueError(f"green block index out of range: {index}")
+    if len(raw) != 12:
+        raise ValueError("green block record must be exactly 12 bytes")
+    room.set_trailing_bytes(offset + 1 + index * 12, list(raw))
+
+
+def add_record12_green_block(room: Room, raw: bytes) -> int:
+    offset, records = record12_green_block_records(room)
+    if offset is None:
+        raise ValueError("room has no editable green block table")
+    if len(raw) != 12:
+        raise ValueError("green block record must be exactly 12 bytes")
+    if len(records) >= 16:
+        raise ValueError("green block table is full")
+    original_len = len(room.trailing)
+    data = bytearray(room.trailing)
+    insert_at = offset + 1 + len(records) * 12
+    data[offset] = len(records) + 1
+    data[insert_at:insert_at] = raw
+    padding_start = _payload_padding_start(room)
+    shifted_padding_start = padding_start + 12 if padding_start >= insert_at else padding_start
+    _delete_padding_bytes_after_insert(data, shifted_padding_start, 12, original_len)
+    _replace_trailing(room, data)
+    return len(records)
+
+
+def delete_record12_green_block(room: Room, index: int) -> None:
+    offset, records = record12_green_block_records(room)
+    if offset is None or not 0 <= index < len(records):
+        raise ValueError(f"green block index out of range: {index}")
+    original_len = len(room.trailing)
+    data = bytearray(room.trailing)
+    off = offset + 1 + index * 12
+    del data[off:off + 12]
+    data[offset] = max(0, data[offset] - 1)
+    old_trailing = room.trailing
+    room.trailing = bytes(data[:original_len - 12])
+    padding_start = _payload_padding_start(room)
+    room.trailing = old_trailing
+    padding_start = max(0, min(len(data), padding_start))
+    data[padding_start:padding_start] = b"\x00" * 12
+    del data[original_len:]
+    room.trailing = bytes(data)
+
 def visual_compact3_table(room: Room) -> Compact3Table | None:
     """Return the main visual/decor table used by the renderer."""
     directory = parse_exe_payload_directory(room)

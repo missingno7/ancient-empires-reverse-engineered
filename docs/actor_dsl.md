@@ -68,7 +68,7 @@ The DSL covers the current researched actor VM opcode set `0x00..0x1B`:
 
 - `wait`, `goto`, `call`, `return`
 - `loop_a`, `loop_b`, `loop_c`
-- `event_07`, `event_08`, `event_09`
+- `play_sound`, `trigger_control`, `emit_symbol` (`event_07/08/09` aliases are still accepted)
 - `set_actor_mode_1`, `set_actor_mode_0`
 - `set_frames`, `set_frame`
 - `move`, `move_to`, `move_to_room`
