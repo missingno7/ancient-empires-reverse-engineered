@@ -80,6 +80,7 @@ from .room_payload import (
     runtime_offset_for_room_cell,
     tile_at_runtime_offset,
     set_actor_record_flags,
+    set_actor_record_placement,
 )
 
 DIFFICULTY_LABELS = ["Explorer", "Expert"]
@@ -243,11 +244,13 @@ class LevelEditorApp(tk.Tk):
         self.property_len_var = tk.StringVar(value="")
         self.property_code_var = tk.StringVar(value="")
         self.property_props_var = tk.StringVar(value="")
+        self.property_room_var = tk.StringVar(value="")
         self.property_label_x_var = tk.StringVar(value="x")
         self.property_label_y_var = tk.StringVar(value="y")
         self.property_label_len_var = tk.StringVar(value="len")
         self.property_label_code_var = tk.StringVar(value="code")
         self.property_label_props_var = tk.StringVar(value="props")
+        self.property_label_room_var = tk.StringVar(value="room")
         self.property_note_var = tk.StringVar(value="")
         self.property_actor_facing_var = tk.BooleanVar(value=False)
         self.property_actor_hidden_var = tk.BooleanVar(value=False)
@@ -263,6 +266,7 @@ class LevelEditorApp(tk.Tk):
         self.editor_selected_ref: tuple[str, int | None] | None = None
         self.editor_drag_offset: tuple[int, int] | None = None
         self.scripting_selected_actor_index: int | None = None
+        self.actor_script_share_source_index: int | None = None
         self.scripting_selected_address: int | None = None
         self.scripting_script_start: int | None = None
         self.scripting_original_len = 0
@@ -657,8 +661,10 @@ class LevelEditorApp(tk.Tk):
         ttk.Radiobutton(addr_row, text="Use address", variable=self.actor_script_mode_var, value="address").pack(side=tk.LEFT)
         ttk.Label(addr_row, text="start").pack(side=tk.LEFT, padx=(6, 2))
         ttk.Entry(addr_row, textvariable=self.actor_script_address_var, width=8).pack(side=tk.LEFT)
+        ttk.Label(addr_row, text="hex").pack(side=tk.LEFT, padx=(2, 0))
         ttk.Label(addr_row, text="reset").pack(side=tk.LEFT, padx=(8, 2))
         ttk.Entry(addr_row, textvariable=self.actor_script_reset_address_var, width=8).pack(side=tk.LEFT)
+        ttk.Label(addr_row, text="hex").pack(side=tk.LEFT, padx=(2, 0))
         self.actor_palette_canvas = tk.Canvas(actor_tab, bg="#202020", width=260)
         actor_scroll = ttk.Scrollbar(actor_tab, orient=tk.VERTICAL, command=self.actor_palette_canvas.yview)
         self.actor_palette_canvas.configure(yscrollcommand=actor_scroll.set)
@@ -686,6 +692,12 @@ class LevelEditorApp(tk.Tk):
             (
                 ttk.Label(prop_box, textvariable=self.property_label_props_var),
                 ttk.Entry(prop_box, textvariable=self.property_props_var, width=18),
+                None,
+                None,
+            ),
+            (
+                ttk.Label(prop_box, textvariable=self.property_label_room_var),
+                ttk.Entry(prop_box, textvariable=self.property_room_var, width=8),
                 None,
                 None,
             ),
@@ -998,6 +1010,12 @@ class LevelEditorApp(tk.Tk):
 
     def _actor_selected_for_script_sharing(self):
         part = self.current_level().part(self.part_var.get())
+        # Actor behavior bytecode is global for the whole level part, so keep the
+        # last explicitly selected actor as a share source even after switching rooms.
+        if self.actor_script_share_source_index is not None:
+            actor = self._actor_by_index(part, self.actor_script_share_source_index)
+            if actor is not None:
+                return actor
         if self.editor_selected_ref is not None and self.editor_selected_ref[0] == "actor":
             actor = self._actor_by_index(part, int(self.editor_selected_ref[1]))
             if actor is not None:
@@ -1060,6 +1078,7 @@ class LevelEditorApp(tk.Tk):
         if not selected:
             return
         self.scripting_selected_actor_index = int(selected[0])
+        self.actor_script_share_source_index = self.scripting_selected_actor_index
         actor = self._selected_scripting_actor()
         self.scripting_selected_address = None if actor is None else actor.script_offset
         self.reload_selected_actor_script()
@@ -1214,7 +1233,11 @@ class LevelEditorApp(tk.Tk):
             value = value.split("=", 1)[1].strip()
         if value.upper().startswith("A") and len(value) > 1:
             value = value[1:]
-        return parse_int(value)
+        # Script-space addresses are shown everywhere as hex.  For consistency,
+        # bare values in this field are hex too: 565 == 0x0565, not decimal 565.
+        if value.lower().startswith("0x") or value.lower().startswith("-0x"):
+            return parse_int(value)
+        return int(value, 16)
 
     def _ensure_script_target_label(self, target_address: int) -> str | None:
         for ins in self.scripting_instructions:
@@ -2104,6 +2127,12 @@ class LevelEditorApp(tk.Tk):
         base = 16 if text.lower().startswith("0x") or any(c in "abcdefABCDEF" for c in text) else 10
         return int(text, base)
 
+    def _parse_room_property(self, *, default: int) -> int:
+        value = self.property_room_var.get().strip()
+        if not value:
+            return max(0, min(ROOM_COUNT - 1, default))
+        return max(0, min(ROOM_COUNT - 1, self._parse_int_property(value, default=default)))
+
     def _format_control_targets(self, cmd) -> str:
         return ",".join(target.label for target in control_targets(cmd))
 
@@ -2154,6 +2183,7 @@ class LevelEditorApp(tk.Tk):
         self.property_label_len_var.set("len")
         self.property_label_code_var.set("code")
         self.property_label_props_var.set("props/raw")
+        self.property_label_room_var.set("room")
         self.property_note_var.set("")
 
     def _clear_property_values(self) -> None:
@@ -2162,6 +2192,7 @@ class LevelEditorApp(tk.Tk):
         self.property_len_var.set("")
         self.property_code_var.set("")
         self.property_props_var.set("")
+        self.property_room_var.set("")
 
     def _set_property_row_visible(self, row_index: int, visible: bool) -> None:
         widgets = self.property_rows[row_index]
@@ -2182,19 +2213,23 @@ class LevelEditorApp(tk.Tk):
             label.grid(row=row, column=0, sticky="e", padx=(6, 2), pady=2)
             entry.grid(row=row, column=1, columnspan=3, sticky="ew", pady=2)
 
-    def _layout_property_panel(self, *, rows: tuple[bool, bool, bool] = (False, False, False), actor_bools: bool = False, apply: bool = False) -> None:
-        for index, visible in enumerate(rows):
-            self._set_property_row_visible(index, visible)
+    def _layout_property_panel(self, *, rows: tuple[bool, ...] = (False, False, False, False), actor_bools: bool = False, apply: bool = False) -> None:
+        padded_rows = tuple(rows) + (False,) * max(0, len(self.property_rows) - len(rows))
+        for index in range(len(self.property_rows)):
+            self._set_property_row_visible(index, bool(padded_rows[index]))
+        base_row = 1 + len(self.property_rows)
         if actor_bools:
-            self.property_actor_bool_row.grid(row=4, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
+            self.property_actor_bool_row.grid(row=base_row, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
+            action_row = base_row + 1
         else:
             self.property_actor_bool_row.grid_remove()
+            action_row = base_row
         if apply:
-            self.property_apply_button.grid(row=5, column=0, columnspan=4, sticky="ew", padx=6, pady=(4, 4))
-            note_row = 6
+            self.property_apply_button.grid(row=action_row, column=0, columnspan=4, sticky="ew", padx=6, pady=(4, 4))
+            note_row = action_row + 1
         else:
             self.property_apply_button.grid_remove()
-            note_row = 5
+            note_row = action_row
         self.property_note_label.grid(row=note_row, column=0, columnspan=4, sticky="w", padx=6, pady=(0, 4))
 
     def _set_actor_bool_controls(self, *, facing: bool, hidden: bool, show_facing: bool, show_hidden: bool, enabled: bool = False) -> None:
@@ -2296,7 +2331,7 @@ class LevelEditorApp(tk.Tk):
                 self._layout_property_panel()
                 return
             symbol_id = (entry.code & 0x07) + 1
-            self._layout_property_panel(rows=(True, True, False), apply=True)
+            self._layout_property_panel(rows=(True, True, False, True), apply=True)
             self.property_title_var.set(f"S{symbol_id} / M{entry.index}")
             self.property_label_x_var.set("raw x")
             self.property_label_y_var.set("raw y")
@@ -2306,7 +2341,8 @@ class LevelEditorApp(tk.Tk):
             self.property_y_var.set(str(entry.y))
             self.property_len_var.set(str(symbol_id))
             self.property_code_var.set(f"{entry.code:02X}")
-            self.property_note_var.set("Section_a symbol button/emitter. Actor emit_symbol N sends the same 1-based symbol id as pressing S1..S7 in the room. Raw code is stored zero-based in bits 0..2.")
+            self.property_room_var.set(str(room.index))
+            self.property_note_var.set("Section_a symbol button/emitter. Actor emit_symbol N sends the same 1-based symbol id as pressing S1..S7 in the room. Raw code is stored zero-based in bits 0..2. Change Room to move this symbol to another room that has a symbol table.")
         elif kind in {"green_block", "green_block_alt"}:
             idx = ref[1]
             _off, records = record12_green_block_records(room)
@@ -2321,7 +2357,7 @@ class LevelEditorApp(tk.Tk):
                 self._clear_property_values()
                 self._layout_property_panel()
                 return
-            self._layout_property_panel(rows=(True, True, True), apply=True)
+            self._layout_property_panel(rows=(True, True, True, True), apply=True)
             self.property_title_var.set(f"Green block PB{idx}/PD{idx}")
             self.property_label_x_var.set("default x")
             self.property_label_y_var.set("default y")
@@ -2335,8 +2371,9 @@ class LevelEditorApp(tk.Tk):
             self.property_len_var.set(str(ax))
             self.property_code_var.set(str(ay))
             self.property_props_var.set(self._format_symbol_sequence(rec))
+            self.property_room_var.set(str(room.index))
             raw = rec.hex(" ")
-            self.property_note_var.set(f"Record12 green sequence block. PD/default uses byte0/1; PB/alternate uses byte2/3. Sequence is up to 5 one-based symbol ids; 0 terminates. Raw: {raw}")
+            self.property_note_var.set(f"Record12 green sequence block. PD/default uses byte0/1; PB/alternate uses byte2/3. Only PD/default owns the 6x2 tile-0x07 footprint. Sequence is up to 5 one-based symbol ids; 0 terminates. Change Room to move the whole mechanism to another room that has a green-block table. Raw: {raw}")
         elif kind == "control":
             idx = ref[1]
             cmds = [cmd for cmd in control_commands(room) if cmd.record.index == idx]
@@ -2368,7 +2405,7 @@ class LevelEditorApp(tk.Tk):
                 self._clear_property_values()
                 self._layout_property_panel()
                 return
-            self._layout_property_panel(rows=(True, True, True), apply=True)
+            self._layout_property_panel(rows=(True, True, True, True), apply=True)
             sprite_ref = visual_sprite_ref(
                 entry,
                 theme=self.current_level().part(self.part_var.get()).theme,
@@ -2387,7 +2424,8 @@ class LevelEditorApp(tk.Tk):
             self.property_len_var.set(f"{entry.code:02X}")
             self.property_code_var.set(f"{sprite_ref.archive}:{sprite_ref.resource_id:03d}:{sprite_ref.sprite_index}")
             self.property_props_var.set("1" if entry.code & 0x40 else "0")
-            self.property_note_var.set((sprite_ref.note or "Theme visual compact3 entry.") + "  Flip edits bit 0x40 while preserving the raw code/layer bits.")
+            self.property_room_var.set(str(room.index))
+            self.property_note_var.set((sprite_ref.note or "Theme visual compact3 entry.") + "  Flip edits bit 0x40 while preserving the raw code/layer bits. Change Room to move this decal to another room that has a visual table.")
         elif kind == "actor":
             idx = ref[1]
             actors = [a for a in actor_records_for_room(self.current_level().part(self.part_var.get()), room.index) if a.index == idx]
@@ -2399,7 +2437,7 @@ class LevelEditorApp(tk.Tk):
             actor = actors[0]
             binary_facing = actor.frame_variant in {0, 1}
             binary_hidden = actor.hidden in {0, 1}
-            self._layout_property_panel(rows=(True, True, not binary_hidden), actor_bools=binary_facing or binary_hidden, apply=True)
+            self._layout_property_panel(rows=(True, True, not binary_hidden, True), actor_bools=binary_facing or binary_hidden, apply=True)
             if binary_facing:
                 self.property_rows[1][0].grid_remove()
                 self.property_rows[1][1].grid_remove()
@@ -2421,6 +2459,7 @@ class LevelEditorApp(tk.Tk):
             self.property_len_var.set(f"{actor.frame_variant:02X}")
             self.property_code_var.set(f"{actor.frame:02X}")
             self.property_props_var.set(f"{actor.hidden:02X}")
+            self.property_room_var.set(str(actor.room_index))
             decoded = decode_actor_script(self.current_level().part(self.part_var.get()), actor, max_bytes=96, max_segments=8)
             note_bits = []
             if binary_facing:
@@ -2501,7 +2540,7 @@ class LevelEditorApp(tk.Tk):
                 self._layout_property_panel()
                 return
             pickup = pickups[idx]
-            self._layout_property_panel(rows=(True, True, False), apply=True)
+            self._layout_property_panel(rows=(True, True, False, True), apply=True)
             self.property_title_var.set("Apple")
             self.property_label_x_var.set("raw x")
             self.property_label_y_var.set("y")
@@ -2511,7 +2550,8 @@ class LevelEditorApp(tk.Tk):
             self.property_y_var.set(str(self._clamp_byte(pickup.y)))
             self.property_len_var.set("room tail")
             self.property_code_var.set("AE000:045:0")
-            self.property_note_var.set("Real red apple pickup. New/moved apples are written to the final 3 bytes of this room record: x_raw, y, room+1. The game supports one such apple marker per room.")
+            self.property_room_var.set(str(room.index))
+            self.property_note_var.set("Real red apple pickup. New/moved apples are written to the final 3 bytes of this room record: x_raw, y, room+1. The game supports one such apple marker per room. Change Room to move it.")
         elif kind in {"exit_door", "player_start", "artifact"}:
             self._layout_property_panel(rows=(True, True, False), apply=True)
             self.property_label_x_var.set("raw x")
@@ -2607,7 +2647,7 @@ class LevelEditorApp(tk.Tk):
                 requested_slot = self.property_len_var.get().strip()
                 if requested_slot and requested_slot.upper() not in {f"P{slot}", str(slot)}:
                     self.status.set(f"P{slot} target slot is fixed. Edit control target lists instead; position/flags were not changed.")
-                    self.refresh_property_panel()
+                    self.redraw_editor_room()
                     return
                 old_platforms = [p for p in parse_platform_triplets(room) if p.index == slot]
                 if old_platforms:
@@ -2628,6 +2668,18 @@ class LevelEditorApp(tk.Tk):
                 y_raw = self._parse_int_property(self.property_y_var.get(), default=entry.y) & 0xFF
                 symbol_id = max(1, min(7, self._parse_int_property(self.property_len_var.get(), default=(entry.code & 0x07) + 1)))
                 code = (entry.code & ~0x07) | ((symbol_id - 1) & 0x07)
+                target_room_index = self._parse_room_property(default=room.index)
+                if target_room_index != room.index:
+                    target_room = self.current_level().part(self.part_var.get()).room(target_room_index)
+                    new_index = add_section_a_symbol_entry(target_room, x_raw=x_raw, y=y_raw, code=code)
+                    delete_section_a_symbol_entry(room, entry.index)
+                    self.editor_selected_ref = ("symbol", new_index)
+                    self.status.set(f"Moved symbol to room {target_room_index:02d}: S{symbol_id} x={x_raw * 2} y={y_raw}")
+                    self._set_dirty()
+                    self.set_room(target_room_index)
+                    self.editor_selected_ref = ("symbol", new_index)
+                    self.redraw_editor_room()
+                    return
                 set_section_a_symbol_entry(room, entry.index, x_raw=x_raw, y=y_raw, code=code)
                 self.status.set(f"Updated symbol M{entry.index}: S{symbol_id} x={x_raw * 2} y={y_raw}")
             elif kind in {"green_block", "green_block_alt"}:
@@ -2646,6 +2698,19 @@ class LevelEditorApp(tk.Tk):
                 rec[2], rec[3] = self._green_block_raw_from_xy(ax, ay)
                 seq = self._parse_symbol_sequence_text(self.property_props_var.get(), self._record12_sequence(rec))
                 self._write_record12_sequence(rec, seq)
+                target_room_index = self._parse_room_property(default=room.index)
+                if target_room_index != room.index:
+                    target_room = self.current_level().part(self.part_var.get()).room(target_room_index)
+                    self._clear_green_block_footprint(room, old_rec, alternate=False)
+                    new_index = add_record12_green_block(target_room, bytes(rec))
+                    self._rewrite_green_block_footprints(target_room, rec)
+                    delete_record12_green_block(room, idx)
+                    self.status.set(f"Moved green block {idx} to room {target_room_index:02d} as {new_index}: sequence={','.join(map(str, seq)) or '-'}")
+                    self._set_dirty()
+                    self.set_room(target_room_index)
+                    self.editor_selected_ref = ("green_block", new_index)
+                    self.redraw_editor_room()
+                    return
                 self._clear_green_block_footprint(room, old_rec, alternate=False)
                 self._rewrite_green_block_footprints(room, rec)
                 set_record12_green_block(room, idx, bytes(rec))
@@ -2708,17 +2773,30 @@ class LevelEditorApp(tk.Tk):
                 if flip_text:
                     flip = flip_text in {"1", "true", "yes", "y", "on", "flip", "flipped"}
                     code = (code | 0x40) if flip else (code & ~0x40)
+                target_room_index = self._parse_room_property(default=room.index)
+                if target_room_index != room.index:
+                    target_room = self.current_level().part(self.part_var.get()).room(target_room_index)
+                    new_index = add_visual_compact3_entry(target_room, x_raw=x_raw, y=y_raw, code=code)
+                    delete_visual_compact3_entry(room, entry.index)
+                    self.decor_code_var.set(f"{code:02X}")
+                    self.status.set(f"Moved V{entry.index} to room {target_room_index:02d} as V{new_index}: code={code:02X} flip={'yes' if code & 0x40 else 'no'}")
+                    self._set_dirty()
+                    self.set_room(target_room_index)
+                    self.editor_selected_ref = ("decor", new_index)
+                    self.redraw_editor_room()
+                    return
                 set_visual_compact3_entry(room, entry.index, x_raw=x_raw, y=y_raw, code=code)
                 self.decor_code_var.set(f"{code:02X}")
                 self.status.set(f"Updated V{entry.index}: code={code:02X} flip={'yes' if code & 0x40 else 'no'} x={x_raw} y={y_raw}")
             elif kind == "actor":
                 idx = ref[1]
                 part = self.current_level().part(self.part_var.get())
-                actors = [a for a in actor_records_for_room(part, room.index) if a.index == idx]
-                if not actors:
+                actor = self._actor_by_index(part, int(idx))
+                if actor is None:
                     self.status.set("Selected actor no longer exists.")
                     return
-                actor = actors[0]
+                x_new = self._parse_int_property(self.property_x_var.get(), default=actor.x) & 0xFFFF
+                y_new = self._parse_int_property(self.property_y_var.get(), default=actor.y) & 0xFFFF
                 frame_variant = actor.frame_variant
                 hidden = actor.hidden
                 if actor.frame_variant in {0, 1}:
@@ -2729,8 +2807,17 @@ class LevelEditorApp(tk.Tk):
                     hidden = 1 if self.property_actor_hidden_var.get() else 0
                 elif self.property_props_var.get().strip():
                     hidden = self._parse_int_property(self.property_props_var.get(), default=actor.hidden) & 0xFF
+                target_room_index = self._parse_room_property(default=actor.room_index)
+                set_actor_record_placement(part, actor.index, room_index=target_room_index, x=x_new, y=y_new)
                 set_actor_record_flags(part, actor.index, frame_variant=frame_variant, hidden=hidden)
-                self.status.set(f"Updated A{actor.index}: variant={frame_variant:02X} hidden={hidden:02X}")
+                self.actor_script_share_source_index = actor.index
+                self.status.set(f"Updated A{actor.index}: room={target_room_index:02d} x={x_new} y={y_new} variant={frame_variant:02X} hidden={hidden:02X}")
+                if target_room_index != room.index:
+                    self._set_dirty()
+                    self.set_room(target_room_index)
+                    self.editor_selected_ref = ("actor", actor.index)
+                    self.redraw_editor_room()
+                    return
             elif kind == "exit_door":
                 part = self.current_level().part(self.part_var.get())
                 x_raw = self._parse_int_property(self.property_x_var.get(), default=0) & 0xFF
@@ -2756,6 +2843,17 @@ class LevelEditorApp(tk.Tk):
             elif kind == "known_pickup":
                 x_raw = self._parse_int_property(self.property_x_var.get(), default=0) & 0xFF
                 y_raw = self._parse_int_property(self.property_y_var.get(), default=0) & 0xFF
+                target_room_index = self._parse_room_property(default=room.index)
+                if target_room_index != room.index:
+                    target_room = self.current_level().part(self.part_var.get()).room(target_room_index)
+                    clear_room_apple_marker(room)
+                    set_room_apple_marker(target_room, x_raw=x_raw, y=y_raw)
+                    self.status.set(f"Moved apple to room {target_room_index:02d}: x={x_raw * 2} y={y_raw}")
+                    self._set_dirty()
+                    self.set_room(target_room_index)
+                    self.editor_selected_ref = ("known_pickup", 0)
+                    self.redraw_editor_room()
+                    return
                 set_room_apple_marker(room, x_raw=x_raw, y=y_raw)
                 self.status.set(f"Updated apple: x={x_raw * 2} y={y_raw}")
             else:
@@ -3221,6 +3319,8 @@ class LevelEditorApp(tk.Tk):
                     if hasattr(self, "editor_palettes"):
                         self.editor_palettes.select(2)
             elif kind == "actor" and slot is not None:
+                self.actor_script_share_source_index = int(slot)
+                self.scripting_selected_actor_index = int(slot)
                 self.editor_tool_var.set("actor")
                 if hasattr(self, "editor_palettes"):
                     self.editor_palettes.select(3)
@@ -3354,9 +3454,16 @@ class LevelEditorApp(tk.Tk):
                 self.redraw_editor_room()
                 return
             set_visual_compact3_entry(room, entry.index, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y), code=entry.code)
-        elif kind == "actor":
-            self.status.set("Actor position is fixed here; edit placement flags here and behavior in Script space.")
-            return
+        elif kind == "actor" and slot is not None:
+            actor = self._actor_by_index(part, int(slot))
+            if actor is None:
+                self.status.set("Selected actor no longer exists.")
+                self.editor_selected_ref = None
+                self.editor_drag_offset = None
+                self.redraw_editor_room()
+                return
+            set_actor_record_placement(part, actor.index, room_index=room.index, x=self._clamp_byte(x), y=self._clamp_byte(y))
+            self.actor_script_share_source_index = actor.index
         elif kind == "known_pickup":
             set_room_apple_marker(room, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y))
         elif kind == "conveyor" and slot is not None:
@@ -3470,6 +3577,8 @@ class LevelEditorApp(tk.Tk):
             self.move_selected_editor_object(event)
         elif tool == "decor" and self.editor_selected_ref is not None and self.editor_selected_ref[0] == "decor":
             self.move_selected_editor_object(event)
+        elif tool == "actor" and self.editor_selected_ref is not None and self.editor_selected_ref[0] == "actor":
+            self.move_selected_editor_object(event)
         elif tool == "object" and self.editor_selected_ref is not None and self.editor_selected_ref[0] in {
             "exit_door",
             "player_start",
@@ -3530,6 +3639,7 @@ class LevelEditorApp(tk.Tk):
             return
         self.editor_selected_ref = ("actor", idx)
         self.scripting_selected_actor_index = idx
+        self.actor_script_share_source_index = idx
         self.editor_drag_offset = None
         self._set_dirty()
         self.redraw_room()

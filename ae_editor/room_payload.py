@@ -965,6 +965,28 @@ def add_actor_record(
     return count
 
 
+
+def set_actor_record_placement(part, actor_index: int, *, room_index: int | None = None, x: int | None = None, y: int | None = None) -> None:
+    """Update an actor instance's room/x/y placement bytes in the global actor table."""
+    block = _actor_block(part)
+    count = _actor_count(block)
+    if not 0 <= actor_index < count:
+        raise ValueError(f"actor index out of range: {actor_index}")
+    rec = _actor_record_offset(actor_index)
+    if room_index is not None:
+        if not 0 <= room_index < ROOM_COUNT:
+            raise ValueError(f"actor room out of range: {room_index}")
+        block[rec + 0x01] = room_index & 0xFF
+    if x is not None:
+        if not 0 <= x <= 0xFFFF:
+            raise ValueError(f"actor x out of range: {x}")
+        _write_actor_u16(block, rec, 0x02, x)
+    if y is not None:
+        if not 0 <= y <= 0xFFFF:
+            raise ValueError(f"actor y out of range: {y}")
+        _write_actor_u16(block, rec, 0x04, y)
+    _write_actor_block(part, block)
+
 def set_actor_record_flags(part, actor_index: int, *, frame_variant: int | None = None, hidden: int | None = None) -> None:
     block = _actor_block(part)
     count = _actor_count(block)
