@@ -135,6 +135,7 @@ from .room_payload import (
     parse_platform_triplets,
     parse_conveyor_visual_records,
     visual_compact3_table,
+    animated_decor_table,
     laser_crystal_table,
     room_tail_marker,
     room_apple_marker,
@@ -217,6 +218,7 @@ class RoomRenderer:
             self._draw_background(image, part.theme)
             if options.mode == "game":
                 self._draw_visual_objects(image, room, layer="background")
+                self._draw_animated_decor(image, room, part.theme)
             self._draw_terrain_tiles(image, room, part.theme)
             self._render_rope(image, room)
 
@@ -235,6 +237,7 @@ class RoomRenderer:
                 self._draw_player_start(image, room, part.header)
             elif options.mode == "payload_debug":
                 self._draw_visual_objects(image, room, layer="background")
+                self._draw_animated_decor(image, room, part.theme)
                 self._draw_conveyor_tiles(image, room)
                 self._draw_platforms(image, room)
                 self._draw_control_records(image, room)
@@ -444,6 +447,22 @@ class RoomRenderer:
             if sprite is None:
                 continue
             x, y = compact3_xy(entry, sprite, "screen_exe", delta=LASER_CRYSTAL_DELTA)
+            self._blit(image, sprite, x, y)
+
+    def _draw_animated_decor(self, image: Image.Image, room: Room, theme: int) -> None:
+        table = animated_decor_table(room)
+        if table is None:
+            return
+        resource_id = 25 + theme
+        for record in table.records:
+            sprite_index = record.preview_sprite_index
+            sprite = self.graphics.sprite("AE001", resource_id, sprite_index)
+            if sprite is None:
+                continue
+            # Animated decals use the same compact3 coordinate family as theme
+            # visuals: x is half-screen space, y is the EXE object anchor.
+            entry = ObjectTableEntry(record.source_offset, record.index, record.x_raw, record.y, sprite_index, record.raw)
+            x, y = compact3_xy(entry, sprite, "screen_exe", delta=BACKGROUND_COMPACT3_DELTA)
             self._blit(image, sprite, x, y)
 
     def _draw_visual_objects(self, image: Image.Image, room: Room, *, layer: str = "all") -> None:

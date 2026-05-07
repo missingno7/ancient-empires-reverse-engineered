@@ -42,6 +42,10 @@ from .room_payload import (
     header_object_candidates,
     header_player_start,
     laser_crystal_table,
+    animated_decor_table,
+    set_animated_decor_record,
+    add_animated_decor_record,
+    delete_animated_decor_record,
     room_apple_marker,
     set_room_apple_marker,
     clear_room_apple_marker,
@@ -1979,6 +1983,43 @@ class LevelEditorApp(tk.Tk):
                 return entry
         return None
 
+    def _animated_decor_from_ref(self, room, ref):
+        if ref is None or ref[0] != "animated_decor":
+            return None
+        table = animated_decor_table(room)
+        if table is None:
+            return None
+        index = ref[1]
+        for record in table.records:
+            if record.index == index:
+                return record
+        return None
+
+    def _format_animated_sequence(self, sequence_raw: bytes) -> str:
+        values = []
+        for value in sequence_raw:
+            if value == 0:
+                break
+            values.append(f"{max(0, value - 1):02X}")
+        return ",".join(values)
+
+    def _parse_animated_sequence_text(self, text: str, current_raw: bytes) -> bytes:
+        raw = text.strip()
+        if not raw:
+            return current_raw
+        parts = [p for p in re.split(r"[\s,;>\-]+", raw) if p]
+        values: list[int] = []
+        for part in parts:
+            value = self._parse_int_property(part, default=0)
+            if value < 0:
+                raise ValueError("animated frame indexes must be >= 0")
+            values.append((value + 1) & 0xFF)
+            if len(values) >= 8:
+                break
+        while len(values) < 8:
+            values.append(0)
+        return bytes(values[:8] + [0])
+
     def _cv_records_touching_cells(self, room, cells: set[tuple[int, int]]) -> list:
         return [cv for cv in parse_conveyor_visual_records(room) if cv.cells & cells]
 
@@ -2455,6 +2496,28 @@ class LevelEditorApp(tk.Tk):
             self.property_props_var.set("1" if entry.code & 0x40 else "0")
             self.property_room_var.set(str(room.index))
             self.property_note_var.set((sprite_ref.note or "Theme visual compact3 entry.") + "  Flip edits bit 0x40 while preserving the raw code/layer bits. Change Room to move this decal to another room that has a visual table.")
+        elif kind == "animated_decor":
+            record = self._animated_decor_from_ref(room, ref)
+            if record is None:
+                self.property_title_var.set("Selected animated decor no longer exists")
+                self._clear_property_values()
+                self._layout_property_panel()
+                return
+            self._layout_property_panel(rows=(True, True, True, True), apply=True)
+            theme = self.current_level().part(self.part_var.get()).theme
+            self.property_title_var.set(f"AD{record.index} animated decor")
+            self.property_label_x_var.set("raw x")
+            self.property_label_y_var.set("raw y")
+            self.property_label_len_var.set("phase")
+            self.property_label_code_var.set("sprite")
+            self.property_label_props_var.set("frames")
+            self.property_x_var.set(str(record.x_raw))
+            self.property_y_var.set(str(record.y))
+            self.property_len_var.set(str(record.phase))
+            self.property_code_var.set(f"AE001:{25 + theme:03d}:{record.preview_sprite_index}")
+            self.property_props_var.set(self._format_animated_sequence(record.sequence_raw))
+            self.property_room_var.set(str(room.index))
+            self.property_note_var.set("Animated theme decal after the static visual table. Frame values here are zero-based sprite indexes; raw data stores them as +1 and ends with 00. L09 R01 uses four torch-holder AD records with ping-pong frames 14,14,15,15,16,16,15,15.")
         elif kind == "actor":
             idx = ref[1]
             actors = [a for a in actor_records_for_room(self.current_level().part(self.part_var.get()), room.index) if a.index == idx]
@@ -2817,6 +2880,28 @@ class LevelEditorApp(tk.Tk):
                 set_visual_compact3_entry(room, entry.index, x_raw=x_raw, y=y_raw, code=code)
                 self.decor_code_var.set(f"{code:02X}")
                 self.status.set(f"Updated V{entry.index}: code={code:02X} flip={'yes' if code & 0x40 else 'no'} x={x_raw} y={y_raw}")
+            elif kind == "animated_decor":
+                record = self._animated_decor_from_ref(room, ref)
+                if record is None:
+                    self.status.set("Selected animated decor no longer exists.")
+                    return
+                x_raw = self._parse_int_property(self.property_x_var.get(), default=record.x_raw) & 0xFF
+                y_raw = self._parse_int_property(self.property_y_var.get(), default=record.y) & 0xFF
+                phase = self._parse_int_property(self.property_len_var.get(), default=record.phase) & 0xFF
+                sequence = self._parse_animated_sequence_text(self.property_props_var.get(), record.sequence_raw)
+                target_room_index = self._parse_room_property(default=room.index)
+                if target_room_index != room.index:
+                    target_room = self.current_level().part(self.part_var.get()).room(target_room_index)
+                    new_index = add_animated_decor_record(target_room, phase=phase, x_raw=x_raw, y=y_raw, sequence=sequence)
+                    delete_animated_decor_record(room, record.index)
+                    self.status.set(f"Moved AD{record.index} to room {target_room_index:02d} as AD{new_index}.")
+                    self._set_dirty()
+                    self.set_room(target_room_index)
+                    self.editor_selected_ref = ("animated_decor", new_index)
+                    self.redraw_editor_room()
+                    return
+                set_animated_decor_record(room, record.index, phase=phase, x_raw=x_raw, y=y_raw, sequence=sequence)
+                self.status.set(f"Updated AD{record.index}: phase={phase} x={x_raw} y={y_raw} frames={self._format_animated_sequence(sequence)}")
             elif kind == "actor":
                 idx = ref[1]
                 part = self.current_level().part(self.part_var.get())
@@ -3138,6 +3223,10 @@ class LevelEditorApp(tk.Tk):
                 label = f"V{entry.index}:{entry.code:02X}"
                 colour = "#d4a8ff"
                 handles.append(EditorHandle(("decor", entry.index), entry.x_raw * 2, entry.y, label, colour))
+        anim_table = animated_decor_table(room)
+        if anim_table is not None:
+            for record in anim_table.records:
+                handles.append(EditorHandle(("animated_decor", record.index), record.x_raw * 2, record.y, f"AD{record.index}", "#ff9a40"))
         # Tile-only belt runs are physics footprints. Show them as a separate
         # grey handle only when no CV object covers them, because in-game they
         # are invisible but still push the player.
@@ -3522,6 +3611,15 @@ class LevelEditorApp(tk.Tk):
                 self.redraw_editor_room()
                 return
             set_visual_compact3_entry(room, entry.index, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y), code=entry.code)
+        elif kind == "animated_decor" and slot is not None:
+            record = self._animated_decor_from_ref(room, self.editor_selected_ref)
+            if record is None:
+                self.status.set("Selected animated decor no longer exists.")
+                self.editor_selected_ref = None
+                self.editor_drag_offset = None
+                self.redraw_editor_room()
+                return
+            set_animated_decor_record(room, record.index, phase=record.phase, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y), sequence=record.sequence_raw)
         elif kind == "actor" and slot is not None:
             actor = self._actor_by_index(part, int(slot))
             if actor is None:
@@ -3744,6 +3842,11 @@ class LevelEditorApp(tk.Tk):
                         self.editor_tool_var.set("decor")
                         if hasattr(self, "editor_palettes"):
                             self.editor_palettes.select(2)
+            elif kind == "animated_decor" and slot is not None:
+                if not keep_select_tool:
+                    self.editor_tool_var.set("decor")
+                    if hasattr(self, "editor_palettes"):
+                        self.editor_palettes.select(2)
             else:
                 self.editor_object_var.set(kind)
             if kind in {"belt", "conveyor"} and self.editor_tool_var.get() == "belt":
@@ -3960,6 +4063,9 @@ class LevelEditorApp(tk.Tk):
         elif kind == "decor":
             room = self.current_room()
             delete_visual_compact3_entry(room, slot)
+        elif kind == "animated_decor":
+            room = self.current_room()
+            delete_animated_decor_record(room, slot)
         elif kind == "actor":
             part = self.current_level().part(self.part_var.get())
             actors = [a for a in actor_records_for_room(part, self.current_room().index) if a.index == slot]

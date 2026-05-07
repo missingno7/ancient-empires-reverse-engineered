@@ -145,6 +145,58 @@ class Compact3Table:
     label: str = "compact3"
 
 
+ANIMATED_DECOR_RECORD_SIZE = 12
+ANIMATED_DECOR_MAX_COUNT = 16
+
+
+@dataclass(frozen=True)
+class AnimatedDecorRecord:
+    """12-byte animated background decal record after the visual table.
+
+    Confirmed in L09/R01: count=4 records draw the four torch-holder decals
+    from AE001:027 frames 14..16.  The frame bytes are stored as sprite_index+1
+    and the sequence is 0-terminated, usually ping-pong with duplicated frames
+    to control speed (for example 0F 0F 10 10 11 11 10 10 00).
+    """
+
+    source_offset: int
+    index: int
+    phase: int
+    x_raw: int
+    y: int
+    sequence_raw: bytes
+    raw: bytes
+
+    @property
+    def sprite_sequence(self) -> list[int]:
+        values: list[int] = []
+        for value in self.sequence_raw:
+            if value == 0:
+                break
+            # Runtime values are one-based resource subimage ids.
+            values.append(max(0, value - 1))
+        return values
+
+    @property
+    def preview_sprite_index(self) -> int:
+        seq = self.sprite_sequence
+        if not seq:
+            return 0
+        return seq[self.phase % len(seq)]
+
+    @property
+    def label(self) -> str:
+        seq = ",".join(str(v) for v in self.sprite_sequence) or "-"
+        return f"anim_decor[{self.index}] phase={self.phase} x={self.x_raw:02X} y={self.y:02X} seq={seq}"
+
+
+@dataclass
+class AnimatedDecorTable:
+    offset: int
+    count: int
+    records: list[AnimatedDecorRecord]
+
+
 @dataclass(frozen=True)
 class LengthPrefixedControlRecord:
     index: int
@@ -341,6 +393,7 @@ class PayloadSections:
     section_b_records: list[bytes]
     section_c: Compact3Table | None
     visual: Compact3Table | None
+    animated_decor: AnimatedDecorTable | None
     after_visual: int | None
 
 
@@ -1194,8 +1247,12 @@ def set_conveyor_visual_record(room: Room, index: int, *, x_raw: int, y: int, co
 
 def _payload_padding_start(room: Room) -> int:
     directory = parse_exe_payload_directory(room)
-    if directory and directory.sections and directory.sections.after_visual is not None:
-        return directory.sections.after_visual
+    if directory and directory.sections:
+        if directory.sections.animated_decor is not None:
+            table = directory.sections.animated_decor
+            return table.offset + 1 + table.count * ANIMATED_DECOR_RECORD_SIZE
+        if directory.sections.after_visual is not None:
+            return directory.sections.after_visual
     return len(room.trailing)
 
 
@@ -1383,6 +1440,42 @@ def _skip_length_prefixed_records(data: bytes, ptr: int, count: int) -> tuple[in
     return ptr, records
 
 
+def parse_animated_decor_table_at(room: Room, off: int, *, max_count: int = ANIMATED_DECOR_MAX_COUNT) -> AnimatedDecorTable | None:
+    """Parse the counted animated-decor table after the static visual table.
+
+    Empty rooms often just have zero padding at this offset, so count=0 is
+    treated as no table.  Non-empty tables are conservative: every 12-byte
+    record must fit before the room-tail marker and end with a zero sequence
+    terminator.
+    """
+    data = room.trailing
+    if off < 0 or off >= len(data) - 3:
+        return None
+    count = data[off]
+    if count == 0:
+        return None
+    if not 0 < count <= max_count:
+        return None
+    start = off + 1
+    end = start + count * ANIMATED_DECOR_RECORD_SIZE
+    # Preserve the final three-byte room-tail pickup marker.
+    if end > len(data) - 3:
+        return None
+    records: list[AnimatedDecorRecord] = []
+    for i in range(count):
+        rec_off = start + i * ANIMATED_DECOR_RECORD_SIZE
+        raw = bytes(data[rec_off:rec_off + ANIMATED_DECOR_RECORD_SIZE])
+        if len(raw) != ANIMATED_DECOR_RECORD_SIZE or raw[-1] != 0:
+            return None
+        seq = raw[3:]
+        # At least one frame before the terminator; values should be small
+        # theme-bank subimage ids, but do not over-constrain while RE is ongoing.
+        if not any(seq[:-1]):
+            return None
+        records.append(AnimatedDecorRecord(rec_off, i, raw[0], raw[1], raw[2], seq, raw))
+    return AnimatedDecorTable(off, count, records)
+
+
 def _parse_record12_section(data: bytes, off: int, *, max_count: int = 16) -> tuple[int | None, int, list[bytes], int | None]:
     if off < 0 or off >= len(data):
         return None, 0, [], None
@@ -1431,19 +1524,20 @@ def parse_exe_payload_directory(room: Room) -> ExePayloadDirectory | None:
 
     section_b_offset, section_b_count, section_b_records, ptr2 = _parse_record12_section(data, ptr, max_count=16)
     if ptr2 is None:
-        sections = PayloadSections(records_end, section_a, section_b_offset, section_b_count, section_b_records, None, None, None)
+        sections = PayloadSections(records_end, section_a, section_b_offset, section_b_count, section_b_records, None, None, None, None)
         return ExePayloadDirectory(base, directory_count, selected_index, variable_start, ptr, records, sections)
     ptr = ptr2
 
     section_c = parse_counted_compact3_at(room, ptr, max_count=32, label="section_c")
     if section_c is None:
-        sections = PayloadSections(records_end, section_a, section_b_offset, section_b_count, section_b_records, None, None, None)
+        sections = PayloadSections(records_end, section_a, section_b_offset, section_b_count, section_b_records, None, None, None, None)
         return ExePayloadDirectory(base, directory_count, selected_index, variable_start, ptr, records, sections)
     ptr = section_c.offset + 1 + section_c.count * 3
 
     visual = parse_counted_compact3_at(room, ptr, max_count=32, label="visual")
     after_visual = visual.offset + 1 + visual.count * 3 if visual is not None else None
-    sections = PayloadSections(records_end, section_a, section_b_offset, section_b_count, section_b_records, section_c, visual, after_visual)
+    animated_decor = parse_animated_decor_table_at(room, after_visual) if after_visual is not None else None
+    sections = PayloadSections(records_end, section_a, section_b_offset, section_b_count, section_b_records, section_c, visual, animated_decor, after_visual)
     return ExePayloadDirectory(base, directory_count, selected_index, variable_start, ptr, records, sections)
 
 
@@ -1556,6 +1650,79 @@ def delete_record12_green_block(room: Room, index: int) -> None:
     data[padding_start:padding_start] = b"\x00" * 12
     del data[original_len:]
     room.trailing = bytes(data)
+
+def animated_decor_table(room: Room) -> AnimatedDecorTable | None:
+    """Return animated background decals stored after the visual table."""
+    directory = parse_exe_payload_directory(room)
+    if directory and directory.sections and directory.sections.animated_decor is not None:
+        return directory.sections.animated_decor
+    return None
+
+
+def set_animated_decor_record(room: Room, index: int, *, phase: int, x_raw: int, y: int, sequence: bytes | None = None) -> None:
+    table = animated_decor_table(room)
+    if table is None or not 0 <= index < len(table.records):
+        raise ValueError(f"animated decor index out of range: {index}")
+    old = table.records[index]
+    seq = bytes(sequence) if sequence is not None else old.sequence_raw
+    if len(seq) != 9 or seq[-1] != 0:
+        raise ValueError("animated decor sequence must be 9 bytes and end with 00")
+    room.set_trailing_bytes(old.source_offset, [phase & 0xFF, x_raw & 0xFF, y & 0xFF, *seq])
+
+
+def _animated_decor_insert_offset(room: Room) -> int:
+    directory = parse_exe_payload_directory(room)
+    if not directory or not directory.sections or directory.sections.after_visual is None:
+        raise ValueError("room has no visual table to anchor animated decor")
+    table = directory.sections.animated_decor
+    if table is not None:
+        return table.offset + 1 + table.count * ANIMATED_DECOR_RECORD_SIZE
+    return directory.sections.after_visual + 1
+
+
+def add_animated_decor_record(room: Room, *, phase: int, x_raw: int, y: int, sequence: bytes) -> int:
+    directory = parse_exe_payload_directory(room)
+    if not directory or not directory.sections or directory.sections.after_visual is None:
+        raise ValueError("room has no editable animated decor area")
+    if len(sequence) != 9 or sequence[-1] != 0:
+        raise ValueError("animated decor sequence must be 9 bytes and end with 00")
+    table = directory.sections.animated_decor
+    count = 0 if table is None else table.count
+    if count >= ANIMATED_DECOR_MAX_COUNT:
+        raise ValueError("animated decor table is full")
+    original_len = len(room.trailing)
+    data = bytearray(room.trailing)
+    count_off = directory.sections.after_visual if table is None else table.offset
+    insert_at = count_off + 1 + count * ANIMATED_DECOR_RECORD_SIZE
+    data[count_off] = count + 1
+    data[insert_at:insert_at] = bytes([phase & 0xFF, x_raw & 0xFF, y & 0xFF]) + bytes(sequence)
+    padding_start = _payload_padding_start(room)
+    # If there was no table, the old zero count byte becomes real structure;
+    # only the inserted 12-byte record needs to be paid for from padding.
+    shifted_padding_start = padding_start + ANIMATED_DECOR_RECORD_SIZE if padding_start >= insert_at else padding_start
+    _delete_padding_bytes_after_insert(data, shifted_padding_start, ANIMATED_DECOR_RECORD_SIZE, original_len)
+    _replace_trailing(room, data)
+    return count
+
+
+def delete_animated_decor_record(room: Room, index: int) -> None:
+    table = animated_decor_table(room)
+    if table is None or not 0 <= index < len(table.records):
+        raise ValueError(f"animated decor index out of range: {index}")
+    original_len = len(room.trailing)
+    data = bytearray(room.trailing)
+    off = table.records[index].source_offset
+    del data[off:off + ANIMATED_DECOR_RECORD_SIZE]
+    data[table.offset] = max(0, table.count - 1)
+    old_trailing = room.trailing
+    room.trailing = bytes(data[:original_len - ANIMATED_DECOR_RECORD_SIZE])
+    padding_start = _payload_padding_start(room)
+    room.trailing = old_trailing
+    padding_start = max(0, min(len(data), padding_start))
+    data[padding_start:padding_start] = b"\x00" * ANIMATED_DECOR_RECORD_SIZE
+    del data[original_len:]
+    room.trailing = bytes(data)
+
 
 def visual_compact3_table(room: Room) -> Compact3Table | None:
     """Return the main visual/decor table used by the renderer."""
