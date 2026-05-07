@@ -137,6 +137,35 @@ class LevelPart:
         self._set_header_bytes(0x0E + slot, [0])
         self._set_header_bytes(0x14 + slot, [0])
 
+    def set_part_bytes(self, offset: int, values: bytes | bytearray) -> None:
+        """Patch bytes in this part and mirror them into serialized room fields."""
+        payload = bytes(values)
+        if offset < 0 or offset + len(payload) > len(self.raw):
+            raise ValueError(f"part write out of range: offset={offset:#x} len={len(payload)}")
+        data = bytearray(self.raw)
+        data[offset:offset + len(payload)] = payload
+        self.raw = bytes(data)
+
+        header_end = LEVEL_PART_HEADER_SIZE
+        if offset < header_end:
+            self.header = self.raw[:header_end]
+
+        for room in self.rooms:
+            record_start = LEVEL_PART_HEADER_SIZE + room.index * ROOM_RECORD_SIZE
+            record_end = record_start + ROOM_RECORD_SIZE
+            if offset >= record_end or offset + len(payload) <= record_start:
+                continue
+            record = self.raw[record_start:record_end]
+            terrain_start = ROOM_TERRAIN_OFFSET
+            terrain_end = terrain_start + ROOM_TILE_COUNT
+            room.preamble = record[:ROOM_TERRAIN_OFFSET]
+            room.tiles = list(record[terrain_start:terrain_end])
+            room.trailing = record[terrain_end:]
+
+        footer_start = LEVEL_PART_HEADER_SIZE + ROOM_COUNT * ROOM_RECORD_SIZE
+        if offset < len(self.raw) and offset + len(payload) > footer_start:
+            self.footer = self.raw[footer_start:]
+
 
 class Level:
     """Decoded AE001 level resource.

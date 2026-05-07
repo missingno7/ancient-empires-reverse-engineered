@@ -361,12 +361,19 @@ def instruction_to_dsl(ins: Instruction, labels_by_offset: Dict[int, str]) -> st
     if op == 0x00:
         return "wait"
     if op == 0x01:
+        if ins.target_label:
+            return f"goto {ins.target_label}"
         return f"goto {target_text}" if target_text else f"goto rel={ins.args[0]}"
     if op == 0x02:
+        if ins.target_label:
+            return f"call {ins.target_label}"
         return f"call {target_text}" if target_text else f"call rel={ins.args[0]}"
     if op == 0x03:
         return "return"
     if op in {0x04, 0x05, 0x06}:
+        if ins.target_label:
+            count = ins.args[0]
+            return f"{name} {ins.target_label} count={count}"
         count = ins.args[1]
         if target_text:
             return f"{name} {target_text} count={count}"
