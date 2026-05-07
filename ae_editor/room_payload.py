@@ -18,6 +18,7 @@ as a guessed object.
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import Literal
 
@@ -530,18 +531,309 @@ def _actor_script_used_end(block: bytearray) -> int:
     return max(record_end, last_nonzero)
 
 
+def _actor_vm_size(block: bytes | bytearray, pc: int) -> int:
+    if pc < 0 or pc >= len(block):
+        return 0
+    opcode = block[pc]
+    sizes = {
+        0x00: 1, 0x01: 3, 0x02: 3, 0x03: 1, 0x04: 5, 0x05: 5, 0x06: 5,
+        0x07: 2, 0x08: 2, 0x09: 2, 0x0A: 2, 0x0B: 2, 0x0C: 3, 0x0D: 2,
+        0x0E: 4, 0x0F: 4, 0x10: 5, 0x11: 1, 0x12: 1, 0x13: 3, 0x14: 3,
+        0x15: 3, 0x16: 3, 0x17: 2, 0x18: 2, 0x19: 2, 0x1A: 2, 0x1B: 2,
+    }
+    return min(sizes.get(opcode, 1), max(1, len(block) - pc))
+
+
+def _actor_s16(block: bytes | bytearray, offset: int) -> int:
+    value = block[offset] | (block[offset + 1] << 8)
+    return value - 0x10000 if value & 0x8000 else value
+
+
+def _actor_write_s16(block: bytearray, offset: int, value: int) -> None:
+    if not -32768 <= value <= 32767:
+        raise ValueError(f"actor branch target is out of rel16 range: {value}")
+    raw = value & 0xFFFF
+    block[offset] = raw & 0xFF
+    block[offset + 1] = (raw >> 8) & 0xFF
+
+
+def _is_actor_padding_end(block: bytes | bytearray, pc: int) -> bool:
+    return block[pc] == 0x00 and not any(block[pc + 1:pc + 8])
+
+
+def _actor_entry_offsets(block: bytes | bytearray) -> list[int]:
+    entries: set[int] = set()
+    count = _actor_count(bytearray(block))
+    for index in range(count):
+        rec = _actor_record_offset(index)
+        for field in (0x0D, 0x0F, 0x17):
+            value = _read_actor_u16(bytearray(block), rec, field)
+            if 0 <= value < ACTOR_TABLE_SIZE:
+                entries.add(value)
+    return sorted(entries)
+
+
+def _reachable_actor_instruction_offsets(block: bytes | bytearray, *, max_commands: int = 1200) -> list[int]:
+    seen: set[int] = set()
+    queue: deque[int] = deque(_actor_entry_offsets(block))
+    while queue and len(seen) < max_commands:
+        pc = queue.popleft()
+        if pc < 0 or pc >= ACTOR_TABLE_SIZE or pc in seen:
+            continue
+        size = _actor_vm_size(block, pc)
+        if size <= 0:
+            continue
+        seen.add(pc)
+        opcode = block[pc]
+        end = pc + size
+        if _is_actor_padding_end(block, pc) or opcode == 0x03:
+            continue
+        if opcode in {0x01, 0x02} and size >= 3:
+            target = end + _actor_s16(block, pc + 1)
+            queue.append(target)
+            if opcode == 0x02:
+                queue.append(end)
+            continue
+        if opcode in {0x04, 0x05, 0x06} and size >= 5:
+            queue.append(end + _actor_s16(block, pc + 1))
+            queue.append(end)
+            continue
+        if 0x13 <= opcode <= 0x1B:
+            queue.append(end)
+            if end < ACTOR_TABLE_SIZE:
+                queue.append(end + _actor_vm_size(block, end))
+            continue
+        if opcode in {0x00, 0x11}:
+            # Yield/hide are runtime pauses, not hard script-stream endings
+            # unless followed by padding.
+            queue.append(end)
+            continue
+        queue.append(end)
+    return sorted(seen)
+
+
+@dataclass(frozen=True)
+class _ActorBranchRef:
+    source: int
+    opcode: int
+    size: int
+    target: int
+
+
+@dataclass(frozen=True)
+class ActorScriptEntryPoint:
+    actor_index: int
+    field: str
+    address: int
+
+
+@dataclass(frozen=True)
+class ActorScriptJumpReference:
+    source: int
+    opcode: int
+    size: int
+    target: int
+
+
+@dataclass(frozen=True)
+class ActorScriptActorReference:
+    source: int
+    opcode: int
+    actor_index: int
+
+
+@dataclass(frozen=True)
+class ActorScriptSpaceInstruction:
+    address: int
+    opcode: int
+    size: int
+    raw: bytes
+    branch_target: int | None = None
+    referenced_actor: int | None = None
+    padding_end: bool = False
+
+    @property
+    def next_address(self) -> int:
+        return self.address + self.size
+
+
+@dataclass(frozen=True)
+class ActorScriptSpace:
+    raw: bytes
+    record_end: int
+    used_end: int
+    entry_points: list[ActorScriptEntryPoint]
+    instructions: list[ActorScriptSpaceInstruction]
+    jumps: list[ActorScriptJumpReference]
+    actor_refs: list[ActorScriptActorReference]
+
+    @property
+    def instruction_by_address(self) -> dict[int, ActorScriptSpaceInstruction]:
+        return {ins.address: ins for ins in self.instructions}
+
+
+def _actor_branch_refs(block: bytes | bytearray) -> list[_ActorBranchRef]:
+    refs: list[_ActorBranchRef] = []
+    for pc in _reachable_actor_instruction_offsets(block):
+        opcode = block[pc]
+        size = _actor_vm_size(block, pc)
+        if opcode in {0x01, 0x02} and size >= 3:
+            refs.append(_ActorBranchRef(pc, opcode, size, pc + size + _actor_s16(block, pc + 1)))
+        elif opcode in {0x04, 0x05, 0x06} and size >= 5:
+            refs.append(_ActorBranchRef(pc, opcode, size, pc + size + _actor_s16(block, pc + 1)))
+    return refs
+
+
+def actor_script_space(part) -> ActorScriptSpace:
+    """Analyze the shared actor VM bytecode space for one level part.
+
+    Actor records only contain state and entry pointers.  The bytecode itself is
+    one shared address space inside the actor block, so this view is the source
+    of truth for cross-actor jumps, shared routines and set_actor_mode refs.
+    """
+    block = _actor_block(part)
+    count = _actor_count(block)
+    record_end = 1 + count * ACTOR_RECORD_SIZE
+    used_end = _actor_script_used_end(block)
+    field_names = {0x0D: "script_pc", 0x0F: "saved_pc", 0x17: "restart_pc"}
+    entries: list[ActorScriptEntryPoint] = []
+    for index in range(count):
+        rec = _actor_record_offset(index)
+        for field, name in field_names.items():
+            value = _read_actor_u16(block, rec, field)
+            if name == "saved_pc" and value == 0:
+                continue
+            if 0 <= value < ACTOR_TABLE_SIZE:
+                entries.append(ActorScriptEntryPoint(index, name, value))
+
+    instructions: list[ActorScriptSpaceInstruction] = []
+    jumps: list[ActorScriptJumpReference] = []
+    actor_refs: list[ActorScriptActorReference] = []
+    for pc in _reachable_actor_instruction_offsets(block):
+        size = _actor_vm_size(block, pc)
+        if size <= 0:
+            continue
+        opcode = block[pc]
+        raw = bytes(block[pc:pc + size])
+        target: int | None = None
+        ref_actor: int | None = None
+        if opcode in {0x01, 0x02, 0x04, 0x05, 0x06} and size >= 3:
+            target = pc + size + _actor_s16(block, pc + 1)
+            jumps.append(ActorScriptJumpReference(pc, opcode, size, target))
+        if opcode in {0x0A, 0x0B} and size >= 2:
+            ref_actor = block[pc + 1]
+            actor_refs.append(ActorScriptActorReference(pc, opcode, ref_actor))
+        instructions.append(
+            ActorScriptSpaceInstruction(
+                pc,
+                opcode,
+                size,
+                raw,
+                branch_target=target,
+                referenced_actor=ref_actor,
+                padding_end=_is_actor_padding_end(block, pc),
+            )
+        )
+    return ActorScriptSpace(bytes(block), record_end, used_end, entries, instructions, jumps, actor_refs)
+
+
+def actor_script_space_reachable_addresses(space: ActorScriptSpace, start: int, *, max_commands: int = 240) -> list[int]:
+    by_address = space.instruction_by_address
+    seen: set[int] = set()
+    queue: deque[int] = deque([start])
+    while queue and len(seen) < max_commands:
+        pc = queue.popleft()
+        if pc in seen:
+            continue
+        ins = by_address.get(pc)
+        if ins is None:
+            continue
+        seen.add(pc)
+        if ins.padding_end or ins.opcode == 0x03:
+            continue
+        if ins.opcode == 0x01:
+            if ins.branch_target is not None:
+                queue.append(ins.branch_target)
+            continue
+        if ins.opcode == 0x02:
+            if ins.branch_target is not None:
+                queue.append(ins.branch_target)
+            queue.append(ins.next_address)
+            continue
+        if ins.opcode in {0x04, 0x05, 0x06}:
+            if ins.branch_target is not None:
+                queue.append(ins.branch_target)
+            queue.append(ins.next_address)
+            continue
+        if 0x13 <= ins.opcode <= 0x1B:
+            queue.append(ins.next_address)
+            guarded = by_address.get(ins.next_address)
+            if guarded is not None:
+                queue.append(guarded.next_address)
+            continue
+        queue.append(ins.next_address)
+    return sorted(seen)
+
+
+def _map_actor_offset_after_patch(offset: int, start: int, old_end: int, delta: int) -> int | None:
+    if offset < start:
+        return offset
+    if offset >= old_end:
+        return offset + delta
+    return None
+
+
+def _adjust_actor_branch_refs(block: bytearray, refs: list[_ActorBranchRef], start: int, old_end: int, delta: int) -> None:
+    if not delta:
+        return
+    new_end = start + (old_end - start) + delta
+    for ref in refs:
+        if start <= ref.source < old_end:
+            continue
+        source = _map_actor_offset_after_patch(ref.source, start, old_end, delta)
+        target = start if ref.target == start else _map_actor_offset_after_patch(ref.target, start, old_end, delta)
+        if source is None or target is None:
+            raise ValueError(
+                f"actor branch at 0x{ref.source:04X} targets edited/deleted script bytes at 0x{ref.target:04X}"
+            )
+        if start <= source < new_end:
+            continue
+        if source < 0 or source + ref.size > ACTOR_TABLE_SIZE:
+            continue
+        if block[source] != ref.opcode:
+            continue
+        _actor_write_s16(block, source + 1, target - (source + ref.size))
+
+
+def actor_script_region_length(part, actor: ActorTableRecord, *, max_bytes: int = 192) -> int:
+    from .actor_scripts import actor_script_bytes, decode_actor_script
+
+    decoded = decode_actor_script(part, actor, max_bytes=max_bytes, max_segments=16)
+    if not decoded.commands:
+        _start, data = actor_script_bytes(part, actor, limit=max_bytes)
+        return 1 if data else 0
+    return max(cmd.offset + len(cmd.raw) for cmd in decoded.commands)
+
+
 def patch_actor_script_region(part, *, script_offset: int, old_length: int, new_bytes: bytes) -> None:
-    """Replace an actor script region and shift following script bytes in-place."""
+    """Replace a contiguous region in the shared actor script space."""
     if old_length < 0:
         raise ValueError("old script length cannot be negative")
     if script_offset < 0 or script_offset + old_length > ACTOR_TABLE_SIZE:
-        raise ValueError(f"actor script region out of range: offset={script_offset:#x} len={old_length}")
+        raise ValueError(f"actor script-space region out of range: offset={script_offset:#x} len={old_length}")
     block = _actor_block(part)
+    refs = _actor_branch_refs(block)
     delta = len(new_bytes) - old_length
     if delta > 0 and _actor_script_used_end(block) + delta > ACTOR_TABLE_SIZE:
-        raise ValueError("actor script block has no room for the larger script")
+        raise ValueError("actor script space has no room for the larger region")
 
     old_end = script_offset + old_length
+    for ref in refs:
+        unsafe_target = script_offset <= ref.target < old_end if not new_bytes else script_offset < ref.target < old_end
+        if unsafe_target and not (script_offset <= ref.source < old_end):
+            raise ValueError(
+                f"actor branch at 0x{ref.source:04X} jumps into the edited script region at 0x{ref.target:04X}"
+            )
     block[script_offset:old_end] = new_bytes
     if len(block) < ACTOR_TABLE_SIZE:
         block.extend(b"\x00" * (ACTOR_TABLE_SIZE - len(block)))
@@ -556,6 +848,7 @@ def patch_actor_script_region(part, *, script_offset: int, old_length: int, new_
                 value = _read_actor_u16(block, rec, field)
                 if value and value >= old_end:
                     _write_actor_u16(block, rec, field, value + delta)
+    _adjust_actor_branch_refs(block, refs, script_offset, old_end, delta)
     _write_actor_block(part, block)
 
 
@@ -621,6 +914,105 @@ def add_actor_record(
     block[0] = count + 1
     _write_actor_block(part, block)
     return count
+
+
+def set_actor_record_flags(part, actor_index: int, *, frame_variant: int | None = None, hidden: int | None = None) -> None:
+    block = _actor_block(part)
+    count = _actor_count(block)
+    if not 0 <= actor_index < count:
+        raise ValueError(f"actor index out of range: {actor_index}")
+    rec = _actor_record_offset(actor_index)
+    if frame_variant is not None:
+        block[rec + 0x07] = frame_variant & 0xFF
+    if hidden is not None:
+        block[rec + 0x08] = hidden & 0xFF
+    _write_actor_block(part, block)
+
+
+def _actor_refs_to_index(block: bytes | bytearray, actor_index: int) -> list[int]:
+    refs: list[int] = []
+    for pc in _reachable_actor_instruction_offsets(block):
+        opcode = block[pc]
+        size = _actor_vm_size(block, pc)
+        if opcode in {0x0A, 0x0B} and size >= 2 and block[pc + 1] == actor_index:
+            refs.append(pc)
+    return refs
+
+
+def _rewrite_actor_refs_after_delete(block: bytearray, actor_index: int) -> None:
+    for pc in _reachable_actor_instruction_offsets(block):
+        opcode = block[pc]
+        size = _actor_vm_size(block, pc)
+        if opcode not in {0x0A, 0x0B} or size < 2:
+            continue
+        ref = block[pc + 1]
+        if ref >= 0x80:
+            continue
+        if ref == actor_index:
+            raise ValueError(f"script at 0x{pc:04X} still references deleted actor A{actor_index}")
+        if ref > actor_index:
+            block[pc + 1] = ref - 1
+
+
+def delete_actor_record(
+    part,
+    actor_index: int,
+    *,
+    script_offset: int | None = None,
+    script_length: int = 0,
+    delete_script_region: bool = False,
+) -> None:
+    block = _actor_block(part)
+    count = _actor_count(block)
+    if not 0 <= actor_index < count:
+        raise ValueError(f"actor index out of range: {actor_index}")
+
+    rec = _actor_record_offset(actor_index)
+    actor_script = _read_actor_u16(block, rec, 0x0D)
+    if script_offset is not None and script_offset != actor_script:
+        raise ValueError("selected actor script offset changed; reload actor data before deleting")
+
+    # The actor record is an instance/state object; the bytecode belongs to the
+    # shared actor script space.  Deleting an actor must therefore remove stale
+    # references to the actor index, but it must not assume that script_pc owns a
+    # private byte range.
+    script_start = actor_script if script_offset is None else script_offset
+    script_end = script_start + max(0, script_length)
+    for ref_pc in _actor_refs_to_index(block, actor_index):
+        # set_actor_mode_* is a 2-byte side-effect aimed at this actor.
+        # Replacing it with two yields preserves script layout while removing a
+        # stale reference before actor indexes are compacted.
+        block[ref_pc:ref_pc + 2] = b"\x00\x00"
+    _write_actor_block(part, block)
+
+    shared_script = False
+    if delete_script_region and script_length > 0:
+        for index in range(count):
+            if index == actor_index:
+                continue
+            other_rec = _actor_record_offset(index)
+            for field in (0x0D, 0x0F, 0x17):
+                value = _read_actor_u16(block, other_rec, field)
+                if script_start <= value < script_end:
+                    shared_script = True
+                    break
+            if shared_script:
+                break
+
+    if delete_script_region and script_length > 0 and not shared_script:
+        if script_offset is None:
+            script_offset = actor_script
+        patch_actor_script_region(part, script_offset=script_offset, old_length=script_length, new_bytes=b"")
+        block = _actor_block(part)
+
+    records_end = 1 + count * ACTOR_RECORD_SIZE
+    rec_start = _actor_record_offset(actor_index)
+    rec_end = rec_start + ACTOR_RECORD_SIZE
+    block[rec_start:records_end - ACTOR_RECORD_SIZE] = block[rec_end:records_end]
+    block[records_end - ACTOR_RECORD_SIZE:records_end] = b"\x00" * ACTOR_RECORD_SIZE
+    block[0] = count - 1
+    _rewrite_actor_refs_after_delete(block, actor_index)
+    _write_actor_block(part, block)
 
 
 @dataclass(frozen=True)

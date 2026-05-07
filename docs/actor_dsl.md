@@ -4,6 +4,8 @@
 
 It is intentionally close to the original bytecode.  Human summaries such as “walk left 148 px” are useful UI hints, but this DSL is the source-of-truth format for writing actor script bytes back.
 
+Actor records do not own private script blobs.  A level part has one shared actor script space; each actor record stores state plus entry pointers such as `script_pc`, `restart_pc`, and `saved_pc`.  Labels in DSL previews are editor sugar for script-space addresses, not data stored by the game.
+
 ## Round-trip contract
 
 For a known contiguous script region:
