@@ -31,6 +31,7 @@ from .project import AncientEmpiresProject
 from .renderer import RenderOptions, KnownExtraPickup
 from .object_mapping import visual_sprite_ref
 from .tile_mapping import AUTO_SOLID_TILE_CODES, CONVEYOR_PHYSICS_TILE_CODES, ROPE_TILE_CODES
+from .audio import AudioItem, DEFAULT_PREVIEW_SPEED, build_audio_atlas, play_audio_file, synthesize_wav, temp_preview_wav, write_midi
 from .room_payload import (
     actor_script_space,
     actor_script_space_reachable_addresses,
@@ -293,12 +294,19 @@ class LevelEditorApp(tk.Tk):
         self.tk_editor_object_images = []
         self.tk_decor_images = []
         self.tk_actor_images = []
+        self.audio_items: list[AudioItem] = []
+        self.audio_item_by_key: dict[str, AudioItem] = {}
+        self.audio_selected_key: str | None = None
+        self.audio_info_var = tk.StringVar(value="")
+        self.audio_speed_var = tk.StringVar(value=f"{DEFAULT_PREVIEW_SPEED:g}")
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_window)
         self.redraw_room()
         self.redraw_bank_sheet()
         self.redraw_objects_atlas()
+        if hasattr(self, "audio_tree"):
+            self.refresh_audio_atlas()
         self.redraw_tile_palette()
         self.redraw_editor_object_palette()
         self.redraw_decor_palette()
@@ -366,11 +374,13 @@ class LevelEditorApp(tk.Tk):
         scripting_tab = ttk.Frame(tabs)
         graphics_tab = ttk.Frame(tabs)
         objects_tab = ttk.Frame(tabs)
+        audio_tab = ttk.Frame(tabs)
         tabs.add(level_tab, text="Level viewer")
         tabs.add(editor_tab, text="Editor")
         tabs.add(scripting_tab, text="Script space")
         tabs.add(objects_tab, text="Objects atlas")
         tabs.add(graphics_tab, text="Graphics viewer")
+        tabs.add(audio_tab, text="Audio atlas")
 
         main = ttk.PanedWindow(level_tab, orient=tk.HORIZONTAL)
         main.pack(fill=tk.BOTH, expand=True)
@@ -480,6 +490,194 @@ class LevelEditorApp(tk.Tk):
         bank_canvas_frame.columnconfigure(0, weight=1)
         self.bank_canvas.bind("<MouseWheel>", lambda event: self.bank_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units"))
         self.bank_canvas.bind("<Shift-MouseWheel>", lambda event: self.bank_canvas.xview_scroll(int(-1 * (event.delta / 120)), "units"))
+
+        self._build_audio_tab(audio_tab)
+
+    def _build_audio_tab(self, audio_tab: ttk.Frame) -> None:
+        top = ttk.Frame(audio_tab)
+        top.pack(fill=tk.X, padx=6, pady=6)
+        ttk.Label(top, text="Audio atlas: PC speaker + sound-card audio").pack(side=tk.LEFT)
+        ttk.Button(top, text="Refresh", command=self.refresh_audio_atlas).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(top, text="Preview speed ×").pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Spinbox(top, from_=0.25, to=6.0, increment=0.25, width=5, textvariable=self.audio_speed_var).pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Button(top, text="Play preview", command=self.play_selected_audio).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(top, text="Export WAV preview", command=self.export_selected_audio_wav).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(top, text="Export raw", command=self.export_selected_audio_raw).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(top, text="Export MIDI", command=self.export_selected_audio_midi).pack(side=tk.LEFT, padx=(8, 0))
+
+        ttk.Label(
+            audio_tab,
+            text=(
+                "play_sound/event_07 uses the CAF1 PC-speaker sound-effect bank. "
+                "Music has PC-speaker and AdLib/Sound Blaster resource pairs. "
+                "Preview speed is adjustable; PC-speaker music currently matches the game best around 1.75×. "
+                "Raw export preserves the exact in-game bytes; MIDI export is a best-effort transcription for music candidates."
+            ),
+            justify=tk.LEFT,
+            wraplength=1100,
+        ).pack(fill=tk.X, padx=6, pady=(0, 4))
+
+        body = ttk.PanedWindow(audio_tab, orient=tk.HORIZONTAL)
+        body.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
+        left = ttk.Frame(body)
+        right = ttk.Frame(body)
+        body.add(left, weight=3)
+        body.add(right, weight=2)
+
+        columns = ("kind", "code", "source", "offset", "length", "notes")
+        self.audio_tree = ttk.Treeview(left, columns=columns, show="headings", selectmode="browse")
+        headings = {
+            "kind": "Kind",
+            "code": "Code / label",
+            "source": "Source",
+            "offset": "Offset",
+            "length": "Bytes",
+            "notes": "Notes",
+        }
+        widths = {"kind": 72, "code": 180, "source": 115, "offset": 78, "length": 70, "notes": 360}
+        for col in columns:
+            self.audio_tree.heading(col, text=headings[col])
+            self.audio_tree.column(col, width=widths[col], anchor="w")
+        yscroll = ttk.Scrollbar(left, orient=tk.VERTICAL, command=self.audio_tree.yview)
+        self.audio_tree.configure(yscrollcommand=yscroll.set)
+        self.audio_tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        left.rowconfigure(0, weight=1)
+        left.columnconfigure(0, weight=1)
+        self.audio_tree.bind("<<TreeviewSelect>>", self.on_audio_select)
+        self.audio_tree.bind("<Double-1>", lambda _event: self.play_selected_audio())
+
+        ttk.Label(right, text="Selected audio").pack(anchor="w")
+        ttk.Label(right, textvariable=self.audio_info_var, justify=tk.LEFT, wraplength=420).pack(fill=tk.X, pady=(4, 8))
+        ttk.Label(right, text="Hex preview").pack(anchor="w")
+        self.audio_hex_text = tk.Text(right, height=24, width=58, wrap="none")
+        self.audio_hex_text.pack(fill=tk.BOTH, expand=True)
+
+        self.refresh_audio_atlas()
+
+    def refresh_audio_atlas(self) -> None:
+        if not hasattr(self, "audio_tree"):
+            return
+        self.audio_items = build_audio_atlas(self.project)
+        self.audio_item_by_key = {item.key: item for item in self.audio_items}
+        self.audio_tree.delete(*self.audio_tree.get_children())
+        for item in self.audio_items:
+            source = f"{item.archive_name}:{item.resource_index:03d}"
+            offset = f"0x{item.offset:04X}" if item.offset is not None else "-"
+            code = item.label
+            self.audio_tree.insert("", tk.END, iid=item.key, values=(item.kind, code, source, offset, item.length, item.notes))
+        self.audio_info_var.set(f"Found {len(self.audio_items)} audio entries.")
+        self.audio_hex_text.delete("1.0", tk.END)
+
+    def on_audio_select(self, _event=None) -> None:
+        selection = self.audio_tree.selection() if hasattr(self, "audio_tree") else ()
+        self.audio_selected_key = selection[0] if selection else None
+        item = self.audio_item_by_key.get(self.audio_selected_key or "")
+        if item is None:
+            return
+        source = f"{item.archive_name}:{item.resource_index:03d}"
+        lines = [
+            f"{item.label}",
+            f"kind: {item.kind}",
+            f"source: {source}, type 0x{item.resource_type:02X}",
+            f"offset: {f'0x{item.offset:04X}' if item.offset is not None else '-'}",
+            f"length: {item.length} bytes",
+            "",
+            item.notes,
+        ]
+        if item.kind == "pc-speaker-sfx":
+            lines.append("This is the id used by actor script play_sound/event_07. CAF1 appears to drive the PC speaker, not AdLib SFX.")
+        elif item.kind == "soundcard-music":
+            lines.append("AdLib/Sound Blaster music mix resource with multiple channel streams.")
+        elif item.kind == "soundcard-channel":
+            lines.append("Single channel from an AdLib/Sound Blaster music resource.")
+        elif item.kind == "pc-speaker-music":
+            lines.append("PC-speaker version of a music resource.")
+        else:
+            lines.append("Raw audio/patch resource; export raw for now.")
+        self.audio_info_var.set("\n".join(lines))
+        data = item.data[:512]
+        hex_lines = []
+        for i in range(0, len(data), 16):
+            row = data[i:i+16]
+            hex_part = " ".join(f"{b:02X}" for b in row)
+            ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in row)
+            base = item.offset or 0
+            hex_lines.append(f"{base+i:04X}: {hex_part:<47}  {ascii_part}")
+        self.audio_hex_text.delete("1.0", tk.END)
+        self.audio_hex_text.insert("1.0", "\n".join(hex_lines))
+
+    def _audio_preview_speed(self) -> float:
+        try:
+            return max(0.10, min(8.0, float(self.audio_speed_var.get().replace(",", "."))))
+        except Exception:
+            return DEFAULT_PREVIEW_SPEED
+
+    def _selected_audio_item(self) -> AudioItem | None:
+        if not self.audio_selected_key and hasattr(self, "audio_tree"):
+            selection = self.audio_tree.selection()
+            self.audio_selected_key = selection[0] if selection else None
+        item = self.audio_item_by_key.get(self.audio_selected_key or "")
+        if item is None:
+            messagebox.showinfo("Audio atlas", "Select a sound or music item first.")
+        return item
+
+    def play_selected_audio(self) -> None:
+        item = self._selected_audio_item()
+        if item is None:
+            return
+        try:
+            wav_path = temp_preview_wav(item, speed=self._audio_preview_speed())
+            play_audio_file(wav_path)
+            self.status.set(f"Playing synthesized preview for {item.label}")
+        except Exception as exc:
+            messagebox.showerror("Audio playback failed", str(exc))
+
+    def export_selected_audio_wav(self) -> None:
+        item = self._selected_audio_item()
+        if item is None:
+            return
+        default = (item.label.replace("/", "_").replace(" ", "_").replace(":", "") + ".wav")
+        path = filedialog.asksaveasfilename(defaultextension=".wav", initialfile=default, filetypes=[("WAV audio", "*.wav")])
+        if not path:
+            return
+        try:
+            synthesize_wav(item.data, path, music=item.kind != "pc-speaker-sfx", speed=self._audio_preview_speed())
+            self.status.set(f"Exported WAV preview: {path}")
+        except Exception as exc:
+            messagebox.showerror("WAV export failed", str(exc))
+
+    def export_selected_audio_raw(self) -> None:
+        item = self._selected_audio_item()
+        if item is None:
+            return
+        ext = ".ae_sfx" if item.kind == "pc-speaker-sfx" else (".ae_music" if "music" in item.kind or item.kind in {"pc-speaker-music", "soundcard-channel"} else ".ae_audio")
+        default = item.label.replace("/", "_").replace(" ", "_").replace(":", "") + ext
+        path = filedialog.asksaveasfilename(defaultextension=ext, initialfile=default, filetypes=[("In-game audio bytes", f"*{ext}"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            Path(path).write_bytes(item.data)
+            self.status.set(f"Exported raw in-game audio bytes: {path}")
+        except Exception as exc:
+            messagebox.showerror("Raw export failed", str(exc))
+
+    def export_selected_audio_midi(self) -> None:
+        item = self._selected_audio_item()
+        if item is None:
+            return
+        if item.kind not in {"soundcard-music", "soundcard-channel", "pc-speaker-music"}:
+            if not messagebox.askyesno("MIDI export", "This is not classified as music. Export a rough MIDI transcription anyway?"):
+                return
+        default = item.label.replace("/", "_").replace(" ", "_").replace(":", "") + ".mid"
+        path = filedialog.asksaveasfilename(defaultextension=".mid", initialfile=default, filetypes=[("MIDI file", "*.mid")])
+        if not path:
+            return
+        try:
+            write_midi(item.data, path, speed=self._audio_preview_speed())
+            self.status.set(f"Exported best-effort MIDI: {path}")
+        except Exception as exc:
+            messagebox.showerror("MIDI export failed", str(exc))
 
     def _build_editor_tab(self, editor_tab: ttk.Frame) -> None:
         main = ttk.PanedWindow(editor_tab, orient=tk.HORIZONTAL)
@@ -1723,6 +1921,8 @@ class LevelEditorApp(tk.Tk):
         self.refresh_room_labels()
         self.redraw_room()
         self.redraw_objects_atlas()
+        if hasattr(self, "audio_tree"):
+            self.refresh_audio_atlas()
         self.redraw_tile_palette()
         self.redraw_editor_object_palette()
         self.redraw_decor_palette()
@@ -1736,6 +1936,8 @@ class LevelEditorApp(tk.Tk):
         self.refresh_room_labels()
         self.redraw_room()
         self.redraw_objects_atlas()
+        if hasattr(self, "audio_tree"):
+            self.refresh_audio_atlas()
         self.redraw_tile_palette()
         self.redraw_editor_object_palette()
         self.redraw_decor_palette()
@@ -4890,6 +5092,8 @@ class LevelEditorApp(tk.Tk):
         self.refresh_room_labels()
         self.redraw_room()
         self.redraw_objects_atlas()
+        if hasattr(self, "audio_tree"):
+            self.refresh_audio_atlas()
         self.redraw_tile_palette()
         self.redraw_editor_object_palette()
         self.redraw_decor_palette()
