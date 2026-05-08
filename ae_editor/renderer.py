@@ -162,6 +162,11 @@ class RenderOptions:
     zoom: int = 3
     grid: bool = False
     part_index: int = 0  # 0 = Explorer, 1 = Expert
+    draw_platforms: bool = True
+    draw_puzzle_panels: bool = True
+    draw_actors: bool = True
+    draw_player_start: bool = True
+    control_state_overrides: dict[int, bool] | None = None
 
 
 @dataclass
@@ -224,17 +229,21 @@ class RoomRenderer:
 
             if options.mode == "game":
                 self._draw_conveyor_tiles(image, room)
-                self._draw_platforms(image, room)
-                self._draw_control_records(image, room)
+                if options.draw_platforms:
+                    self._draw_platforms(image, room)
+                self._draw_control_records(image, room, control_state_overrides=options.control_state_overrides)
                 self._draw_puzzle_markers(image, room)
                 self._draw_laser_crystals(image, room)
                 self._draw_visual_objects(image, room, layer="foreground")
-                self._draw_record12_puzzle_panels(image, room)
+                if options.draw_puzzle_panels:
+                    self._draw_record12_puzzle_panels(image, room)
                 self._draw_header_objects(image, room, part.header)
                 self._draw_exit_door(image, room, part.header, part.theme)
                 self._draw_known_extra_pickups(image, room)
-                self._draw_actors(image, part, room, include_hidden=False)
-                self._draw_player_start(image, room, part.header)
+                if options.draw_actors:
+                    self._draw_actors(image, part, room, include_hidden=False)
+                if options.draw_player_start:
+                    self._draw_player_start(image, room, part.header)
             elif options.mode == "payload_debug":
                 self._draw_visual_objects(image, room, layer="background")
                 self._draw_animated_decor(image, room, part.theme)
@@ -335,7 +344,13 @@ class RoomRenderer:
             elif triplet.orientation == "horizontal" and horizontal is not None:
                 self._blit(image, horizontal, x, y)
 
-    def _draw_control_records(self, image: Image.Image, room: Room) -> None:
+    def _draw_control_records(
+        self,
+        image: Image.Image,
+        room: Room,
+        *,
+        control_state_overrides: dict[int, bool] | None = None,
+    ) -> None:
         ceiling_button = self.graphics.sprite("AE000", 39, 0)
         ceiling_pressed = self.graphics.sprite("AE000", 42, 0)
         floor_button = self.graphics.sprite("AE000", 40, 0)
@@ -353,6 +368,8 @@ class RoomRenderer:
             # was treated as an object id.
             sprite = None
             mode = "button"
+            override = None if control_state_overrides is None else control_state_overrides.get(cmd.record.index)
+            pressed = bool(override) if override is not None else bool(arg_b & 0x40)
             if command == 0x00:
                 # Command byte, not position, selects the switch family:
                 #   0 => ceiling button
@@ -360,10 +377,10 @@ class RoomRenderer:
                 # The remaining bytes are trigger/link/state metadata.  Bit 0x40
                 # in arg_b is the first confirmed initial-state bit: use the
                 # pressed artwork but do not reinterpret it as a different type.
-                sprite = ceiling_pressed if (arg_b & 0x40) and ceiling_pressed is not None else ceiling_button
+                sprite = ceiling_pressed if pressed and ceiling_pressed is not None else ceiling_button
                 mode = "ceiling_button"
             elif command == 0x01:
-                sprite = floor_pressed if (arg_b & 0x40) and floor_pressed is not None else floor_button
+                sprite = floor_pressed if pressed and floor_pressed is not None else floor_button
                 mode = "floor_switch"
             elif command == 0x02:
                 # Command 2 goes through the visible trigger renderer in

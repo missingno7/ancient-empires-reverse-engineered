@@ -260,6 +260,101 @@ def _note_to_freq(note: int, octave: int, *, transpose: int = 0) -> float:
     return _midi_to_freq(max(24, min(108, midi)))
 
 
+
+
+def _is_probable_rhythm_stream(stream: bytes, stream_no: int | None = None) -> bool:
+    """Heuristic for the AdLib rhythm/noise voice.
+
+    The third stream in the title music (AE000:054 @0x0397) is dominated by
+    commands like ``1A 01`` and ``1C 01``.  Interpreting those as ordinary
+    melodic notes makes MIDI channel 2 sound wrong.  In the real AdLib driver
+    this is very likely a percussion/rhythm timbre selected through the 5D/6D
+    instrument commands, not a melody voice.
+    """
+    pairs = [(stream[i], stream[i + 1]) for i in range(0, len(stream) - 1, 2)]
+    note_ops = [op for op, _arg in pairs if 1 <= (op & 0x0F) <= 12]
+    if len(note_ops) < 12:
+        return False
+    rhythm_ops = [op for op in note_ops if (op >> 4) == 1 and (op & 0x0F) in {10, 12}]
+    if len(rhythm_ops) / max(1, len(note_ops)) >= 0.65:
+        return True
+    # Fallback: in confirmed music resources the third non-empty channel is the
+    # suspicious rhythm/noise channel.  Keep this weaker than the content test so
+    # single-channel exports are classified by data, not by position alone.
+    if stream_no is not None and stream_no >= 2 and len(set(op & 0x0F for op in note_ops)) <= 3:
+        return True
+    return False
+
+
+def _drum_note_for_op(op: int) -> int:
+    lo = op & 0x0F
+    # General MIDI percussion map on channel 10.  These are only labels for
+    # exported MIDI; the game uses AdLib timbres/noise, not GM drums.
+    if lo == 10:
+        return 42  # closed hi-hat / tick
+    if lo == 12:
+        return 46  # open hi-hat / brighter tick
+    if lo in (5, 6):
+        return 38  # snare-ish accent
+    if lo in (1, 3):
+        return 36  # kick-ish accent
+    return 42
+
+
+def parse_game_audio_drum_stream(
+    data: bytes,
+    *,
+    max_events: int = 2400,
+    music: bool = True,
+    initial_base_ticks: int | None = None,
+) -> list[tuple[int | None, float]]:
+    """Parse a stream as rhythm/percussion events for MIDI/WAV preview.
+
+    This uses the same timing/control commands as the melodic parser, but keeps
+    the original low-nibble note identity so we can map it to GM percussion
+    instead of converting it into a wrong melodic pitch.
+    """
+    events: list[tuple[int | None, float]] = []
+    i = 0
+    base_ticks = initial_base_ticks if initial_base_ticks is not None else _shared_initial_base_ticks([data], music=music)
+    bend_ticks = 0
+    gate_ticks = 6 if music else 2
+    while i + 1 < len(data) and len(events) < max_events:
+        op = data[i]
+        arg = data[i + 1]
+        i += 2
+        if op == 0xFF and arg == 0xFF:
+            break
+        lo = op & 0x0F
+        hi = (op >> 4) & 0x0F
+        if lo == 0x0F:
+            break
+        if lo == 0x0D:
+            if hi == 0:
+                if arg:
+                    gate_ticks = max(1, arg)
+            elif hi in (1, 2):
+                if arg:
+                    delta = (base_ticks * arg + 50) // 100
+                    bend_ticks = delta if hi == 1 else -delta
+                else:
+                    bend_ticks = 0
+            elif hi == 3:
+                gate_ticks = max(1, arg)
+            elif hi == 4:
+                base_ticks = max(1, arg * 4)
+                bend_ticks = 0
+            continue
+        if lo == 0x0E:
+            events.append((42, max(0.015, min(0.25, gate_ticks * TICK_SECONDS))))
+            continue
+        dur = _duration_from_game_code(arg, base_ticks, bend_ticks)
+        if lo == 0:
+            events.append((None, dur))
+        elif 1 <= lo <= 12:
+            events.append((_drum_note_for_op(op), dur))
+    return events or [(42, 0.08)]
+
 def _leading_base_ticks(stream: bytes) -> int | None:
     """Return a leading 4D tempo/base-duration command, if present.
 
@@ -443,10 +538,17 @@ def synthesize_wav(data: bytes, path: Path | str, *, music: bool = False, speed:
     streams = _streams_from_resource(data)
     pitch_table = _pc_pitch_table(data)
     shared_base = _shared_initial_base_ticks(streams, music=music)
-    parsed = [
-        parse_note_pairs(s, music=music, max_events=1800 if music else 200, pitch_table=pitch_table, initial_base_ticks=shared_base)
-        for s in streams
-    ]
+    parsed = []
+    rhythm_flags: list[bool] = []
+    for stream_no, s in enumerate(streams):
+        is_rhythm = music and _is_probable_rhythm_stream(s, stream_no if len(streams) > 1 else None)
+        rhythm_flags.append(is_rhythm)
+        if is_rhythm:
+            drum_events = parse_game_audio_drum_stream(s, max_events=1800, music=music, initial_base_ticks=shared_base)
+            # Store drum note numbers in the freq slot with a negative sentinel.
+            parsed.append([((-float(note) if note is not None else None), dur) for note, dur in drum_events])
+        else:
+            parsed.append(parse_note_pairs(s, music=music, max_events=1800 if music else 200, pitch_table=pitch_table, initial_base_ticks=shared_base))
     speed = max(0.10, min(8.0, float(speed)))
     parsed = [[(freq, dur / speed) for freq, dur in events] for events in parsed]
     # Render/mix streams.
@@ -460,13 +562,25 @@ def synthesize_wav(data: bytes, path: Path | str, *, music: bool = False, speed:
         for freq, dur in events:
             n = max(1, int(dur * SAMPLE_RATE))
             if freq is not None:
-                step = 2.0 * math.pi * freq / SAMPLE_RATE
-                for j in range(n):
-                    if t + j >= total_samples:
-                        break
-                    # Square-ish tone is closer to PC speaker than sine.
-                    mix[t+j] += amp * (1.0 if math.sin(phase) >= 0 else -1.0)
-                    phase += step
+                if freq < 0:
+                    # Rhythm channel: short deterministic noise/tick burst, then
+                    # silence for the rest of the event duration so timing stays
+                    # intact but it does not become a wrong sustained melody.
+                    burst = min(n, max(1, int(0.035 * SAMPLE_RATE)))
+                    seed = int(-freq) * 1103515245 + track_no * 12345
+                    for j in range(burst):
+                        if t + j >= total_samples:
+                            break
+                        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+                        mix[t+j] += amp * (1.0 if (seed & 0x4000) else -1.0)
+                else:
+                    step = 2.0 * math.pi * freq / SAMPLE_RATE
+                    for j in range(n):
+                        if t + j >= total_samples:
+                            break
+                        # Square-ish tone is closer to PC speaker than sine.
+                        mix[t+j] += amp * (1.0 if math.sin(phase) >= 0 else -1.0)
+                        phase += step
             t += n
             if t >= total_samples:
                 break
@@ -510,24 +624,38 @@ def write_midi(data: bytes, path: Path | str, *, speed: float = DEFAULT_PREVIEW_
     tempo_track += b"\x00\xFF\x2F\x00"
     tracks.append(bytes(tempo_track))
 
+    shared_base = _shared_initial_base_ticks(streams, music=True)
     for stream_no, stream in enumerate(streams[:8]):
-        shared_base = _shared_initial_base_ticks(streams, music=True)
-        events = parse_game_audio_stream(stream, max_events=1800, music=True, initial_base_ticks=shared_base)
+        is_rhythm = _is_probable_rhythm_stream(stream, stream_no if len(streams) > 1 else None)
         speed = max(0.10, min(8.0, float(speed)))
-        events = [(freq, dur / speed) for freq, dur in events]
-        channel = stream_no % 16
+        channel = 9 if is_rhythm else (stream_no % 15)
         tr = bytearray()
-        tr += b"\x00" + bytes([0xC0 | channel, 80 if stream_no else 24])  # program change
+        if not is_rhythm:
+            tr += b"\x00" + bytes([0xC0 | channel, 80 if stream_no else 24])  # program change
         pending_delta = 0
-        for freq, dur in events:
-            ticks = max(1, int(dur * ticks_per_quarter * 2))
-            if freq is None:
-                pending_delta += ticks
-                continue
-            note = _pitch_to_midi(freq)
-            tr += _midi_varlen(pending_delta) + bytes([0x90 | channel, note, 80])
-            tr += _midi_varlen(ticks) + bytes([0x80 | channel, note, 0])
-            pending_delta = 0
+        if is_rhythm:
+            drum_events = parse_game_audio_drum_stream(stream, max_events=1800, music=True, initial_base_ticks=shared_base)
+            for note, dur in [(note, dur / speed) for note, dur in drum_events]:
+                ticks = max(1, int(dur * ticks_per_quarter * 2))
+                if note is None:
+                    pending_delta += ticks
+                    continue
+                audible_ticks = max(1, min(ticks, int(ticks_per_quarter * 0.10)))
+                tr += _midi_varlen(pending_delta) + bytes([0x90 | channel, note, 80])
+                tr += _midi_varlen(audible_ticks) + bytes([0x80 | channel, note, 0])
+                pending_delta = max(0, ticks - audible_ticks)
+        else:
+            events = parse_game_audio_stream(stream, max_events=1800, music=True, initial_base_ticks=shared_base)
+            events = [(freq, dur / speed) for freq, dur in events]
+            for freq, dur in events:
+                ticks = max(1, int(dur * ticks_per_quarter * 2))
+                if freq is None:
+                    pending_delta += ticks
+                    continue
+                note = _pitch_to_midi(freq)
+                tr += _midi_varlen(pending_delta) + bytes([0x90 | channel, note, 80])
+                tr += _midi_varlen(ticks) + bytes([0x80 | channel, note, 0])
+                pending_delta = 0
         tr += _midi_varlen(pending_delta) + b"\xFF\x2F\x00"
         tracks.append(bytes(tr))
 

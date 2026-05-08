@@ -74,8 +74,10 @@ def platform_xy(p: PlatformTriplet) -> tuple[int, int]:
 # a better EXE-derived value later without touching GUI/overlay code.
 PLATFORM_TRAVEL_DISTANCE = 48
 PLATFORM_TRAVEL_BY_FLAGS: dict[int, tuple[int, int]] = {
-    0x40: (-PLATFORM_TRAVEL_DISTANCE, 0),
-    0x60: (+PLATFORM_TRAVEL_DISTANCE, 0),
+    # Playtesting confirmed the horizontal flag families move opposite to the
+    # original editor-side "left/right" labels.
+    0x40: (+PLATFORM_TRAVEL_DISTANCE, 0),
+    0x60: (-PLATFORM_TRAVEL_DISTANCE, 0),
     0x80: (0, +PLATFORM_TRAVEL_DISTANCE),
     0xA0: (0, -PLATFORM_TRAVEL_DISTANCE),
 }
