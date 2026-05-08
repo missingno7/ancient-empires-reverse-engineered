@@ -292,6 +292,8 @@ class LevelEditorApp(tk.Tk):
         self.sim_actor_debug_var = tk.StringVar(value="")
         self.sim_selected_actor_index: int | None = None
         self.sim_room_link_buttons: dict[str, ttk.Button] = {}
+        self.sim_sound_items_by_id: dict[int, AudioItem] | None = None
+        self.sim_last_sound_status: str = ""
 
         for spec in OVERLAY_OPTION_SPECS:
             setattr(self, spec.var_name, tk.BooleanVar(value=spec.default))
@@ -683,6 +685,7 @@ class LevelEditorApp(tk.Tk):
             return
         self.audio_items = build_audio_atlas(self.project)
         self.audio_item_by_key = {item.key: item for item in self.audio_items}
+        self.sim_sound_items_by_id = None
         self.audio_tree.delete(*self.audio_tree.get_children())
         for item in self.audio_items:
             source = f"{item.archive_name}:{item.resource_index:03d}"
@@ -765,7 +768,7 @@ class LevelEditorApp(tk.Tk):
         if not path:
             return
         try:
-            synthesize_wav(item.data, path, music=item.kind != "pc-speaker-sfx", speed=self._audio_preview_speed())
+            synthesize_wav(item.data, path, music=item.kind != "pc-speaker-sfx", speed=self._audio_preview_speed(), audio_kind=item.kind)
             self.status.set(f"Exported WAV preview: {path}")
         except Exception as exc:
             messagebox.showerror("WAV export failed", str(exc))
@@ -797,7 +800,7 @@ class LevelEditorApp(tk.Tk):
         if not path:
             return
         try:
-            write_midi(item.data, path, speed=self._audio_preview_speed())
+            write_midi(item.data, path, speed=self._audio_preview_speed(), audio_kind=item.kind)
             self.status.set(f"Exported best-effort MIDI: {path}")
         except Exception as exc:
             messagebox.showerror("MIDI export failed", str(exc))
@@ -2191,14 +2194,55 @@ class LevelEditorApp(tk.Tk):
         if self.sim_running_var.get():
             sim = self.ensure_simulation()
             sim.step()
+            self._play_pending_simulation_sounds(sim)
             self.redraw_simulation()
         self._schedule_simulation_tick()
+
+    def _simulation_sound_items(self) -> dict[int, AudioItem]:
+        if self.sim_sound_items_by_id is None:
+            if not self.audio_items:
+                self.audio_items = build_audio_atlas(self.project)
+                self.audio_item_by_key = {item.key: item for item in self.audio_items}
+            self.sim_sound_items_by_id = {
+                item.sound_id: item
+                for item in self.audio_items
+                if item.kind == "pc-speaker-sfx" and item.sound_id is not None
+            }
+        return self.sim_sound_items_by_id
+
+    def _play_simulation_sound(self, sound_id: int) -> None:
+        item = self._simulation_sound_items().get(sound_id)
+        if item is None:
+            self.sim_last_sound_status = f"play_sound 0x{sound_id:02X}: no CAF1 SFX stream found"
+            return
+        try:
+            # Simulation must use the same CAF1/PC-speaker SFX item shown in
+            # the audio atlas.  Do not treat actor VM play_sound ids as music
+            # resources; the atlas item already contains the exact split stream
+            # for the requested id from AE000:065.
+            wav_path = temp_preview_wav(item, speed=DEFAULT_PREVIEW_SPEED)
+            play_audio_file(wav_path)
+            self.sim_last_sound_status = f"play_sound 0x{sound_id:02X} -> {item.label}"
+        except Exception as exc:
+            self.sim_last_sound_status = f"play_sound 0x{sound_id:02X} failed: {exc}"
+
+    def _play_pending_simulation_sounds(self, sim: RoomSimulation) -> None:
+        sound_ids = sim.drain_pending_sound_ids()
+        if not sound_ids:
+            return
+        # Real PC speaker is effectively a single output.  When several script
+        # instructions fire during one simulated actor tick, the last command is
+        # the audible state after the VM burst.  This avoids spawning a stack of
+        # overlapping preview processes from one tick.
+        self._play_simulation_sound(sound_ids[-1])
 
     def step_simulation_once(self) -> None:
         sim = self.ensure_simulation()
         sim.step()
+        self._play_pending_simulation_sounds(sim)
         self.redraw_simulation()
-        self.status.set(f"Simulation tick {sim.tick_count}.")
+        suffix = f" ({self.sim_last_sound_status})" if self.sim_last_sound_status else ""
+        self.status.set(f"Simulation tick {sim.tick_count}.{suffix}")
 
     def redraw_simulation(self) -> None:
         if not hasattr(self, "sim_canvas"):

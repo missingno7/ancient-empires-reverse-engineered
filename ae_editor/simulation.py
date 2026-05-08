@@ -183,6 +183,7 @@ class RoomSimulation:
             for record in parse_actor_table(self.part)
         }
         self.control_states: dict[int, bool] = {}
+        self.pending_sound_ids: list[int] = []
         self.green_blocks: list[SimGreenBlockState] = []
         self.runtime_tiles_cache: list[int] | None = None
         self._load_initial_controls()
@@ -221,6 +222,18 @@ class RoomSimulation:
         self.control_states[index] = not self.control_states[index]
         self._invalidate_runtime_tiles()
         return self.control_states[index]
+
+    def drain_pending_sound_ids(self) -> list[int]:
+        """Return and clear play_sound ids emitted by actor scripts.
+
+        Opcode 0x07 is the actor VM's play_sound/event_07 instruction.  Keep
+        it as a side-effect queue so the GUI can play the matching CAF1/PC
+        speaker SFX exactly once per simulated execution, instead of replaying
+        sounds every redraw.
+        """
+        out = self.pending_sound_ids
+        self.pending_sound_ids = []
+        return out
 
     def emit_symbol(self, symbol_id: int) -> bool:
         changed = False
@@ -319,7 +332,9 @@ class RoomSimulation:
                 actor.pc = self._loop_next_pc(actor, pc, op, ins.args[0], ins.args[1], next_pc)
                 continue
             if op == 0x07:
-                actor.last_event = f"sound {ins.args[0]}"
+                sound_id = ins.args[0]
+                self.pending_sound_ids.append(sound_id)
+                actor.last_event = f"sound {sound_id}"
                 actor.pc = next_pc
                 continue
             if op == 0x08:

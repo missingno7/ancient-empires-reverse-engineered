@@ -13,8 +13,30 @@ import wave
 
 from .constants import GAME_MASTER_TICK_HZ
 
-SAMPLE_RATE = 22050
+SAMPLE_RATE = 44100
 PIT_HZ = 1193180.0
+# Type-0x44 PC-speaker resources begin with a 16-bit table. For AE000:065 the
+# game uses that table as play_sound(id) relative offsets (CAF1 adds DS:175E).
+# The same low-level PC-speaker routines also reference DS:17FC as a pitch
+# divisor base for direct ?E effects. We do not yet have a proven copy routine
+# that maps the offset table 1:1 to the normal-note divisor table, so normal
+# note opcodes use the EXE's semitone-style preview mapping below.
+#
+# Keep the original first word for ?E arithmetic: user listening confirmed that
+# direct-pitch SFX such as 0x00/0x01 are closer with this base than when the
+# 0x0096 word is skipped. The 0x0096 value is also the sound-0 stream offset.
+PC_SPEAKER_STREAM_START = 0x0096
+PC_SPEAKER_DIRECT_BASE_DIVISOR = 0x0096
+PC_SPEAKER_OFFSET_OR_DIVISOR_TABLE = [
+    150, 1560, 1592, 1638, 1662, 1788, 1888, 2064, 2160, 2196,
+    2452, 2532, 2730, 2952, 3048, 3184, 3276, 3324, 3370, 3424,
+    3576, 3776, 3904, 4128, 4320, 4392, 4904, 5064, 5460, 5904,
+    6096, 6368, 6552, 6648, 6740, 6848, 7152, 7552, 7808, 8256,
+    8640, 8784, 9808, 10128, 10920, 11808, 12192, 12736, 13104, 13296,
+    13480, 13696, 14304, 15104, 15616, 16512, 17280, 17568, 19616, 20256,
+    21840, 23616, 24384, 25472, 26208, 26592, 26960, 27392, 28608, 30208,
+    31232, 33024, 34560, 35136, 39232,
+]
 # The EXE advances audio from the same master timer/update cadence used by the
 # game loop.  Keep preview speed adjustable, but make 1.0x the measured clock.
 DEFAULT_PREVIEW_SPEED = 1.0
@@ -240,26 +262,66 @@ def _midi_to_freq(midi: float) -> float:
 
 
 def _direct_pitch_to_freq(pitch: int, octave_shift: int = 0) -> float | None:
-    """Approximate the game's direct-pitch opcode 0x?E.
+    """Decode the CAF1/PC-speaker direct-pitch opcode ``0x?E``.
 
-    The real PC-speaker routine calculates a PIT divisor from a base value and
-    the operand byte.  This preview keeps the important property: larger pitch
-    bytes generally sound higher and the high nibble of the opcode shifts the
-    octave/timer range.
+    Disassembly of the one-shot SFX routine at ``CA9B`` shows this is not a
+    MIDI-like pitch value.  The engine does roughly::
+
+        dx = arg << 7
+        dx = -dx
+        ax = WORD PTR ds:17fc + dx
+        ax >>= high_nibble
+        program PIT channel 2 with ax
+
+    The subtraction deliberately wraps in 16-bit arithmetic.  That wraparound is
+    what makes effects such as 0x06/0x07/0x0E sound buzzy/noise-like instead of
+    like a clean ascending musical scale.
     """
     if pitch <= 0:
         return None
-    midi = 28 + (pitch / 3.0) + octave_shift * 6
-    return _midi_to_freq(max(24, min(108, midi)))
+    base_divisor = PC_SPEAKER_DIRECT_BASE_DIVISOR
+    divisor = (base_divisor - ((pitch & 0xFF) << 7)) & 0xFFFF
+    divisor >>= max(0, octave_shift)
+    if divisor < 2:
+        return None
+    freq = PIT_HZ / divisor
+    # The real PIT/speaker path does not turn high divisors into rests.  Keep
+    # ultrasonic/high-frequency events so the preview aliases/clicks instead of
+    # adding artificial gaps into effects such as the jump arcs.
+    return freq if freq >= 20.0 else None
 
 
-def _note_to_freq(note: int, octave: int, *, transpose: int = 0) -> float:
-    # note is 1..12.  Sound-card playback uses a semitone-style mapping
-    # (see c384: note-1 + octave*12).  PC-speaker playback uses a PIT divisor
-    # table, but the musical preview intentionally keeps the same chromatic
-    # mapping so WAV/MIDI exports stay recognizable.
+def _chromatic_note_to_freq(note: int, octave: int, *, transpose: int = 0) -> float:
+    # EXE sound-card path C384 uses note-1 + octave*12. This also gives the
+    # closest listening match for normal-note CAF1 effects so far. The tempting
+    # alternative was to treat the AE000:065 offset table as the PC-speaker PIT
+    # divisor table, but that makes 0x03/switch-like motifs and PC-speaker music
+    # several octaves too high. Until the real DS:17FC initialization is proven,
+    # keep normal notes data-driven by the bytecode but use this stable mapping.
     midi = NOTE_BASE_MIDI + octave * 12 + (note - 1) + transpose
     return _midi_to_freq(max(24, min(108, midi)))
+
+
+def _offset_table_note_to_freq(note: int, octave_shift: int) -> float | None:
+    # Diagnostic only: this follows C988 literally *if* DS:17FC points at the
+    # AE000:065 leading table. User listening shows this is not the right default
+    # for previews, but keeping it available helps future verification.
+    if not (1 <= note <= len(PC_SPEAKER_OFFSET_OR_DIVISOR_TABLE)):
+        return None
+    divisor = PC_SPEAKER_OFFSET_OR_DIVISOR_TABLE[note - 1] >> max(0, octave_shift)
+    if divisor < 2:
+        return None
+    freq = PIT_HZ / divisor
+    return freq if freq >= 20.0 else None
+
+
+def _note_to_freq(note: int, octave: int, *, transpose: int = 0, pitch_mode: str = "musical") -> float | None:
+    if pitch_mode == "offset_table_pc_speaker":
+        return _offset_table_note_to_freq(note, octave)
+    # "soundcard", "pc_speaker", and "musical" intentionally share the
+    # chromatic preview mapping for normal bytecode notes. Direct ?E events are
+    # still rendered through the PIT-style arithmetic in _direct_pitch_to_freq.
+    return _chromatic_note_to_freq(note, octave, transpose=transpose)
 
 
 
@@ -327,7 +389,8 @@ def parse_game_audio_drum_stream(
     i = 0
     base_ticks = initial_base_ticks if initial_base_ticks is not None else _shared_initial_base_ticks([data], music=music)
     bend_ticks = 0
-    gate_ticks = 6 if music else 2
+    gate_ticks = 6
+    gate_enabled = True
     effect_ticks = 1
     while i + 1 < len(data) and len(events) < max_events:
         op = data[i]
@@ -342,7 +405,10 @@ def parse_game_audio_drum_stream(
         if lo == 0x0D:
             if hi == 0:
                 if arg:
+                    gate_enabled = True
                     gate_ticks = max(1, arg)
+                else:
+                    gate_enabled = False
             elif hi in (1, 2):
                 if arg:
                     delta = (base_ticks * arg + 50) // 100
@@ -414,13 +480,42 @@ def _duration_from_game_code(code: int, base_ticks: int, bend_ticks: int = 0) ->
     return _seconds_from_ticks(_duration_ticks_from_game_code(code, base_ticks, bend_ticks))
 
 
+def _append_pc_speaker_event(
+    events: list[tuple[float | None, float]],
+    freq: float | None,
+    ticks: int,
+    *,
+    gate_enabled: bool,
+    gate_ticks: int,
+) -> None:
+    """Append a note/rest while modelling the EXE's per-channel gate cutoff.
+
+    Routine C3DB stores the full event duration in ``[si+179c]``.  During the
+    timer update, routine C27D calls C6B9 (speaker off) near the end of a note
+    unless command ``0D 00`` has disabled this gate behaviour.  The comparison
+    is against ``gate_ticks - 1`` remaining ticks, so the tail becomes silent.
+
+    This matters for short SFX: the bytecode can describe a long logical note
+    but only keep the PC speaker audible for the attack portion.
+    """
+    ticks = max(1, ticks)
+    if freq is None or not gate_enabled or gate_ticks <= 1 or ticks <= gate_ticks:
+        events.append((freq, _seconds_from_ticks(ticks)))
+        return
+    audible = max(1, ticks - (gate_ticks - 1))
+    silent = ticks - audible
+    events.append((freq, _seconds_from_ticks(audible)))
+    if silent:
+        events.append((None, _seconds_from_ticks(silent)))
+
+
 def _pc_pitch_table(data: bytes) -> list[float | None]:
-    # Kept for compatibility with older exports.  Most AE music/SFX streams do
-    # not carry their own pitch table; the EXE has the divisor table.
+    # Kept for compatibility with older exports.  Skip the 0x0096 stream-start
+    # marker so table[0] corresponds to the real C988 note 1 divisor, 0x0618.
     table: list[float | None] = []
-    if len(data) < 0x96 or _u16(data, 0) != 0x0096:
+    if len(data) < 0x96 or _u16(data, 0) != PC_SPEAKER_STREAM_START:
         return table
-    for i in range(75):
+    for i in range(1, 75):
         div = _u16(data, i * 2)
         if div < 16:
             table.append(None)
@@ -452,6 +547,7 @@ def parse_game_audio_stream(
     music: bool = False,
     initial_base_ticks: int | None = None,
     transpose: int = 0,
+    pitch_mode: str = "pc_speaker",
 ) -> list[tuple[float | None, float]]:
     """Parse the Ancient Empires audio bytecode into preview note events.
 
@@ -472,7 +568,8 @@ def parse_game_audio_stream(
     i = 0
     base_ticks = initial_base_ticks if initial_base_ticks is not None else _shared_initial_base_ticks([data], music=music)
     bend_ticks = 0
-    gate_ticks = 6 if music else 2
+    gate_ticks = 6
+    gate_enabled = True
     effect_ticks = 1
     while i + 1 < len(data) and len(events) < max_events:
         op = data[i]
@@ -491,7 +588,10 @@ def parse_game_audio_stream(
                 # sustain/gate flag. arg=0 is common in music and means the
                 # channel should not be cut short by the normal gate counter.
                 if arg:
+                    gate_enabled = True
                     gate_ticks = max(1, arg)
+                else:
+                    gate_enabled = False
             elif hi in (1, 2):
                 # Tempo bend as percentage of current base duration.  Routine
                 # c567/ca51 computes round(base*arg/100), positive for 1D and
@@ -522,11 +622,17 @@ def parse_game_audio_stream(
             dur = _seconds_from_ticks(effect_ticks)
             events.append((_direct_pitch_to_freq(arg, hi), dur))
             continue
-        dur = _duration_from_game_code(arg, base_ticks, bend_ticks)
+        ticks = _duration_ticks_from_game_code(arg, base_ticks, bend_ticks)
         if lo == 0:
-            events.append((None, dur))
+            events.append((None, _seconds_from_ticks(ticks)))
         elif 1 <= lo <= 12:
-            events.append((_note_to_freq(lo, hi, transpose=transpose), dur))
+            _append_pc_speaker_event(
+                events,
+                _note_to_freq(lo, hi, transpose=transpose, pitch_mode=pitch_mode),
+                ticks,
+                gate_enabled=gate_enabled,
+                gate_ticks=gate_ticks,
+            )
     if not events:
         events = [(440.0, 0.08), (None, 0.08), (660.0, 0.08)]
     return events
@@ -540,8 +646,15 @@ def parse_note_pairs(
     max_events: int = 800,
     pitch_table: list[float | None] | None = None,
     initial_base_ticks: int | None = None,
+    pitch_mode: str = "pc_speaker",
 ) -> list[tuple[float | None, float]]:
-    return parse_game_audio_stream(data, max_events=max_events, music=music, initial_base_ticks=initial_base_ticks)
+    return parse_game_audio_stream(
+        data,
+        max_events=max_events,
+        music=music,
+        initial_base_ticks=initial_base_ticks,
+        pitch_mode=pitch_mode,
+    )
 
 
 @dataclass
@@ -553,6 +666,7 @@ class _AudioStreamCursor:
     time_ticks: int = 0
     ended: bool = False
     gate_ticks: int = 6
+    gate_enabled: bool = True
     effect_ticks: int = 1
     events: list[tuple[float | None, float]] = field(default_factory=list)
 
@@ -562,6 +676,7 @@ def _parse_music_streams_synchronized(
     rhythm_flags: list[bool],
     *,
     max_events: int = 1800,
+    pitch_mode: str = "pc_speaker",
 ) -> list[list[tuple[float | None, float]]]:
     """Parse multi-channel music with the EXE's shared timing state.
 
@@ -601,7 +716,10 @@ def _parse_music_streams_synchronized(
             if lo == 0x0D:
                 if hi == 0:
                     if arg:
+                        cursor.gate_enabled = True
                         cursor.gate_ticks = max(1, arg)
+                    else:
+                        cursor.gate_enabled = False
                 elif hi in (1, 2):
                     if arg:
                         delta = (base_ticks * arg + 50) // 100
@@ -626,10 +744,19 @@ def _parse_music_streams_synchronized(
                 if lo == 0:
                     freq = None
                 elif 1 <= lo <= 12:
-                    freq = -float(_drum_note_for_op(op)) if cursor.rhythm else _note_to_freq(lo, hi)
+                    freq = -float(_drum_note_for_op(op)) if cursor.rhythm else _note_to_freq(lo, hi, pitch_mode=pitch_mode)
                 else:
                     continue
-            cursor.events.append((freq, _seconds_from_ticks(ticks)))
+            if lo == 0x0E or freq is None or freq < 0:
+                cursor.events.append((freq, _seconds_from_ticks(ticks)))
+            else:
+                _append_pc_speaker_event(
+                    cursor.events,
+                    freq,
+                    ticks,
+                    gate_enabled=cursor.gate_enabled,
+                    gate_ticks=cursor.gate_ticks,
+                )
             cursor.time_ticks += max(1, ticks)
             total_events += 1
             emitted = True
@@ -654,16 +781,30 @@ def _events_to_absolute_spans(events: list[tuple[float | None, float]], rate: fl
     return spans
 
 
-def synthesize_wav(data: bytes, path: Path | str, *, music: bool = False, speed: float = DEFAULT_PREVIEW_SPEED) -> Path:
+def _pitch_mode_from_audio_kind(kind: str | None, data: bytes, *, music: bool) -> str:
+    if kind in {"soundcard-music", "soundcard-channel"}:
+        return "soundcard"
+    if kind in {"pc-speaker-sfx", "pc-speaker-music"}:
+        return "musical"
+    # Auto mode for old callers.  Full AdLib/SoundBlaster resources can be
+    # recognized by their channel-offset header.  Raw channel chunks cannot,
+    # so the GUI passes the selected item kind explicitly.
+    if music and looks_like_soundcard_music(data):
+        return "soundcard"
+    return "musical"
+
+
+def synthesize_wav(data: bytes, path: Path | str, *, music: bool = False, speed: float = DEFAULT_PREVIEW_SPEED, audio_kind: str | None = None) -> Path:
     path = Path(path)
     streams = _streams_from_resource(data)
     pitch_table = _pc_pitch_table(data)
+    pitch_mode = _pitch_mode_from_audio_kind(audio_kind, data, music=music)
     shared_base = _shared_initial_base_ticks(streams, music=music)
     rhythm_flags: list[bool] = []
     for stream_no, s in enumerate(streams):
         rhythm_flags.append(music and _is_probable_rhythm_stream(s, stream_no if len(streams) > 1 else None))
     if music and len(streams) > 1:
-        parsed = _parse_music_streams_synchronized(streams, rhythm_flags, max_events=1800)
+        parsed = _parse_music_streams_synchronized(streams, rhythm_flags, max_events=1800, pitch_mode=pitch_mode)
     else:
         parsed = []
         for stream_no, s in enumerate(streams):
@@ -673,7 +814,14 @@ def synthesize_wav(data: bytes, path: Path | str, *, music: bool = False, speed:
                 # Store drum note numbers in the freq slot with a negative sentinel.
                 parsed.append([((-float(note) if note is not None else None), dur) for note, dur in drum_events])
             else:
-                parsed.append(parse_note_pairs(s, music=music, max_events=1800 if music else 200, pitch_table=pitch_table, initial_base_ticks=shared_base))
+                parsed.append(parse_note_pairs(
+                    s,
+                    music=music,
+                    max_events=1800 if music else 5000,
+                    pitch_table=pitch_table,
+                    initial_base_ticks=shared_base,
+                    pitch_mode=pitch_mode,
+                ))
     speed = max(0.10, min(8.0, float(speed)))
     parsed = [[(freq, dur / speed) for freq, dur in events] for events in parsed]
     # Render/mix streams.
@@ -698,6 +846,10 @@ def synthesize_wav(data: bytes, path: Path | str, *, music: bool = False, speed:
                         seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
                         mix[start + j] += amp * (1.0 if (seed & 0x4000) else -1.0)
                 else:
+                    # Keep oscillator phase continuous across adjacent events.
+                    # Resetting phase at every 1-tick ?E event made SFX 0x00
+                    # develop audible zipper/click breaks that are stronger than
+                    # the in-game PC speaker impression.
                     step = 2.0 * math.pi * freq / SAMPLE_RATE
                     for j in range(n):
                         if start + j >= total_samples:
@@ -747,7 +899,7 @@ def _midi_event_ticks(events: list[tuple[float | None, float]], ticks_per_second
     return out
 
 
-def write_midi(data: bytes, path: Path | str, *, speed: float = DEFAULT_PREVIEW_SPEED) -> Path:
+def write_midi(data: bytes, path: Path | str, *, speed: float = DEFAULT_PREVIEW_SPEED, audio_kind: str | None = None) -> Path:
     path = Path(path)
     streams = _streams_from_resource(data)
     ticks_per_quarter = 96
@@ -758,13 +910,14 @@ def write_midi(data: bytes, path: Path | str, *, speed: float = DEFAULT_PREVIEW_
     tempo_track += b"\x00\xFF\x2F\x00"
     tracks.append(bytes(tempo_track))
 
+    pitch_mode = _pitch_mode_from_audio_kind(audio_kind, data, music=True)
     shared_base = _shared_initial_base_ticks(streams, music=True)
     rhythm_flags = [
         _is_probable_rhythm_stream(stream, stream_no if len(streams) > 1 else None)
         for stream_no, stream in enumerate(streams)
     ]
     if len(streams) > 1:
-        parsed_streams = _parse_music_streams_synchronized(streams, rhythm_flags, max_events=1800)
+        parsed_streams = _parse_music_streams_synchronized(streams, rhythm_flags, max_events=1800, pitch_mode=pitch_mode)
     else:
         parsed_streams = []
         for stream_no, stream in enumerate(streams):
@@ -772,7 +925,13 @@ def write_midi(data: bytes, path: Path | str, *, speed: float = DEFAULT_PREVIEW_
                 drum_events = parse_game_audio_drum_stream(stream, max_events=1800, music=True, initial_base_ticks=shared_base)
                 parsed_streams.append([((-float(note) if note is not None else None), dur) for note, dur in drum_events])
             else:
-                parsed_streams.append(parse_game_audio_stream(stream, max_events=1800, music=True, initial_base_ticks=shared_base))
+                parsed_streams.append(parse_game_audio_stream(
+                    stream,
+                    max_events=1800,
+                    music=True,
+                    initial_base_ticks=shared_base,
+                    pitch_mode=pitch_mode,
+                ))
     speed = max(0.10, min(8.0, float(speed)))
     parsed_streams = [[(freq, dur / speed) for freq, dur in events] for events in parsed_streams]
     ticks_per_second = ticks_per_quarter * 2
@@ -830,4 +989,4 @@ def temp_preview_wav(item: AudioItem, *, speed: float = DEFAULT_PREVIEW_SPEED) -
     temp_dir.mkdir(parents=True, exist_ok=True)
     safe = f"{item.kind}_{item.archive_name}_{item.resource_index}_{item.sound_id if item.sound_id is not None else 'res'}"
     path = temp_dir / f"{safe}.wav"
-    return synthesize_wav(item.data, path, music=item.kind != "pc-speaker-sfx", speed=speed)
+    return synthesize_wav(item.data, path, music=item.kind != "pc-speaker-sfx", speed=speed, audio_kind=item.kind)
