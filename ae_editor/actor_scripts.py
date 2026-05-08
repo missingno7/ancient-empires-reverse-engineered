@@ -43,6 +43,7 @@ class ActorPathSegment:
     duration: int
     timing_opcode: int | None
     timing_rel: int | None
+    timing_target: int | None = None
 
     @property
     def frame_delta(self) -> int:
@@ -68,10 +69,10 @@ class ActorPathSegment:
     @property
     def label(self) -> str:
         op = "--" if self.timing_opcode is None else f"{self.timing_opcode:02X}"
-        rel = "" if self.timing_rel is None else f" rel={self.timing_rel:+d}"
+        target = "" if self.timing_target is None else f" target=0x{self.timing_target:04X}"
         return (
             f"move dx={self.dx:+d} dy={self.dy:+d} ×{self.duration} "
-            f"frame+={self.frame_delta} variant={self.variant_bit} loop_op={op}{rel}"
+            f"frame+={self.frame_delta} variant={self.variant_bit} loop_op={op}{target}"
         )
 
     @property
@@ -233,15 +234,15 @@ def _decode_command(data: bytes, pc: int) -> ActorScriptCommand:
         label = "yield/end_tick"
     elif opcode == 0x01 and len(raw) >= 3:
         rel = _s16(b(1), b(2))
-        label = f"jump rel={rel:+d} -> {_relative_target(pc, len(raw), rel):04X}"
+        label = f"jump -> 0x{_relative_target(pc, len(raw), rel):04X}"
     elif opcode == 0x02 and len(raw) >= 3:
         rel = _s16(b(1), b(2))
-        label = f"call rel={rel:+d} -> {_relative_target(pc, len(raw), rel):04X}"
+        label = f"call -> 0x{_relative_target(pc, len(raw), rel):04X}"
     elif opcode == 0x03:
         label = "return saved_pc"
     elif opcode in {0x04, 0x05, 0x06} and len(raw) >= 5:
         rel = _s16(b(1), b(2))
-        label = f"loop_{chr(ord('A') + opcode - 4)} rel={rel:+d} -> {_relative_target(pc, len(raw), rel):04X} count={_u16(b(3), b(4))}"
+        label = f"loop_{chr(ord('A') + opcode - 4)} -> 0x{_relative_target(pc, len(raw), rel):04X} count={_u16(b(3), b(4))}"
     elif opcode in {0x07, 0x08, 0x09} and len(raw) >= 2:
         label = f"event_{opcode:02X} id={b(1)}"
     elif opcode in {0x0A, 0x0B} and len(raw) >= 2:
@@ -303,6 +304,7 @@ def _folded_move_segment(data: bytes, pc: int) -> tuple[ActorPathSegment, int] |
     duration = 1
     timing_opcode: int | None = None
     timing_rel: int | None = None
+    timing_target: int | None = None
     next_pc = pc + 4
     if next_pc < len(data) and data[next_pc] in {0x04, 0x05, 0x06} and next_pc + 4 < len(data):
         rel = _s16(data[next_pc + 1], data[next_pc + 2])
@@ -313,9 +315,10 @@ def _folded_move_segment(data: bytes, pc: int) -> tuple[ActorPathSegment, int] |
         if target == pc:
             timing_opcode = data[next_pc]
             timing_rel = rel
+            timing_target = target
             duration = max(1, _u16(data[next_pc + 3], data[next_pc + 4]))
             next_pc += 5
-    return ActorPathSegment(pc, dx, dy, packed, duration, timing_opcode, timing_rel), next_pc
+    return ActorPathSegment(pc, dx, dy, packed, duration, timing_opcode, timing_rel, timing_target), next_pc
 
 
 def _branch_successors(data: bytes, pc: int, cmd: ActorScriptCommand) -> list[int]:

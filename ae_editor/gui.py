@@ -312,6 +312,8 @@ class LevelEditorApp(tk.Tk):
         self.audio_selected_key: str | None = None
         self.audio_info_var = tk.StringVar(value="")
         self.audio_speed_var = tk.StringVar(value=f"{DEFAULT_PREVIEW_SPEED:g}")
+        self.tree_bold_font = tkfont.nametofont("TkDefaultFont").copy()
+        self.tree_bold_font.configure(weight="bold")
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_window)
@@ -604,6 +606,7 @@ class LevelEditorApp(tk.Tk):
         self.sim_script_tree.column("instruction", width=178, anchor="w")
         self.sim_script_tree.tag_configure("current", background="#ffe58a")
         self.sim_script_tree.tag_configure("entry", foreground="#56606b")
+        self.sim_script_tree.tag_configure("branch_target", font=self.tree_bold_font)
         script_scroll = ttk.Scrollbar(actor_frame, orient=tk.VERTICAL, command=self.sim_script_tree.yview)
         self.sim_script_tree.configure(yscrollcommand=script_scroll.set)
         self.sim_script_tree.grid(row=2, column=0, sticky="nsew")
@@ -1109,6 +1112,7 @@ class LevelEditorApp(tk.Tk):
         self.scripting_instruction_tree.column("instruction", width=510, stretch=True)
         instruction_scroll = ttk.Scrollbar(instruction_frame, orient=tk.VERTICAL, command=self.scripting_instruction_tree.yview)
         self.scripting_instruction_tree.configure(yscrollcommand=instruction_scroll.set)
+        self.scripting_instruction_tree.tag_configure("branch_target", font=self.tree_bold_font)
         self.scripting_instruction_tree.grid(row=0, column=0, sticky="nsew")
         instruction_scroll.grid(row=0, column=1, sticky="ns")
         instruction_frame.rowconfigure(0, weight=1)
@@ -1610,6 +1614,16 @@ class LevelEditorApp(tk.Tk):
                 labels[ins.offset] = ins.label
         return labels
 
+    def _branch_targets_in_view(self, instructions: list[Instruction]) -> set[int]:
+        offsets = {ins.offset for ins in instructions}
+        targets: set[int] = set()
+        label_offsets = {ins.label: ins.offset for ins in instructions if ins.label}
+        for ins in instructions:
+            target = label_offsets.get(ins.target_label) if ins.target_label else ins.target_offset()
+            if target in offsets:
+                targets.add(target)
+        return targets
+
     def _script_instruction_display(self, ins: Instruction, labels: dict[int, str]) -> str:
         if ins.opcode in {0x13, 0x14, 0x15, 0x16} and ins.args:
             return self._runtime_condition_text(ins.opcode, ins.args[0])
@@ -1680,9 +1694,17 @@ class LevelEditorApp(tk.Tk):
         selected_iid = current[0] if current else ""
         self.scripting_instruction_tree.delete(*self.scripting_instruction_tree.get_children())
         labels = self._script_labels_by_offset()
+        branch_targets = self._branch_targets_in_view(self.scripting_instructions)
         for idx, ins in enumerate(self.scripting_instructions):
             text = self._script_instruction_display(ins, labels)
-            self.scripting_instruction_tree.insert("", tk.END, iid=str(idx), values=(self._format_actor_addr(ins.offset), text))
+            tags = ("branch_target",) if ins.offset in branch_targets else ()
+            self.scripting_instruction_tree.insert(
+                "",
+                tk.END,
+                iid=str(idx),
+                values=(self._format_actor_addr(ins.offset), text),
+                tags=tags,
+            )
         if selected_iid and selected_iid in self.scripting_instruction_tree.get_children():
             self.scripting_instruction_tree.selection_set(selected_iid)
             self.scripting_instruction_tree.focus(selected_iid)
@@ -2363,15 +2385,27 @@ class LevelEditorApp(tk.Tk):
         entry_marks.setdefault(actor.restart_script_offset, []).append("restart")
         entry_marks.setdefault(actor.pc, []).append("next")
         current_iid: str | None = None
+        rows: list[tuple[int, Instruction | None, str]] = []
         for pc in self._simulation_actor_script_addresses(sim, actor):
             try:
                 ins = decode_instruction(sim.actor_block, pc)
-                text = instruction_to_dsl(ins, {})
+                text = self._script_instruction_display(ins, {})
             except ActorScriptError as exc:
+                ins = None
                 text = str(exc)
+            rows.append((pc, ins, text))
+
+        branch_targets = self._branch_targets_in_view([ins for _pc, ins, _text in rows if ins is not None])
+        for pc, _ins, text in rows:
             marks = entry_marks.get(pc, [])
             iid = f"pc-{pc:04X}"
-            tags = ["current"] if pc == actor.pc else (["entry"] if marks else [])
+            tags: list[str] = []
+            if pc == actor.pc:
+                tags.append("current")
+            if pc in branch_targets:
+                tags.append("branch_target")
+            elif marks:
+                tags.append("entry")
             self.sim_script_tree.insert(
                 "",
                 tk.END,

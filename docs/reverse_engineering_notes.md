@@ -122,6 +122,25 @@ The Simulation tab steps the researched actor VM subset and dispatches
 `emit_symbol` into the green-block mechanism. Actor bytecode stores
 `emit_symbol` ids zero-based; raw `0` emits displayed `S1`.
 
+### Audio
+
+Audio previews are decoded from type `0x44` resources. The confirmed
+`play_sound`/CAF1 bank is `AE000:065`; disassembly around `0xCAF1` shows that
+it drives the PC speaker through PIT channel 2 (`0x42`) and port `0x61`.
+
+Both music and one-shot SFX use the same low-nibble bytecode families:
+`1..12` note/rest timing, `D` controls, `E` direct pitch/effect tone and `F`
+terminator/loop. The music path uses global base-duration and bend words
+(`ds:1788`/`ds:178a`) shared by all channels; the CAF1 one-shot path mirrors
+that with `ds:1e84`/`ds:1e86`. MIDI/WAV export therefore needs to parse
+multi-channel music on one shared timeline instead of decoding each channel in
+isolation, otherwise later `4D`/`1D`/`2D` commands make channels drift.
+
+For CAF1 direct-pitch effects (`?E` opcodes), `3D xx` sets the effect duration
+word (`ds:1e92`). CAF1 initializes it to `1`, so streams such as `play_sound`
+`0x06` and `0x07` are intentionally one-master-tick bursts, not sustained
+notes. This produces a noisier/raspier PC-speaker effect when previewed.
+
 ## Still Unknown
 
 - Complete terrain and theme visual lookup tables.

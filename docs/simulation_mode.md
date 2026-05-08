@@ -60,6 +60,11 @@ instruction the simulator will execute on the next actor tick. This makes the
 Step button useful for tracing branches, random guards and projectile launch
 scripts one instruction/tick at a time.
 
+Branch instructions in the actor debugger and Script space UI are displayed
+with absolute script-space targets such as `target=0x0242`; the bytecode still
+stores those as relative jumps internally. Rows that are jump/call/loop
+destinations are highlighted with a bold tree row.
+
 Actor opcode `set_actor_mode_0` wakes the target actor so its stored PC can run
 again. Actor opcode `set_actor_mode_1` puts the target back to sleep. This is
 the observed stock pattern for projectile/secondary actors: spitters wake a

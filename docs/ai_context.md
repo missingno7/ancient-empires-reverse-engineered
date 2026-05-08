@@ -25,6 +25,8 @@ complete game engine or a fully proven level writer.
   panels.
 - `ae_editor/actor_dsl.py` and `ae_editor/actor_scripts.py`: actor bytecode
   decoding and editable DSL/instruction views.
+- `ae_editor/audio.py`: audio atlas, PC-speaker/Sound Blaster stream parsing,
+  WAV preview and MIDI export.
 
 ## Behavioral Invariants To Preserve
 
@@ -43,6 +45,9 @@ complete game engine or a fully proven level writer.
   toggle between their two positions after the full sequence is entered.
 - The recovered master timer is about `236.69 Hz`; actor scripts advance every
   24 master ticks, so Simulation defaults to 10 ticks/s (`~9.862` exact).
+- Audio bytecode uses the same master tick. Multi-channel music shares global
+  base-duration/bend state across streams, and CAF1 direct `?E` PC-speaker
+  effects default to one-tick bursts unless `3D` overrides the effect length.
 - Render layering uses the EXE compact3 split: high-bit visual decor before
   terrain, rope markers inside the terrain tile pass, low-bit visual decor
   after terrain, then gameplay objects and actors.

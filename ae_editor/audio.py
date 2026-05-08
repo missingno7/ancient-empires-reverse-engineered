@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import math
 import os
@@ -163,7 +163,7 @@ def build_audio_atlas(project) -> list[AudioItem]:
                         offset=off,
                         length=len(chunk),
                         data=chunk,
-                        notes=f"CAF1/event_07 play_sound stream from confirmed AE000:065 SFX bank; {len(offsets)} ids found. Disassembly shows CAF1 uses the PC-speaker path (PIT channel 2 / ports 0x42 and 0x61); no separate AdLib/Sound Blaster SFX bank has been confirmed yet.",
+                        notes=f"CAF1/event_07 play_sound stream from confirmed AE000:065 SFX bank; {len(offsets)} ids found. Disassembly shows CAF1 uses the PC-speaker path (PIT channel 2 / ports 0x42 and 0x61); direct ?E effect tones use the one-tick CAF1 effect-duration state unless a 3D command overrides it.",
                     ))
             elif looks_like_pc_speaker_resource(data):
                 items.append(AudioItem(
@@ -232,6 +232,7 @@ def build_audio_atlas(project) -> list[AudioItem]:
 
 NOTE_BASE_MIDI = 36  # C2-ish; the original uses a PIT divisor table, this is the closest musical preview.
 TICK_SECONDS = 1.0 / GAME_MASTER_TICK_HZ
+MAX_EVENT_SECONDS = 1.50
 
 
 def _midi_to_freq(midi: float) -> float:
@@ -302,6 +303,13 @@ def _drum_note_for_op(op: int) -> int:
     return 42
 
 
+def _seconds_from_ticks(ticks: int, *, minimum: float | None = None) -> float:
+    seconds = max(1, ticks) * TICK_SECONDS
+    if minimum is not None:
+        seconds = max(minimum, seconds)
+    return min(MAX_EVENT_SECONDS, seconds)
+
+
 def parse_game_audio_drum_stream(
     data: bytes,
     *,
@@ -320,6 +328,7 @@ def parse_game_audio_drum_stream(
     base_ticks = initial_base_ticks if initial_base_ticks is not None else _shared_initial_base_ticks([data], music=music)
     bend_ticks = 0
     gate_ticks = 6 if music else 2
+    effect_ticks = 1
     while i + 1 < len(data) and len(events) < max_events:
         op = data[i]
         arg = data[i + 1]
@@ -341,13 +350,13 @@ def parse_game_audio_drum_stream(
                 else:
                     bend_ticks = 0
             elif hi == 3:
-                gate_ticks = max(1, arg)
+                effect_ticks = max(1, arg)
             elif hi == 4:
                 base_ticks = max(1, arg * 4)
                 bend_ticks = 0
             continue
         if lo == 0x0E:
-            events.append((42, max(0.015, min(0.25, gate_ticks * TICK_SECONDS))))
+            events.append((42, _seconds_from_ticks(effect_ticks)))
             continue
         dur = _duration_from_game_code(arg, base_ticks, bend_ticks)
         if lo == 0:
@@ -389,14 +398,7 @@ def _shared_initial_base_ticks(streams: list[bytes], *, music: bool) -> int:
     return (0x64 if music else 0x4B) * 4
 
 
-def _duration_from_game_code(code: int, base_ticks: int, bend_ticks: int = 0) -> float:
-    """Decode the second byte roughly like routine C9A4.
-
-    If bit 7 is set the low seven bits are a direct duration.  Otherwise the
-    current base duration is shifted by bits 0..2; bit 3 makes it dotted.  The
-    real engine also has gate/staccato state bits; for preview we keep the full
-    audible duration.
-    """
+def _duration_ticks_from_game_code(code: int, base_ticks: int, bend_ticks: int = 0) -> int:
     if code & 0x80:
         ticks = code & 0x7F
     else:
@@ -404,7 +406,12 @@ def _duration_from_game_code(code: int, base_ticks: int, bend_ticks: int = 0) ->
         ticks >>= (code & 0x07)
         if code & 0x08:
             ticks += max(1, ticks // 2)
-    return max(0.015, min(1.50, ticks * TICK_SECONDS))
+    return max(1, ticks)
+
+
+def _duration_from_game_code(code: int, base_ticks: int, bend_ticks: int = 0) -> float:
+    """Decode the second byte roughly like routines C3DB/C9A4."""
+    return _seconds_from_ticks(_duration_ticks_from_game_code(code, base_ticks, bend_ticks))
 
 
 def _pc_pitch_table(data: bytes) -> list[float | None]:
@@ -466,6 +473,7 @@ def parse_game_audio_stream(
     base_ticks = initial_base_ticks if initial_base_ticks is not None else _shared_initial_base_ticks([data], music=music)
     bend_ticks = 0
     gate_ticks = 6 if music else 2
+    effect_ticks = 1
     while i + 1 < len(data) and len(events) < max_events:
         op = data[i]
         arg = data[i + 1]
@@ -494,8 +502,9 @@ def parse_game_audio_stream(
                 else:
                     bend_ticks = 0
             elif hi == 3:
-                # Per-channel auxiliary value in music, short gate in SFX.
-                gate_ticks = max(1, arg)
+                # Direct-pitch/effect note length.  CAF1 initializes this to
+                # one master tick; commands such as 3D xx override it.
+                effect_ticks = max(1, arg)
             elif hi == 4:
                 # Global base duration: arg * 4 ticks.
                 base_ticks = max(1, arg * 4)
@@ -510,7 +519,7 @@ def parse_game_audio_stream(
                 pass
             continue
         if lo == 0x0E:
-            dur = max(0.015, min(0.25, gate_ticks * TICK_SECONDS))
+            dur = _seconds_from_ticks(effect_ticks)
             events.append((_direct_pitch_to_freq(arg, hi), dur))
             continue
         dur = _duration_from_game_code(arg, base_ticks, bend_ticks)
@@ -534,34 +543,148 @@ def parse_note_pairs(
 ) -> list[tuple[float | None, float]]:
     return parse_game_audio_stream(data, max_events=max_events, music=music, initial_base_ticks=initial_base_ticks)
 
+
+@dataclass
+class _AudioStreamCursor:
+    stream_no: int
+    data: bytes
+    rhythm: bool
+    pc: int = 0
+    time_ticks: int = 0
+    ended: bool = False
+    gate_ticks: int = 6
+    effect_ticks: int = 1
+    events: list[tuple[float | None, float]] = field(default_factory=list)
+
+
+def _parse_music_streams_synchronized(
+    streams: list[bytes],
+    rhythm_flags: list[bool],
+    *,
+    max_events: int = 1800,
+) -> list[list[tuple[float | None, float]]]:
+    """Parse multi-channel music with the EXE's shared timing state.
+
+    Music command handlers around C3DB/C501 use global base-duration and bend
+    words (`ds:1788`/`ds:178a`) while each channel keeps its own stream pointer
+    and remaining note length.  Parsing each stream independently lets later
+    `4D`/`1D`/`2D` changes affect only one exported channel, which makes MIDI
+    tracks drift.  This small event scheduler processes the earliest channel
+    next, matching the game loop's channel order for tied times.
+    """
+    base_ticks = _shared_initial_base_ticks(streams, music=True)
+    bend_ticks = 0
+    cursors = [
+        _AudioStreamCursor(i, stream, rhythm_flags[i] if i < len(rhythm_flags) else False)
+        for i, stream in enumerate(streams)
+    ]
+
+    total_events = 0
+    while total_events < max_events * max(1, len(cursors)):
+        active = [cursor for cursor in cursors if not cursor.ended]
+        if not active:
+            break
+        cursor = min(active, key=lambda item: (item.time_ticks, item.stream_no))
+        emitted = False
+        while cursor.pc + 1 < len(cursor.data):
+            op = cursor.data[cursor.pc]
+            arg = cursor.data[cursor.pc + 1]
+            cursor.pc += 2
+            if op == 0xFF and arg == 0xFF:
+                cursor.ended = True
+                break
+            lo = op & 0x0F
+            hi = (op >> 4) & 0x0F
+            if lo == 0x0F:
+                cursor.ended = True
+                break
+            if lo == 0x0D:
+                if hi == 0:
+                    if arg:
+                        cursor.gate_ticks = max(1, arg)
+                elif hi in (1, 2):
+                    if arg:
+                        delta = (base_ticks * arg + 50) // 100
+                        bend_ticks = delta if hi == 1 else -delta
+                    else:
+                        bend_ticks = 0
+                elif hi == 3:
+                    cursor.effect_ticks = max(1, arg)
+                elif hi == 4:
+                    base_ticks = max(1, arg * 4)
+                    bend_ticks = 0
+                continue
+
+            if lo == 0x0E:
+                ticks = cursor.effect_ticks
+                if cursor.rhythm:
+                    freq: float | None = -42.0
+                else:
+                    freq = _direct_pitch_to_freq(arg, hi)
+            else:
+                ticks = _duration_ticks_from_game_code(arg, base_ticks, bend_ticks)
+                if lo == 0:
+                    freq = None
+                elif 1 <= lo <= 12:
+                    freq = -float(_drum_note_for_op(op)) if cursor.rhythm else _note_to_freq(lo, hi)
+                else:
+                    continue
+            cursor.events.append((freq, _seconds_from_ticks(ticks)))
+            cursor.time_ticks += max(1, ticks)
+            total_events += 1
+            emitted = True
+            break
+        if not emitted and cursor.pc + 1 >= len(cursor.data):
+            cursor.ended = True
+
+    for cursor in cursors:
+        if not cursor.events:
+            cursor.events.append((-42.0, 0.08) if cursor.rhythm else (440.0, 0.08))
+    return [cursor.events for cursor in cursors]
+
+
+def _events_to_absolute_spans(events: list[tuple[float | None, float]], rate: float) -> list[tuple[float | None, int, int]]:
+    spans: list[tuple[float | None, int, int]] = []
+    pos = 0.0
+    for freq, dur in events:
+        start = int(round(pos * rate))
+        pos += max(0.0, dur)
+        end = max(start + 1, int(round(pos * rate)))
+        spans.append((freq, start, end))
+    return spans
+
+
 def synthesize_wav(data: bytes, path: Path | str, *, music: bool = False, speed: float = DEFAULT_PREVIEW_SPEED) -> Path:
     path = Path(path)
     streams = _streams_from_resource(data)
     pitch_table = _pc_pitch_table(data)
     shared_base = _shared_initial_base_ticks(streams, music=music)
-    parsed = []
     rhythm_flags: list[bool] = []
     for stream_no, s in enumerate(streams):
-        is_rhythm = music and _is_probable_rhythm_stream(s, stream_no if len(streams) > 1 else None)
-        rhythm_flags.append(is_rhythm)
-        if is_rhythm:
-            drum_events = parse_game_audio_drum_stream(s, max_events=1800, music=music, initial_base_ticks=shared_base)
-            # Store drum note numbers in the freq slot with a negative sentinel.
-            parsed.append([((-float(note) if note is not None else None), dur) for note, dur in drum_events])
-        else:
-            parsed.append(parse_note_pairs(s, music=music, max_events=1800 if music else 200, pitch_table=pitch_table, initial_base_ticks=shared_base))
+        rhythm_flags.append(music and _is_probable_rhythm_stream(s, stream_no if len(streams) > 1 else None))
+    if music and len(streams) > 1:
+        parsed = _parse_music_streams_synchronized(streams, rhythm_flags, max_events=1800)
+    else:
+        parsed = []
+        for stream_no, s in enumerate(streams):
+            is_rhythm = rhythm_flags[stream_no]
+            if is_rhythm:
+                drum_events = parse_game_audio_drum_stream(s, max_events=1800, music=music, initial_base_ticks=shared_base)
+                # Store drum note numbers in the freq slot with a negative sentinel.
+                parsed.append([((-float(note) if note is not None else None), dur) for note, dur in drum_events])
+            else:
+                parsed.append(parse_note_pairs(s, music=music, max_events=1800 if music else 200, pitch_table=pitch_table, initial_base_ticks=shared_base))
     speed = max(0.10, min(8.0, float(speed)))
     parsed = [[(freq, dur / speed) for freq, dur in events] for events in parsed]
     # Render/mix streams.
     total_duration = max(sum(d for _f, d in ev) for ev in parsed)
-    total_samples = max(1, int(total_duration * SAMPLE_RATE))
+    total_samples = max(1, int(round(total_duration * SAMPLE_RATE)) + 1)
     mix = [0.0] * total_samples
     for track_no, events in enumerate(parsed):
-        t = 0
         phase = 0.0
         amp = 0.22 / max(1, len(parsed))
-        for freq, dur in events:
-            n = max(1, int(dur * SAMPLE_RATE))
+        for freq, start, end in _events_to_absolute_spans(events, SAMPLE_RATE):
+            n = end - start
             if freq is not None:
                 if freq < 0:
                     # Rhythm channel: short deterministic noise/tick burst, then
@@ -570,20 +693,19 @@ def synthesize_wav(data: bytes, path: Path | str, *, music: bool = False, speed:
                     burst = min(n, max(1, int(0.035 * SAMPLE_RATE)))
                     seed = int(-freq) * 1103515245 + track_no * 12345
                     for j in range(burst):
-                        if t + j >= total_samples:
+                        if start + j >= total_samples:
                             break
                         seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
-                        mix[t+j] += amp * (1.0 if (seed & 0x4000) else -1.0)
+                        mix[start + j] += amp * (1.0 if (seed & 0x4000) else -1.0)
                 else:
                     step = 2.0 * math.pi * freq / SAMPLE_RATE
                     for j in range(n):
-                        if t + j >= total_samples:
+                        if start + j >= total_samples:
                             break
                         # Square-ish tone is closer to PC speaker than sine.
-                        mix[t+j] += amp * (1.0 if math.sin(phase) >= 0 else -1.0)
+                        mix[start + j] += amp * (1.0 if math.sin(phase) >= 0 else -1.0)
                         phase += step
-            t += n
-            if t >= total_samples:
+            if end >= total_samples:
                 break
     with wave.open(str(path), "wb") as wf:
         wf.setnchannels(1)
@@ -614,6 +736,17 @@ def _pitch_to_midi(freq: float | None, fallback_pitch: int = 60) -> int:
     return max(24, min(108, midi))
 
 
+def _midi_event_ticks(events: list[tuple[float | None, float]], ticks_per_second: float) -> list[tuple[float | None, int, int]]:
+    out: list[tuple[float | None, int, int]] = []
+    pos = 0.0
+    for freq, dur in events:
+        start = int(round(pos * ticks_per_second))
+        pos += max(0.0, dur)
+        end = max(start + 1, int(round(pos * ticks_per_second)))
+        out.append((freq, start, end))
+    return out
+
+
 def write_midi(data: bytes, path: Path | str, *, speed: float = DEFAULT_PREVIEW_SPEED) -> Path:
     path = Path(path)
     streams = _streams_from_resource(data)
@@ -626,38 +759,49 @@ def write_midi(data: bytes, path: Path | str, *, speed: float = DEFAULT_PREVIEW_
     tracks.append(bytes(tempo_track))
 
     shared_base = _shared_initial_base_ticks(streams, music=True)
+    rhythm_flags = [
+        _is_probable_rhythm_stream(stream, stream_no if len(streams) > 1 else None)
+        for stream_no, stream in enumerate(streams)
+    ]
+    if len(streams) > 1:
+        parsed_streams = _parse_music_streams_synchronized(streams, rhythm_flags, max_events=1800)
+    else:
+        parsed_streams = []
+        for stream_no, stream in enumerate(streams):
+            if rhythm_flags[stream_no]:
+                drum_events = parse_game_audio_drum_stream(stream, max_events=1800, music=True, initial_base_ticks=shared_base)
+                parsed_streams.append([((-float(note) if note is not None else None), dur) for note, dur in drum_events])
+            else:
+                parsed_streams.append(parse_game_audio_stream(stream, max_events=1800, music=True, initial_base_ticks=shared_base))
+    speed = max(0.10, min(8.0, float(speed)))
+    parsed_streams = [[(freq, dur / speed) for freq, dur in events] for events in parsed_streams]
+    ticks_per_second = ticks_per_quarter * 2
     for stream_no, stream in enumerate(streams[:8]):
-        is_rhythm = _is_probable_rhythm_stream(stream, stream_no if len(streams) > 1 else None)
-        speed = max(0.10, min(8.0, float(speed)))
+        is_rhythm = rhythm_flags[stream_no]
         channel = 9 if is_rhythm else (stream_no % 15)
         tr = bytearray()
         if not is_rhythm:
             tr += b"\x00" + bytes([0xC0 | channel, 80 if stream_no else 24])  # program change
-        pending_delta = 0
+        last_tick = 0
         if is_rhythm:
-            drum_events = parse_game_audio_drum_stream(stream, max_events=1800, music=True, initial_base_ticks=shared_base)
-            for note, dur in [(note, dur / speed) for note, dur in drum_events]:
-                ticks = max(1, int(dur * ticks_per_quarter * 2))
-                if note is None:
-                    pending_delta += ticks
-                    continue
-                audible_ticks = max(1, min(ticks, int(ticks_per_quarter * 0.10)))
-                tr += _midi_varlen(pending_delta) + bytes([0x90 | channel, note, 80])
-                tr += _midi_varlen(audible_ticks) + bytes([0x80 | channel, note, 0])
-                pending_delta = max(0, ticks - audible_ticks)
-        else:
-            events = parse_game_audio_stream(stream, max_events=1800, music=True, initial_base_ticks=shared_base)
-            events = [(freq, dur / speed) for freq, dur in events]
-            for freq, dur in events:
-                ticks = max(1, int(dur * ticks_per_quarter * 2))
+            for freq, start, end in _midi_event_ticks(parsed_streams[stream_no], ticks_per_second):
                 if freq is None:
-                    pending_delta += ticks
+                    continue
+                note = int(-freq) if freq < 0 else _pitch_to_midi(freq)
+                audible_ticks = max(1, min(end - start, int(ticks_per_quarter * 0.10)))
+                tr += _midi_varlen(start - last_tick) + bytes([0x90 | channel, note, 80])
+                tr += _midi_varlen(audible_ticks) + bytes([0x80 | channel, note, 0])
+                last_tick = start + audible_ticks
+        else:
+            for freq, start, end in _midi_event_ticks(parsed_streams[stream_no], ticks_per_second):
+                if freq is None:
                     continue
                 note = _pitch_to_midi(freq)
-                tr += _midi_varlen(pending_delta) + bytes([0x90 | channel, note, 80])
-                tr += _midi_varlen(ticks) + bytes([0x80 | channel, note, 0])
-                pending_delta = 0
-        tr += _midi_varlen(pending_delta) + b"\xFF\x2F\x00"
+                tr += _midi_varlen(start - last_tick) + bytes([0x90 | channel, note, 80])
+                tr += _midi_varlen(end - start) + bytes([0x80 | channel, note, 0])
+                last_tick = end
+        track_end = _midi_event_ticks(parsed_streams[stream_no], ticks_per_second)[-1][2] if parsed_streams[stream_no] else last_tick
+        tr += _midi_varlen(max(0, track_end - last_tick)) + b"\xFF\x2F\x00"
         tracks.append(bytes(tr))
 
     header = b"MThd" + struct.pack(">IHHH", 6, 1 if len(tracks) > 1 else 0, len(tracks), ticks_per_quarter)

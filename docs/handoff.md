@@ -29,6 +29,8 @@ are stored back into `AE001.DAT` as plain uncompressed resources.
 - `ae_editor/gui.py` wires the Tk UI, tabs, object atlas and overlay presets.
   The `Editor` tab is the active editing surface; `Simulation` is the active
   runtime preview; the level viewer stays mostly read-only/diagnostic.
+- `ae_editor/audio.py` handles the Audio atlas, synchronized music parsing,
+  PC-speaker SFX previews and MIDI/WAV export.
 - `docs/level_format.md` is the canonical current format note.
 - `docs/simulation_mode.md` describes the runtime preview model and known gaps.
 - `docs/quick_start.md` and `docs/screenshots.md` are the human-facing entry
@@ -60,6 +62,9 @@ Useful smoke rooms:
 - Level 1, Explorer, room 6: praying mantis `set_actor_mode_0` projectile
   activation and Simulation actor-script debugger.
 - Level 20, both difficulties, room 0: platform and layout divergence.
+- Audio atlas: `AE000:065` `play_sound` ids `0x03`, `0x06`, `0x07` are useful
+  PC-speaker SFX checks; `AE000:050` is a compact multi-channel MIDI export
+  smoke resource.
 
 Regenerate public README/docs screenshots after visible UI changes:
 
