@@ -84,6 +84,22 @@ one-based symbol sequence. Simulation models the observed behavior: correct
 symbols consume the visible sequence, wrong symbols reset it, and completing
 the sequence toggles the block position and restores the sequence.
 
+### Render Layering
+
+Static disassembly of the room draw path around `0x2CE2` shows that the main
+visual compact3 table is rendered in two passes: entries with `code >= 0x80`
+are drawn before terrain, while entries with `code < 0x80` are drawn after
+terrain as foreground decor. Rope-family terrain markers are drawn inside the
+terrain tile loop, not as a later overlay, which lets wall/terrain art cover
+rope artwork according to the same row-major tile order.
+
+Animated decor has two mechanisms in the EXE. Four-byte records at the front of
+the payload directory are handled by routines around `0xD81C/0xD99C`; the
+12-byte table after the visual compact3 table is refreshed by a later animation
+routine around `0xD586`. The static renderer keeps animated decal previews
+behind the normal compact3 foreground pass, but exact per-frame redraw order
+still deserves more capture-based verification.
+
 ### Actor Records
 
 The actor table starts at part offset `0x2754`. Records are 0x20 bytes. The

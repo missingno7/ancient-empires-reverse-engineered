@@ -24,6 +24,14 @@ ROOM_TRAILING_DATA_SIZE = ROOM_RECORD_SIZE - ROOM_TERRAIN_OFFSET - ROOM_TILE_COU
 CELL_SIZE = 8
 RUNTIME_TILE_VISIBLE_X_BIAS = 2
 
+# The main timer cadence recovered from AEPROG.EXE.  Actor scripts advance once
+# per 24 master ticks, so the room simulation defaults to the nearest integer
+# rate while preserving the exact value for docs and future audio/runtime work.
+GAME_MASTER_TICK_HZ = 236.69
+ACTOR_TICK_DIVISOR = 24
+ACTOR_TICK_HZ = GAME_MASTER_TICK_HZ / ACTOR_TICK_DIVISOR
+DEFAULT_SIMULATION_TICK_HZ = round(ACTOR_TICK_HZ)
+
 # The visible room viewport is the 38x18 tile grid. Runtime object coordinates
 # can point slightly outside it; the final blit is clipped by the image bounds,
 # matching what is visible in the game capture.

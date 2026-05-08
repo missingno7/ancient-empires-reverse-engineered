@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ae_editor.project import AncientEmpiresProject
 from ae_editor.room_payload import control_commands, header_exit_door, parse_exe_payload_directory, parse_platform_triplets, visual_compact3_table, laser_crystal_table
@@ -36,6 +39,13 @@ def main() -> None:
         print("  <none>")
     else:
         print(f"  base=@{d.base_offset:02X} dir_count={d.directory_count} selected_index={d.selected_visual_index} variable_start=@{d.variable_start:02X} selected_table_offset={None if d.selected_table_offset is None else '@%02X' % d.selected_table_offset}")
+        if d.directory_count:
+            print("  directory animation records:")
+            for i in range(d.directory_count):
+                off = d.base_offset + 1 + i * 4
+                raw = room.trailing[off:off + 4]
+                if len(raw) == 4:
+                    print(f"    adir[{i:02d}] @{off:02X} x={raw[0]:02X} y={raw[1]:02X} repeat={raw[2]:02X} phase={raw[3]:02X} raw={raw.hex(' ')}")
         print("  length-prefixed control records:")
         for rec in d.control_records:
             print(f"    {rec.label}")

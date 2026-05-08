@@ -11,12 +11,13 @@ import subprocess
 import tempfile
 import wave
 
+from .constants import GAME_MASTER_TICK_HZ
+
 SAMPLE_RATE = 22050
 PIT_HZ = 1193180.0
-# The EXE advances audio from its timer/update loop.  In-game calibration is
-# still approximate, but PC-speaker music currently matches the real game much
-# better around 1.75x than the older 2.25x preview.
-DEFAULT_PREVIEW_SPEED = 1.75
+# The EXE advances audio from the same master timer/update cadence used by the
+# game loop.  Keep preview speed adjustable, but make 1.0x the measured clock.
+DEFAULT_PREVIEW_SPEED = 1.0
 
 @dataclass(frozen=True)
 class AudioItem:
@@ -230,7 +231,7 @@ def build_audio_atlas(project) -> list[AudioItem]:
 
 
 NOTE_BASE_MIDI = 36  # C2-ish; the original uses a PIT divisor table, this is the closest musical preview.
-TICK_SECONDS = 1.0 / 140.0
+TICK_SECONDS = 1.0 / GAME_MASTER_TICK_HZ
 
 
 def _midi_to_freq(midi: float) -> float:

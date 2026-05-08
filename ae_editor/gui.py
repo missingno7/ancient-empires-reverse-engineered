@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageDraw, ImageTk
 
-from .constants import CELL_SIZE, ROOM_COUNT, ROOM_COLUMNS, ROOM_ROWS
+from .constants import ACTOR_TICK_HZ, CELL_SIZE, DEFAULT_SIMULATION_TICK_HZ, ROOM_COUNT, ROOM_COLUMNS, ROOM_ROWS
 from .exporters import export_bank_sheets, export_probe_csv, export_room_previews
 from .overlay import build_room_overlay, control_ref_values, control_targets, decode_control_target
 from .coordinates import LASER_CRYSTAL_DELTA, compact3_xy, control_xy, actor_xy
@@ -286,7 +286,7 @@ class LevelEditorApp(tk.Tk):
         self.sim_after_id: str | None = None
         self.sim_running_var = tk.BooleanVar(value=True)
         self.sim_grid_var = tk.BooleanVar(value=False)
-        self.sim_speed_var = tk.IntVar(value=12)
+        self.sim_speed_var = tk.IntVar(value=DEFAULT_SIMULATION_TICK_HZ)
         self.sim_info_var = tk.StringVar(value="")
         self.sim_detail_var = tk.StringVar(value="")
         self.sim_room_link_buttons: dict[str, ttk.Button] = {}
@@ -534,6 +534,7 @@ class LevelEditorApp(tk.Tk):
         speed_row.pack(fill=tk.X, padx=6, pady=(0, 6))
         ttk.Label(speed_row, text="Ticks/s").pack(side=tk.LEFT)
         ttk.Spinbox(speed_row, from_=1, to=60, textvariable=self.sim_speed_var, width=5, command=self._schedule_simulation_tick).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(speed_row, text=f"game ~{ACTOR_TICK_HZ:.2f}").pack(side=tk.LEFT, padx=(0, 10))
         ttk.Checkbutton(speed_row, text="Grid", variable=self.sim_grid_var, command=self.redraw_simulation).pack(side=tk.LEFT)
 
         ttk.Label(right, textvariable=self.sim_info_var, justify=tk.LEFT, wraplength=260).pack(fill=tk.X, padx=6, pady=(0, 8))
@@ -590,7 +591,7 @@ class LevelEditorApp(tk.Tk):
             text=(
                 "play_sound/event_07 uses the CAF1 PC-speaker sound-effect bank. "
                 "Music has PC-speaker and AdLib/Sound Blaster resource pairs. "
-                "Preview speed is adjustable; PC-speaker music currently matches the game best around 1.75×. "
+                "Preview speed is adjustable; 1.0x uses the recovered 236.69 Hz master tick. "
                 "Raw export preserves the exact in-game bytes; MIDI export is a best-effort transcription for music candidates."
             ),
             justify=tk.LEFT,
@@ -2332,7 +2333,7 @@ class LevelEditorApp(tk.Tk):
             dx, dy = self._simulation_platform_offset(platform) if platform.index in active_platforms else (0, 0)
             image.alpha_composite(sprite, (x + dx, y + dy))
             if dx or dy:
-                draw.line((x + 4, y + 4, x + dx + 4, y + dy + 4), fill=(255, 210, 70, 220), width=2)
+                self._draw_simulation_motion_arrow(draw, x + sprite.width // 2, y + sprite.height // 2, dx, dy)
 
         if active_conveyors:
             parts = [self.project.graphics.sprite("AE000", 38, i) for i in range(24)]
@@ -2372,6 +2373,19 @@ class LevelEditorApp(tk.Tk):
 
     def _simulation_platform_offset(self, platform) -> tuple[int, int]:
         return platform_motion_delta(platform)
+
+    def _draw_simulation_motion_arrow(self, draw: ImageDraw.ImageDraw, x: int, y: int, dx: int, dy: int) -> None:
+        end_x = x + dx
+        end_y = y + dy
+        colour = (255, 210, 70, 230)
+        draw.line((x, y, end_x, end_y), fill=colour, width=2)
+        if abs(dx) >= abs(dy):
+            sign = 1 if dx >= 0 else -1
+            points = ((end_x, end_y), (end_x - sign * 7, end_y - 4), (end_x - sign * 7, end_y + 4))
+        else:
+            sign = 1 if dy >= 0 else -1
+            points = ((end_x, end_y), (end_x - 4, end_y - sign * 7), (end_x + 4, end_y - sign * 7))
+        draw.polygon(points, fill=colour)
 
     def _draw_simulation_green_blocks(self, image: Image.Image, sim: RoomSimulation) -> None:
         panel = self.project.graphics.sprite("AE000", 17, 0)

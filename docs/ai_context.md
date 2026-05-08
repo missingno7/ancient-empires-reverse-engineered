@@ -40,6 +40,11 @@ complete game engine or a fully proven level writer.
   emits `S1`.
 - Green blocks consume the next expected symbol, reset on wrong symbols, and
   toggle between their two positions after the full sequence is entered.
+- The recovered master timer is about `236.69 Hz`; actor scripts advance every
+  24 master ticks, so Simulation defaults to 10 ticks/s (`~9.862` exact).
+- Render layering uses the EXE compact3 split: high-bit visual decor before
+  terrain, rope markers inside the terrain tile pass, low-bit visual decor
+  after terrain, then gameplay objects and actors.
 - Unknown payload bytes should remain inspectable. Do not promote guessed bytes
   into editable objects without evidence.
 

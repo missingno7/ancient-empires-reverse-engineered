@@ -181,7 +181,12 @@ class RoomRenderer:
         (255, 120, 220), (140, 140, 255), (180, 90, 40), (255, 0, 0),
     ]
 
-    ROPE_CODES = {0x80, 0x90, 0xA0, 0xB0, 0xC0}
+    ROPE_SPRITE_RESOURCES = {
+        0x90: 5,  # top
+        0xA0: 6,  # long middle
+        0xB0: 7,  # short middle
+        0xC0: 8,  # bottom
+    }
     CONVEYOR_TILE_CODES = {0x0F: "grey", 0x1F: "teal"}
     ACTOR_FRAME_RUNS = [
         (0x00, 0x17, 0x14),
@@ -217,15 +222,15 @@ class RoomRenderer:
         elif options.mode == "trailing_hex":
             self._render_trailing_probe(image, draw, room)
         else:
-            # Render order: background pass first, then terrain/gameplay, then
-            # the foreground pass.  Moving platforms intentionally sit above
-            # background decor but below foreground decor.
+            # EXE render order recovered from AEPROG around 0x2CE2:
+            # compact3 visuals with code >= 0x80 are drawn before terrain,
+            # terrain and rope markers are walked together in row-major order,
+            # then compact3 visuals with code < 0x80 are drawn as foreground.
             self._draw_background(image, part.theme)
             if options.mode == "game":
-                self._draw_visual_objects(image, room, layer="background")
                 self._draw_animated_decor(image, room, part.theme)
+                self._draw_visual_objects(image, room, layer="background")
             self._draw_terrain_tiles(image, room, part.theme)
-            self._render_rope(image, room)
 
             if options.mode == "game":
                 self._draw_conveyor_tiles(image, room)
@@ -245,8 +250,8 @@ class RoomRenderer:
                 if options.draw_player_start:
                     self._draw_player_start(image, room, part.header)
             elif options.mode == "payload_debug":
-                self._draw_visual_objects(image, room, layer="background")
                 self._draw_animated_decor(image, room, part.theme)
+                self._draw_visual_objects(image, room, layer="background")
                 self._draw_conveyor_tiles(image, room)
                 self._draw_platforms(image, room)
                 self._draw_control_records(image, room)
@@ -280,11 +285,14 @@ class RoomRenderer:
                 self._blit(image, background, xx, yy)
 
     def _draw_terrain_tiles(self, image: Image.Image, room: Room, theme: int) -> None:
-        rope_cells = self._rope_cells(room)
         for y in range(ROOM_ROWS):
             for x in range(ROOM_COLUMNS):
                 code = room.get(x, y)
-                if code == self.SOLID_INVISIBLE_CODE or code in CONVEYOR_PHYSICS_TILE_CODES or (x, y) in rope_cells:
+                if code == self.SOLID_INVISIBLE_CODE or code in CONVEYOR_PHYSICS_TILE_CODES:
+                    continue
+                rope = self._rope_sprite_for_code(code)
+                if rope is not None:
+                    self._blit(image, rope, x * CELL_SIZE + self.ROPE_X_BIAS, y * CELL_SIZE)
                     continue
                 sprite_index = self.code_to_sprite.get(code)
                 if sprite_index is None:
@@ -293,21 +301,11 @@ class RoomRenderer:
                 if sprite is not None:
                     self._blit(image, sprite, x * CELL_SIZE + TERRAIN_ANCHOR.x, y * CELL_SIZE + TERRAIN_ANCHOR.y)
 
-    def _rope_cells(self, room: Room) -> set[tuple[int, int]]:
-        return {(x, y) for y in range(ROOM_ROWS) for x in range(ROOM_COLUMNS) if room.get(x, y) in self.ROPE_CODES}
-
-    def _render_rope(self, image: Image.Image, room: Room) -> None:
-        sprites = {
-            0x90: self.graphics.sprite("AE000", 5, 0),  # top
-            0xA0: self.graphics.sprite("AE000", 6, 0),  # long middle
-            0xB0: self.graphics.sprite("AE000", 7, 0),  # short middle
-            0xC0: self.graphics.sprite("AE000", 8, 0),  # bottom
-        }
-        for y in range(ROOM_ROWS):
-            for x in range(ROOM_COLUMNS):
-                sprite = sprites.get(room.get(x, y))
-                if sprite is not None:
-                    self._blit(image, sprite, x * CELL_SIZE + self.ROPE_X_BIAS, y * CELL_SIZE)
+    def _rope_sprite_for_code(self, code: int) -> Image.Image | None:
+        resource_id = self.ROPE_SPRITE_RESOURCES.get(code)
+        if resource_id is None:
+            return None
+        return self.graphics.sprite("AE000", resource_id, 0)
 
 
     def _draw_conveyor_tiles(self, image: Image.Image, room: Room) -> None:

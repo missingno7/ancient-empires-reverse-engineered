@@ -255,23 +255,31 @@ shape is known: `0x07/0x08/0x09 id`.
 
 ## Render Order
 
-The static renderer currently draws:
+The current static renderer follows the layer rules recovered from AEPROG's
+room draw path around `0x2CE2` where they are known:
 
 1. theme background;
-2. background compact3 visuals;
-3. terrain tiles;
-4. rope special tiles;
-5. conveyors from CV payload records plus terrain physics tile runs;
-6. moving platforms;
-7. control records;
-8. puzzle markers and panels;
-9. laser crystals;
-10. foreground compact3 visuals;
+2. animated decal preview pass used by the editor for static snapshots;
+3. main visual compact3 entries with `code >= 0x80`;
+4. terrain pass, with rope-family tiles drawn inside the same row-major tile
+   loop so later wall/terrain sprites can cover rope artwork;
+5. main visual compact3 entries with `code < 0x80`;
+6. conveyors from CV payload records plus terrain physics tile runs;
+7. moving platforms;
+8. control records;
+9. puzzle markers and panels;
+10. laser crystals/reflectors;
 11. header pickups;
 12. conditional exit door;
 13. known extra pickups;
 14. visible actor records;
 15. player start marker in room 0; the original game does not expose a start-room field.
+
+The compact3 rule is the important broad layering split: high-bit decor is
+background, low-bit decor is foreground. Actor/player previews stay after those
+foreground decors. Animated decor timing is more dynamic in the EXE: the
+after-visual 12-byte table is refreshed by a later animation routine around
+`0xD586`, so exact per-frame z-order is still a research target.
 
 ## MVP Editing
 

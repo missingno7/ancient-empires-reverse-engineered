@@ -74,10 +74,16 @@ python tools/capture_docs_screenshots.py --exe AEPROG.EXE --dat AE000.DAT AE001.
 - Moving platforms are the ten leading 3-byte room trailing payload triplets.
   Travel preview currently uses the shared `platform_motion_delta()` constants:
   `0x40` right, `0x60` left, `0x80` down, `0xA0` up, all 48 px.
+- Simulation defaults to 10 ticks/s. The recovered master timer is about
+  `236.69 Hz`, and actor scripts advance every 24 master ticks
+  (`~9.862 ticks/s`).
 - Tile code `0x07` is invisible support/collision, not visible platform art.
   It is shown through optional canvas overlays in both the viewer and Editor
   tab rather than as a separate renderer mode. Simulation moves runtime `0x07`
   footprints for active platforms and green blocks.
+- Render layering follows the EXE compact3 split: `code >= 0x80` visual decor
+  before terrain, rope tiles inside the terrain pass, `code < 0x80` visual
+  decor after terrain, then gameplay objects/actors.
 - Control targets are typed as `P`, `CV` and `R`. Multiple active controls on
   the same target combine by parity/XOR in Simulation.
 - Wall symbols are one-based `S1..S7`; actor VM `emit_symbol` stores zero-based

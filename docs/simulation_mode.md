@@ -10,6 +10,10 @@ Simulation runs against the current level, difficulty part and room. Switching
 rooms through the top room selector or through the Simulation room-link buttons
 creates a fresh room simulation for that room.
 
+The default speed is 10 simulation ticks/s. AEPROG's recovered master timer is
+approximately `236.69 Hz`; actor scripts advance every 24 master ticks, which
+gives an actor cadence of about `9.862 ticks/s`.
+
 The simulation owns transient state for:
 
 - actor VM program counters, positions, frames, hidden flags and small loop/call
