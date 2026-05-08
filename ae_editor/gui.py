@@ -380,6 +380,7 @@ class LevelEditorApp(tk.Tk):
         self.status_label.bind("<Configure>", lambda event: self.status_label.configure(wraplength=max(200, event.width - 12)))
 
         tabs = ttk.Notebook(self)
+        self.main_tabs = tabs
         tabs.pack(fill=tk.BOTH, expand=True)
 
         level_tab = ttk.Frame(tabs)

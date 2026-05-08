@@ -1,16 +1,37 @@
-# Super Solvers: Challenge of the Ancient Empires research editor
+# Ancient Empires Research Editor
 
-Research viewer/editor for the DOS game *Super Solvers: Challenge of the
-Ancient Empires*.
+A visual level editor, renderer and simulation workbench for *Super Solvers:
+Challenge of the Ancient Empires*.
 
-This repository does not ship original game assets. To run the editor, provide
+![Simulation mode showing a live room preview](docs/assets/editor-simulation.png)
+
+This project is for people who want to inspect, understand and safely experiment
+with the original DOS game's level data. It can decode the game archives, render
+rooms with overlays, edit known room structures, inspect actor bytecode and run a
+room-local Simulation tab where actors, switches, platforms, green blocks and
+room links can be tested before writing anything back.
+
+The repository does not ship original game assets. To run the editor, provide
 your own copies of:
 
 - `AEPROG.EXE`
 - `AE000.DAT`
 - `AE001.DAT`
 
-## Quick Start
+## Start Here
+
+- [Quick Start Guide](docs/quick_start.md): install, launch and first five
+  minutes in the editor.
+- [Screenshot Tour](docs/screenshots.md): visual overview of the main editor
+  tabs.
+- [Simulation Mode](docs/simulation_mode.md): how the runtime preview models
+  controls, actors, platforms, room links and green blocks.
+- [AI Maintainer Context](docs/ai_context.md): compact technical map for future
+  coding agents and maintainers.
+- [Handoff Notes](docs/handoff.md): current state, smoke rooms and good next
+  tasks.
+
+## Quick Launch
 
 ```bash
 python -m pip install -r requirements.txt
@@ -27,6 +48,48 @@ The package entry point is also available after installation:
 ae-level-editor --exe AEPROG.EXE AE000.DAT AE001.DAT
 ```
 
+## What You Can Do
+
+![Level viewer with native overlays](docs/assets/editor-level-viewer.png)
+
+- Browse all 20 levels across Explorer and Expert difficulty parts.
+- Render pixel-art room previews at multiple zoom levels using the palette from
+  `AEPROG.EXE`.
+- Toggle overlays for terrain, controls, actors, hidden objects, room exits,
+  moving platforms, puzzle data and relationship lines.
+- Use the Editor tab to paint terrain, place known objects, drag supported
+  structures and edit properties for understood payload records.
+- Use Simulation to run room-local actor VM stepping, click controls, emit wall
+  symbols, move the player position with right click and navigate through room
+  links.
+- Inspect object atlases, graphics-bank sheets and audio resources.
+- Decode actor script space into instruction rows, branch references and a DSL
+  preview.
+- Export PNG previews, graphics sheets and CSV probe data for regression checks.
+
+## Editing Surface
+
+![Editor tab with object palette and properties](docs/assets/editor-editing.png)
+
+The editor is conservative by design. Confirmed structures get real UI and
+write helpers; uncertain bytes stay visible through overlays, debug views and
+probe exports instead of being guessed into fake objects. Use **Save as...** for
+experiments and keep your original `AE001.DAT` untouched.
+
+Currently understood write paths include terrain, known header object slots,
+room links, controls, symbol markers, green blocks, visual decor, animated
+decor, reflectors, actors, moving-platform triplets and composite conveyor
+belts.
+
+## Script Research
+
+![Script space with actor bytecode and DSL preview](docs/assets/editor-script-space.png)
+
+The Script space tab keeps actor behavior close to the room view. It decodes
+reachable bytecode, shows branch targets and provides focused instruction
+editing for contiguous writable regions. The goal is to make behavior research
+visible and repeatable without hiding the raw model.
+
 ## Useful Commands
 
 Export all room previews:
@@ -41,19 +104,38 @@ Export decoded graphics-bank contact sheets:
 python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-bank-sheets sheets
 ```
 
-Export room/tile/payload probe data:
+Export room, tile and payload probe data:
 
 ```bash
 python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-csv ae_room_probe.csv
 ```
 
-Dump one room payload:
+Regenerate documentation screenshots:
+
+```bash
+python tools/capture_docs_screenshots.py --exe AEPROG.EXE --dat AE000.DAT AE001.DAT
+```
+
+Probe one room payload:
 
 ```bash
 python tools/probe_exe_payload.py --exe AEPROG.EXE --level 6 --difficulty Explorer --room 5 AE000.DAT AE001.DAT
 ```
 
-## Current Model
+## Technical References
+
+- [Level Format](docs/level_format.md): current canonical parser model.
+- [File Format Summary](docs/file_format_summary.md): compact archive and level
+  structure notes.
+- [Reverse Engineering Notes](docs/reverse_engineering_notes.md): recovered
+  behavior and open questions.
+- [Actor Script Space](docs/actor_script_space.md): shared bytecode region and
+  safe editing model.
+- [Actor DSL](docs/actor_dsl.md): editable script syntax.
+- [Editor Overhaul Notes](docs/editor_overhaul_notes.md): historical design and
+  cleanup context.
+
+## Current Data Model
 
 `AE000.DAT` and `AE001.DAT` are resource archives with a 32-bit little-endian
 offset table. `AE000.DAT` contains global gameplay/UI graphics, actors, pickups,
@@ -83,37 +165,8 @@ Each difficulty part currently parses as:
 The old 13-room interpretation was a parser artifact: the 3000-byte actor block
 is the same size as three room records, so it used to appear as garbage rooms
 10..12. The editor now exposes only rooms 0..9 and treats the actor block as its
-own section.
-
-See [docs/level_format.md](docs/level_format.md) for the current canonical
+own section. See [docs/level_format.md](docs/level_format.md) for the canonical
 format notes.
-
-## Editor Features
-
-- Explorer/Expert difficulty browsing.
-- Pixel-art room preview at 1x through 4x zoom.
-- Simulation tab with in-memory actor VM stepping, clickable controls and wall
-  symbols, green-block sequence state, runtime `0x07` collision movement and
-  room-link navigation from the side panel.
-- Terrain, background, ropes, conveyors, moving platforms, controls, puzzle
-  markers, crystals, pickups, conditional exit doors, actors, player start and
-  room exits.
-- Native Tk overlay labels, relationship lines and optional collision tile `07`
-  overlay, separate from the scaled room bitmap.
-- Overlay presets for minimal, logic and debug views.
-- Editor tab with tile atlas painting, brush sizes, click-to-insert conveyor
-  belts, toggleable soft grid/collision overlays, and first header-object
-  placement for player start, exit door and artifact slots.
-- Select tool for header objects, controls, symbols, green blocks, decor,
-  reflectors, actors, conveyor/CV objects and moving-platform handles,
-  including drag-to-move and Delete for editable slots where the model is
-  understood.
-- Object atlas for recognized actors, pickups, controls, puzzle objects and
-  movement objects.
-- Script-space tab with actor bytecode/DSL previews and focused instruction
-  editing for reachable actor routines.
-- Graphics-bank viewer and sheet exporter.
-- CSV and PNG export helpers for regression checks.
 
 ## Project Layout
 
@@ -136,8 +189,12 @@ ae_editor/
   exporters.py       PNG/CSV export helpers
 
 docs/
-  level_format.md
+  assets/            README and documentation screenshots
+  quick_start.md
+  screenshots.md
   simulation_mode.md
+  ai_context.md
+  level_format.md
   file_format_summary.md
   reverse_engineering_notes.md
   editor_overhaul_notes.md
@@ -153,28 +210,6 @@ docs/
 - complete actor/enemy behavior scripts and exact call-stack/runtime timing;
 - collectible schemas beyond confirmed rendered cases.
 
-The renderer is conservative by design: confirmed structures are drawn normally,
-while uncertain data stays visible through overlay/debug tooling instead of
-being promoted to guessed gameplay objects.
-
-## Trigger/control refactor notes
-
-The editor now models buttons/switches/jello as control commands with typed targets:
-
-- `P0`, `P1`, ... target runtime platform slots.
-- `CV0`, `CV1`, ... target visible conveyor/belt records.
-- `R0`, `R1`, ... target section_c reflector records. `M0` remains accepted as
-  a legacy alias in the UI only.
-
-A control can target multiple objects, for example `P0,CV0`. In Simulation,
-multiple active controls targeting the same object are combined by parity/XOR,
-matching observed switch behavior. The raw body is still shown for
-reverse-engineering, but normal editing should use the typed target field where
-possible.
-
-
-## Reverse-engineering docs
-
-- `docs/actor_script_space.md` explains the shared actor bytecode model and safe editing rules.
-- `docs/simulation_mode.md` explains the current runtime simulation model and
-  known gaps.
+The renderer and editor prefer evidence over invention: confirmed structures are
+drawn and edited normally, while uncertain data remains inspectable through
+overlay/debug tooling.

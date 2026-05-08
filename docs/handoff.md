@@ -30,6 +30,10 @@ are stored back into `AE001.DAT` as plain uncompressed resources.
   runtime preview; the level viewer stays mostly read-only/diagnostic.
 - `docs/level_format.md` is the canonical current format note.
 - `docs/simulation_mode.md` describes the runtime preview model and known gaps.
+- `docs/quick_start.md` and `docs/screenshots.md` are the human-facing entry
+  docs linked from the README.
+- `docs/ai_context.md` is the compact technical map for future AI/maintainer
+  handoffs.
 
 ## Validation Loop
 
@@ -53,6 +57,12 @@ Useful smoke rooms:
 - Level 9, Explorer, room 0: green-block sequence and runtime footprint tests.
 - Level 9, Explorer, room 6: actor `emit_symbol` behavior.
 - Level 20, both difficulties, room 0: platform and layout divergence.
+
+Regenerate public README/docs screenshots after visible UI changes:
+
+```bash
+python tools/capture_docs_screenshots.py --exe AEPROG.EXE --dat AE000.DAT AE001.DAT
+```
 
 ## Rules Of Thumb
 
