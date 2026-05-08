@@ -62,6 +62,8 @@ ae-level-editor --exe AEPROG.EXE AE000.DAT AE001.DAT
 - Use Simulation to run room-local actor VM stepping, click controls, emit wall
   symbols, move the player position with right click and navigate through room
   links.
+- Select actors in Simulation to inspect their live script state and highlighted
+  current VM instruction while stepping.
 - Inspect object atlases, graphics-bank sheets and audio resources.
 - Decode actor script space into instruction rows, branch references and a DSL
   preview.

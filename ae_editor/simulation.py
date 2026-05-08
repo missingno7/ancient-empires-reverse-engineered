@@ -69,6 +69,22 @@ class SimActorState:
             pc=record.script_offset,
         )
 
+    @property
+    def active(self) -> bool:
+        # Stock secondary actors/projectiles sleep in mode 1 until another
+        # script wakes them with set_actor_mode_0.
+        return self.actor_type == 0
+
+    def activate(self) -> None:
+        self.actor_type = 0
+        self.halted = False
+
+    def deactivate(self) -> None:
+        self.actor_type = 1
+        self.call_stack.clear()
+        self.loop_counters.clear()
+        self.halted = False
+
 
 @dataclass
 class SimGreenBlockState:
@@ -260,7 +276,7 @@ class RoomSimulation:
         for _ in range(max(1, ticks)):
             self.tick_count += 1
             for actor in list(self.actors.values()):
-                if actor.room_index == self.room_index:
+                if actor.room_index == self.room_index and actor.active:
                     self._step_actor(actor)
 
     def _step_actor(self, actor: SimActorState) -> None:
@@ -324,8 +340,14 @@ class RoomSimulation:
                 target = self._resolve_actor_ref(actor.index, ins.args[0])
                 other = self.actors.get(target)
                 if other is not None:
-                    other.actor_type = 1 if op == 0x0A else 0
-                    actor.last_event = f"A{target} mode={other.actor_type}"
+                    mode = 1 if op == 0x0A else 0
+                    if mode == 0:
+                        other.activate()
+                        other.last_event = f"activated by A{actor.index}"
+                    else:
+                        other.deactivate()
+                        other.last_event = f"deactivated by A{actor.index}"
+                    actor.last_event = f"A{target} mode={mode}"
                 actor.pc = next_pc
                 continue
             if op == 0x0C:

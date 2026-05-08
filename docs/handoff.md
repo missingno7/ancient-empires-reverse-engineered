@@ -23,7 +23,8 @@ are stored back into `AE001.DAT` as plain uncompressed resources.
   data.
 - `ae_editor/renderer.py` is the static room renderer.
 - `ae_editor/simulation.py` is the in-memory simulation runtime for actor VM
-  stepping, controls, green blocks and runtime collision.
+  stepping, actor mode activation, controls, green blocks and runtime
+  collision.
 - `ae_editor/overlay.py` builds editor overlay geometry and relationship lines.
 - `ae_editor/gui.py` wires the Tk UI, tabs, object atlas and overlay presets.
   The `Editor` tab is the active editing surface; `Simulation` is the active
@@ -56,6 +57,8 @@ Useful smoke rooms:
 - Level 9, Expert, room 0: puzzle markers and progress panel.
 - Level 9, Explorer, room 0: green-block sequence and runtime footprint tests.
 - Level 9, Explorer, room 6: actor `emit_symbol` behavior.
+- Level 1, Explorer, room 6: praying mantis `set_actor_mode_0` projectile
+  activation and Simulation actor-script debugger.
 - Level 20, both difficulties, room 0: platform and layout divergence.
 
 Regenerate public README/docs screenshots after visible UI changes:

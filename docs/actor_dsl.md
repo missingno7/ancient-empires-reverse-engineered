@@ -6,6 +6,10 @@ It is intentionally close to the original bytecode.  Human summaries such as “
 
 Actor records do not own private script blobs.  A level part has one shared actor script space; each actor record stores state plus entry pointers such as `script_pc`, `restart_pc`, and `saved_pc`.  Labels in DSL previews are editor sugar for script-space addresses, not data stored by the game.
 
+Record `mode 0x00` is the observed active/update mode. Record `mode 0x01` is
+used by sleeping secondary actors and projectiles; stock scripts wake them with
+`set_actor_mode_0` and usually stop them with `set_actor_mode_1` plus `hide`.
+
 ## Round-trip contract
 
 For a known contiguous script region:

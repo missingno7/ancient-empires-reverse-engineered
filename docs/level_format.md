@@ -199,7 +199,7 @@ records. The table starts at part offset `0x2754`:
 Useful actor record fields:
 
 ```text
-0x00  actor type
+0x00  actor mode/type; observed mode 0 runs, mode 1 sleeps
 0x01  zero-based room index
 0x02  x low
 0x03  x high

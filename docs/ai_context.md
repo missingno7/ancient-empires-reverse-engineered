@@ -19,7 +19,8 @@ complete game engine or a fully proven level writer.
 - `ae_editor/room_payload.py`: room payload tables, controls, actors, compact
   sections and write helpers.
 - `ae_editor/renderer.py`: conservative static room renderer.
-- `ae_editor/simulation.py`: room-local actor/control/green-block runtime model.
+- `ae_editor/simulation.py`: room-local actor/control/green-block runtime model,
+  including actor mode activation for sleeping projectile/secondary actors.
 - `ae_editor/gui.py`: Tk tabs, editing surfaces, simulation canvas and property
   panels.
 - `ae_editor/actor_dsl.py` and `ae_editor/actor_scripts.py`: actor bytecode
@@ -73,7 +74,8 @@ python tools/capture_docs_screenshots.py --exe AEPROG.EXE --dat AE000.DAT AE001.
 - `docs/quick_start.md`: human launch and first-use guide.
 - `docs/screenshots.md`: public screenshot tour.
 - `docs/level_format.md`: canonical current file-format model.
-- `docs/simulation_mode.md`: runtime simulation behavior and known gaps.
+- `docs/simulation_mode.md`: runtime simulation behavior, actor-script debugger
+  and known gaps.
 - `docs/actor_script_space.md`: actor script-space model and safe edit rules.
 - `docs/actor_dsl.md`: actor DSL syntax.
 - `docs/handoff.md`: current state, validation rooms and good next tasks.

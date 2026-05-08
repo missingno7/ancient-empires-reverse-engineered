@@ -107,6 +107,14 @@ editor maps the currently recognized frame ranges to actor names and renders
 visible actors in normal previews while keeping hidden/start-state actors
 available in debug overlays.
 
+Record byte `0x00` behaves like the actor mode for runtime stepping. Stock
+secondary actors and projectiles commonly start as mode `1`, hidden and asleep.
+Shooter scripts use `set_actor_mode_0` to wake the projectile's stored PC;
+projectile scripts use `set_actor_mode_1` plus `hide` to stop themselves. Stock
+projectile scripts park that PC at the dormant `script_pc` after hiding. The
+`restart_pc` remains a separate script entry, often used by death/collision
+cleanup rather than as the normal wake address.
+
 Actor script decoding is still partial. The overlay can show decoded movement
 segments when the current subset recognizes them.
 

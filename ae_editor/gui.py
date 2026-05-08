@@ -289,6 +289,8 @@ class LevelEditorApp(tk.Tk):
         self.sim_speed_var = tk.IntVar(value=DEFAULT_SIMULATION_TICK_HZ)
         self.sim_info_var = tk.StringVar(value="")
         self.sim_detail_var = tk.StringVar(value="")
+        self.sim_actor_debug_var = tk.StringVar(value="")
+        self.sim_selected_actor_index: int | None = None
         self.sim_room_link_buttons: dict[str, ttk.Button] = {}
 
         for spec in OVERLAY_OPTION_SPECS:
@@ -571,6 +573,43 @@ class LevelEditorApp(tk.Tk):
         controls_frame.rowconfigure(0, weight=1)
         controls_frame.columnconfigure(0, weight=1)
         self.sim_control_tree.bind("<Double-1>", self.toggle_selected_simulation_control)
+
+        actor_frame = ttk.LabelFrame(right, text="Actor script")
+        actor_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
+        actor_columns = ("actor", "state", "pc")
+        self.sim_actor_tree = ttk.Treeview(actor_frame, columns=actor_columns, show="headings", height=4, selectmode="browse")
+        self.sim_actor_tree.heading("actor", text="Actor")
+        self.sim_actor_tree.heading("state", text="State")
+        self.sim_actor_tree.heading("pc", text="PC")
+        self.sim_actor_tree.column("actor", width=112, anchor="w")
+        self.sim_actor_tree.column("state", width=86, anchor="w")
+        self.sim_actor_tree.column("pc", width=54, anchor="w", stretch=False)
+        actor_scroll = ttk.Scrollbar(actor_frame, orient=tk.VERTICAL, command=self.sim_actor_tree.yview)
+        self.sim_actor_tree.configure(yscrollcommand=actor_scroll.set)
+        self.sim_actor_tree.grid(row=0, column=0, sticky="nsew")
+        actor_scroll.grid(row=0, column=1, sticky="ns")
+        self.sim_actor_tree.bind("<<TreeviewSelect>>", self.on_simulation_actor_selected)
+
+        ttk.Label(actor_frame, textvariable=self.sim_actor_debug_var, justify=tk.LEFT, wraplength=260).grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(3, 3)
+        )
+
+        script_columns = ("pc", "mark", "instruction")
+        self.sim_script_tree = ttk.Treeview(actor_frame, columns=script_columns, show="headings", height=8, selectmode="browse")
+        self.sim_script_tree.heading("pc", text="PC")
+        self.sim_script_tree.heading("mark", text="")
+        self.sim_script_tree.heading("instruction", text="Instruction")
+        self.sim_script_tree.column("pc", width=54, anchor="w", stretch=False)
+        self.sim_script_tree.column("mark", width=48, anchor="w", stretch=False)
+        self.sim_script_tree.column("instruction", width=178, anchor="w")
+        self.sim_script_tree.tag_configure("current", background="#ffe58a")
+        self.sim_script_tree.tag_configure("entry", foreground="#56606b")
+        script_scroll = ttk.Scrollbar(actor_frame, orient=tk.VERTICAL, command=self.sim_script_tree.yview)
+        self.sim_script_tree.configure(yscrollcommand=script_scroll.set)
+        self.sim_script_tree.grid(row=2, column=0, sticky="nsew")
+        script_scroll.grid(row=2, column=1, sticky="ns")
+        actor_frame.rowconfigure(2, weight=1)
+        actor_frame.columnconfigure(0, weight=1)
 
         ttk.Label(right, textvariable=self.sim_detail_var, justify=tk.LEFT, wraplength=260).pack(fill=tk.X, padx=6, pady=(0, 6))
 
@@ -2001,6 +2040,7 @@ class LevelEditorApp(tk.Tk):
         self.editor_drag_offset = None
         self.simulation = None
         self.simulation_key = None
+        self.sim_selected_actor_index = None
         self.refresh_room_labels()
         self.redraw_room()
         self.redraw_objects_atlas()
@@ -2018,6 +2058,7 @@ class LevelEditorApp(tk.Tk):
         self.editor_drag_offset = None
         self.simulation = None
         self.simulation_key = None
+        self.sim_selected_actor_index = None
         self.refresh_room_labels()
         self.redraw_room()
         self.redraw_objects_atlas()
@@ -2036,6 +2077,7 @@ class LevelEditorApp(tk.Tk):
         self.editor_drag_offset = None
         self.simulation = None
         self.simulation_key = None
+        self.sim_selected_actor_index = None
         self.redraw_room()
         self.redraw_objects_atlas()
         self.redraw_editor_object_palette()
@@ -2098,6 +2140,7 @@ class LevelEditorApp(tk.Tk):
             return
         self.simulation = RoomSimulation(self.current_level(), self.part_var.get(), self.room_var.get())
         self.simulation_key = self._simulation_context_key()
+        self.sim_selected_actor_index = None
         self.redraw_simulation()
         if announce:
             self.status.set("Simulation reset.")
@@ -2169,6 +2212,7 @@ class LevelEditorApp(tk.Tk):
         self.sim_canvas.config(scrollregion=(0, 0, image.width, image.height))
         self.refresh_simulation_room_link_buttons()
         self.refresh_simulation_control_tree()
+        self.refresh_simulation_actor_debug()
         visible_actors = [a for a in sim.actors.values() if a.room_index == sim.room_index and not a.hidden]
         active_parts = [
             f"P{idx}" for idx in sorted(sim.active_target_indices("platform"))
@@ -2239,6 +2283,142 @@ class LevelEditorApp(tk.Tk):
             self.sim_control_tree.selection_set(selected)
             self.sim_control_tree.focus(selected)
 
+    def refresh_simulation_actor_debug(self) -> None:
+        if not hasattr(self, "sim_actor_tree"):
+            return
+        sim = self.ensure_simulation()
+        actors = sorted(
+            (actor for actor in sim.actors.values() if actor.room_index == sim.room_index),
+            key=lambda actor: actor.index,
+        )
+        actor_ids = {actor.index for actor in actors}
+        if self.sim_selected_actor_index not in actor_ids:
+            self.sim_selected_actor_index = actors[0].index if actors else None
+
+        self._sim_actor_tree_refreshing = True
+        try:
+            self.sim_actor_tree.delete(*self.sim_actor_tree.get_children())
+            for actor in actors:
+                state_parts = ["active" if actor.active else "sleep"]
+                if actor.hidden:
+                    state_parts.append("hidden")
+                if actor.halted:
+                    state_parts.append("halted")
+                iid = str(actor.index)
+                self.sim_actor_tree.insert(
+                    "",
+                    tk.END,
+                    iid=iid,
+                    values=(f"A{actor.index} {actor.name}", " ".join(state_parts), f"{actor.pc:04X}"),
+                )
+            if self.sim_selected_actor_index is not None:
+                selected_iid = str(self.sim_selected_actor_index)
+                if self.sim_actor_tree.exists(selected_iid):
+                    if tuple(self.sim_actor_tree.selection()) != (selected_iid,):
+                        self.sim_actor_tree.selection_set(selected_iid)
+                    self.sim_actor_tree.focus(selected_iid)
+                    self.sim_actor_tree.see(selected_iid)
+        finally:
+            self._sim_actor_tree_refreshing = False
+
+        self.refresh_simulation_actor_script()
+
+    def on_simulation_actor_selected(self, _event=None) -> None:
+        if getattr(self, "_sim_actor_tree_refreshing", False):
+            return
+        selection = self.sim_actor_tree.selection() if hasattr(self, "sim_actor_tree") else ()
+        if not selection:
+            return
+        actor_index = int(selection[0])
+        if actor_index == self.sim_selected_actor_index:
+            return
+        self.sim_selected_actor_index = actor_index
+        self.refresh_simulation_actor_script()
+        self.redraw_simulation()
+
+    def refresh_simulation_actor_script(self) -> None:
+        if not hasattr(self, "sim_script_tree"):
+            return
+        sim = self.ensure_simulation()
+        self.sim_script_tree.delete(*self.sim_script_tree.get_children())
+        actor = (
+            sim.actors.get(self.sim_selected_actor_index)
+            if self.sim_selected_actor_index is not None
+            else None
+        )
+        if actor is None:
+            self.sim_actor_debug_var.set("No actor selected.")
+            return
+
+        state = "active" if actor.active else "sleep"
+        hidden = "hidden" if actor.hidden else "shown"
+        event = f" last={actor.last_event}" if actor.last_event else ""
+        self.sim_actor_debug_var.set(
+            f"A{actor.index} {actor.name}: {state} {hidden} pc=0x{actor.pc:04X} "
+            f"script=0x{actor.script_offset:04X} restart=0x{actor.restart_script_offset:04X}{event}"
+        )
+
+        entry_marks: dict[int, list[str]] = {}
+        entry_marks.setdefault(actor.script_offset, []).append("script")
+        entry_marks.setdefault(actor.restart_script_offset, []).append("restart")
+        entry_marks.setdefault(actor.pc, []).append("next")
+        current_iid: str | None = None
+        for pc in self._simulation_actor_script_addresses(sim, actor):
+            try:
+                ins = decode_instruction(sim.actor_block, pc)
+                text = instruction_to_dsl(ins, {})
+            except ActorScriptError as exc:
+                text = str(exc)
+            marks = entry_marks.get(pc, [])
+            iid = f"pc-{pc:04X}"
+            tags = ["current"] if pc == actor.pc else (["entry"] if marks else [])
+            self.sim_script_tree.insert(
+                "",
+                tk.END,
+                iid=iid,
+                values=(f"{pc:04X}", ",".join(marks), text),
+                tags=tuple(tags),
+            )
+            if pc == actor.pc:
+                current_iid = iid
+        if current_iid is not None:
+            self.sim_script_tree.selection_set(current_iid)
+            self.sim_script_tree.focus(current_iid)
+            self.sim_script_tree.see(current_iid)
+
+    def _simulation_actor_script_addresses(self, sim: RoomSimulation, actor) -> list[int]:
+        part = self.current_level().part(self.part_var.get())
+        space = actor_script_space(part)
+        starts: list[int] = []
+        for start in (actor.script_offset, actor.restart_script_offset, actor.pc):
+            if 0 <= start < len(sim.actor_block) and start not in starts:
+                starts.append(start)
+        seen: set[int] = set()
+        addresses: list[int] = []
+        for start in starts:
+            for pc in actor_script_space_reachable_addresses(space, start, max_commands=120):
+                if pc not in seen:
+                    seen.add(pc)
+                    addresses.append(pc)
+        if 0 <= actor.pc < len(sim.actor_block) and actor.pc not in seen:
+            addresses.append(actor.pc)
+        return sorted(addresses)
+
+    def _select_simulation_actor(self, actor_index: int) -> None:
+        self.sim_selected_actor_index = actor_index
+        if hasattr(self, "sim_actor_tree"):
+            iid = str(actor_index)
+            if self.sim_actor_tree.exists(iid):
+                self._sim_actor_tree_refreshing = True
+                try:
+                    if tuple(self.sim_actor_tree.selection()) != (iid,):
+                        self.sim_actor_tree.selection_set(iid)
+                    self.sim_actor_tree.focus(iid)
+                    self.sim_actor_tree.see(iid)
+                finally:
+                    self._sim_actor_tree_refreshing = False
+        self.refresh_simulation_actor_script()
+
     def toggle_selected_simulation_control(self, _event=None) -> None:
         sim = self.ensure_simulation()
         selection = self.sim_control_tree.selection() if hasattr(self, "sim_control_tree") else ()
@@ -2256,6 +2436,12 @@ class LevelEditorApp(tk.Tk):
         if cmd is None:
             symbol = self._simulation_symbol_at_event(event)
             if symbol is None:
+                actor = self._simulation_actor_at_event(event)
+                if actor is not None:
+                    self._select_simulation_actor(actor.index)
+                    self.redraw_simulation()
+                    self.status.set(f"Simulation selected A{actor.index} {actor.name}.")
+                    return
                 x, y = self._screen_xy_from_event(event, self.sim_canvas)
                 self.status.set(f"Simulation click x={x} y={y}.")
                 return
@@ -2312,6 +2498,20 @@ class LevelEditorApp(tk.Tk):
             sy = entry.y - height // 2
             if sx - 4 <= x <= sx + width + 4 and sy - 4 <= y <= sy + height + 4:
                 return (entry.code & 0x07) + 1
+        return None
+
+    def _simulation_actor_at_event(self, event):
+        sim = self.ensure_simulation()
+        x, y = self._screen_xy_from_event(event, self.sim_canvas)
+        for actor in reversed(list(sim.actors.values())):
+            if actor.room_index != sim.room_index or actor.hidden:
+                continue
+            sprite = self.project.renderer._sprite_for_actor_record(actor)
+            if sprite is None:
+                continue
+            ax, ay = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
+            if ax - 4 <= x <= ax + sprite.width + 4 and ay - 4 <= y <= ay + sprite.height + 4:
+                return actor
         return None
 
     def _draw_simulation_target_reactions(self, image: Image.Image, sim: RoomSimulation) -> None:
@@ -2422,6 +2622,7 @@ class LevelEditorApp(tk.Tk):
         return out
 
     def _draw_simulation_actors(self, image: Image.Image, sim: RoomSimulation) -> None:
+        draw = ImageDraw.Draw(image, "RGBA")
         for actor in sim.actors.values():
             if actor.room_index != sim.room_index or actor.hidden:
                 continue
@@ -2430,6 +2631,12 @@ class LevelEditorApp(tk.Tk):
                 continue
             x, y = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
             image.alpha_composite(sprite, (int(x), int(y)))
+            if actor.index == self.sim_selected_actor_index:
+                draw.rectangle(
+                    (int(x) - 1, int(y) - 1, int(x) + sprite.width, int(y) + sprite.height),
+                    outline=(255, 230, 90, 230),
+                    width=1,
+                )
 
     def _draw_simulation_player(self, image: Image.Image, sim: RoomSimulation) -> None:
         sprite = self.project.graphics.sprite("AE000", 4, 0)

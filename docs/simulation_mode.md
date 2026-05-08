@@ -18,6 +18,7 @@ The simulation owns transient state for:
 
 - actor VM program counters, positions, frames, hidden flags and small loop/call
   state;
+- actor mode activation state (`mode 0` runs, `mode 1` sleeps);
 - button/switch/jello pressed state;
 - green-block position, sequence progress and remaining visible symbols;
 - a runtime terrain map for the current room, including moved `0x07`
@@ -45,6 +46,27 @@ cancel it; three activate it again.
 
 The side-panel Controls tree can toggle controls by double-click. Left-clicking
 the visible control sprite in the room does the same.
+
+## Actor VM Debugging
+
+The Simulation side panel includes an Actor script debugger below the Controls
+tree. The actor list shows every actor in the current room, including hidden or
+sleeping secondary actors. Selecting an actor, or left-clicking a visible actor
+in the room preview, displays the reachable VM instructions for that actor's
+`script_pc` and `restart_pc`.
+
+The highlighted `next` row is the actor's current program counter: it is the
+instruction the simulator will execute on the next actor tick. This makes the
+Step button useful for tracing branches, random guards and projectile launch
+scripts one instruction/tick at a time.
+
+Actor opcode `set_actor_mode_0` wakes the target actor so its stored PC can run
+again. Actor opcode `set_actor_mode_1` puts the target back to sleep. This is
+the observed stock pattern for projectile/secondary actors: spitters wake a
+hidden projectile with `mode 0`, and the projectile deactivates itself with
+`mode 1` plus `hide` near the end of its script. In stock projectile scripts,
+that leaves the PC parked at the dormant `script_pc`; `restart_pc` is a separate
+entry used by cleanup/death paths, not the normal wake address.
 
 ## Platforms And Runtime Collision
 
