@@ -3,7 +3,7 @@
 Actors are runtime VM objects stored in the level-part actor block.  Each
 0x20-byte actor record points into a shared bytecode stream.  This module does
 not edit scripts yet; it gives the renderer/editor a truthful disassembly and a
-safe, best-effort path summary for the future Actors tab.
+safe, best-effort path summary for the editor overlays and Simulation checks.
 
 Research pass 2026-05 update:
 
@@ -503,7 +503,7 @@ def decode_actor_script(part, actor: ActorTableRecord, *, max_bytes: int = 192, 
     traces, trace_truncated, loop_detected = _explore_path_traces(data, actor, max_segments=max_segments)
 
     # Flatten segments for older GUI/status code while keeping traces for the
-    # overlay and future Actors tab.
+    # overlay, Script space and Simulation tabs.
     segments: list[ActorPathSegment] = []
     for trace in traces:
         for seg in trace.segments:

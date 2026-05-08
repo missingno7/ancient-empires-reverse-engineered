@@ -92,6 +92,9 @@ format notes.
 
 - Explorer/Expert difficulty browsing.
 - Pixel-art room preview at 1x through 4x zoom.
+- Simulation tab with in-memory actor VM stepping, clickable controls and wall
+  symbols, green-block sequence state, runtime `0x07` collision movement and
+  room-link navigation from the side panel.
 - Terrain, background, ropes, conveyors, moving platforms, controls, puzzle
   markers, crystals, pickups, conditional exit doors, actors, player start and
   room exits.
@@ -101,10 +104,14 @@ format notes.
 - Editor tab with tile atlas painting, brush sizes, click-to-insert conveyor
   belts, toggleable soft grid/collision overlays, and first header-object
   placement for player start, exit door and artifact slots.
-- Select tool for header object and moving-platform handles, including
-  drag-to-move and Delete for editable slots.
+- Select tool for header objects, controls, symbols, green blocks, decor,
+  reflectors, actors, conveyor/CV objects and moving-platform handles,
+  including drag-to-move and Delete for editable slots where the model is
+  understood.
 - Object atlas for recognized actors, pickups, controls, puzzle objects and
   movement objects.
+- Script-space tab with actor bytecode/DSL previews and focused instruction
+  editing for reachable actor routines.
 - Graphics-bank viewer and sheet exporter.
 - CSV and PNG export helpers for regression checks.
 
@@ -123,23 +130,27 @@ ae_editor/
   coordinates.py     coordinate transforms
   object_mapping.py  compact3 visual code mapping
   renderer.py        static room renderer
+  simulation.py      in-memory simulation runtime
   overlay.py         editor overlay model
   gui.py             Tkinter editor UI
   exporters.py       PNG/CSV export helpers
 
 docs/
   level_format.md
+  simulation_mode.md
   file_format_summary.md
   reverse_engineering_notes.md
+  editor_overhaul_notes.md
+  actor_script_space.md
+  actor_dsl.md
   handoff.md
 ```
 
 ## Still Unsolved
 
 - exact EXE lookup table for all terrain and visual object codes;
-- full write-back model for non-terrain payload editing;
-- exact gameplay semantics for every trigger/control byte;
-- complete actor/enemy behavior scripts;
+- exact gameplay semantics for every trigger/control byte and every VM event id;
+- complete actor/enemy behavior scripts and exact call-stack/runtime timing;
 - collectible schemas beyond confirmed rendered cases.
 
 The renderer is conservative by design: confirmed structures are drawn normally,
@@ -152,11 +163,18 @@ The editor now models buttons/switches/jello as control commands with typed targ
 
 - `P0`, `P1`, ... target runtime platform slots.
 - `CV0`, `CV1`, ... target visible conveyor/belt records.
-- `M0`, `M1`, ... are reserved for mirror/reflector-like targets observed in raw rooms.
+- `R0`, `R1`, ... target section_c reflector records. `M0` remains accepted as
+  a legacy alias in the UI only.
 
-A control can target multiple objects, for example `P0,CV0`. The raw body is still shown for reverse-engineering, but normal editing should use the typed target field where possible.
+A control can target multiple objects, for example `P0,CV0`. In Simulation,
+multiple active controls targeting the same object are combined by parity/XOR,
+matching observed switch behavior. The raw body is still shown for
+reverse-engineering, but normal editing should use the typed target field where
+possible.
 
 
 ## Reverse-engineering docs
 
 - `docs/actor_script_space.md` explains the shared actor bytecode model and safe editing rules.
+- `docs/simulation_mode.md` explains the current runtime simulation model and
+  known gaps.

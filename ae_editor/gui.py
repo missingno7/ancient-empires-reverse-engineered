@@ -440,7 +440,7 @@ class LevelEditorApp(tk.Tk):
 
         ttk.Label(
             right,
-            text="Sprite banks are now in the Graphics viewer tab.\nFuture object editor can live here.",
+            text="Use Editor for write-back edits and Simulation for runtime behavior checks.",
             justify=tk.LEFT,
         ).pack(fill=tk.X, padx=6, pady=(4, 0))
 

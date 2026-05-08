@@ -75,6 +75,15 @@ directory currently decodes:
 Buttons, floor switches and laser triggers are control commands. Actors are not
 inferred from those commands; they come from the part actor table.
 
+Control targets are currently typed as `P`, `CV` and `R`. Runtime switch
+composition appears to be parity/XOR: two active switches aimed at the same
+target cancel each other. The Simulation tab models this.
+
+Green-block record12 entries have a default position, alternate position and
+one-based symbol sequence. Simulation models the observed behavior: correct
+symbols consume the visible sequence, wrong symbols reset it, and completing
+the sequence toggles the block position and restores the sequence.
+
 ### Actor Records
 
 The actor table starts at part offset `0x2754`. Records are 0x20 bytes. The
@@ -85,12 +94,16 @@ available in debug overlays.
 Actor script decoding is still partial. The overlay can show decoded movement
 segments when the current subset recognizes them.
 
+The Simulation tab steps the researched actor VM subset and dispatches
+`emit_symbol` into the green-block mechanism. Actor bytecode stores
+`emit_symbol` ids zero-based; raw `0` emits displayed `S1`.
+
 ## Still Unknown
 
 - Complete terrain and theme visual lookup tables.
-- Exact semantics for every control-command argument.
-- Full trigger graph behavior.
-- Complete actor script instruction set.
+- Exact semantics for every control-command argument and VM event id.
+- Full trigger graph behavior beyond current `P`/`CV`/`R` target classes.
+- Complete actor script instruction set and cycle-exact runtime timing.
 - Full collectible/item storage schema.
 - EXE-derived anchor/origin tables for all rendered object families.
 - Safe write-back rules for non-terrain payload edits.
@@ -101,5 +114,5 @@ segments when the current subset recognizes them.
 2. Trace the EXE tables for tile-code-to-sprite and compact3-code-to-sprite
    lookup.
 3. Expand actor script decoding against rooms with obvious movement paths.
-4. Expand the current terrain/header-object write model only after each payload
-   family has round-trip coverage.
+4. Add fixture tests for current payload write paths and Simulation behavior
+   before broad automated editing.

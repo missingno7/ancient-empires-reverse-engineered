@@ -103,6 +103,19 @@ Known platform flag families:
 0x80 / 0xA0  vertical platform
 ```
 
+Current observed travel preview:
+
+```text
+0x40  +48 px x
+0x60  -48 px x
+0x80  +48 px y
+0xA0  -48 px y
+```
+
+The editor labels those as right, left, down and up respectively. The triplet
+does not store an explicit destination point; `platform_motion_delta()` keeps
+the shared preview value until an EXE-derived motion table is recovered.
+
 The EXE-style variable payload starts at trailing offset `0x1E`:
 
 ```text
@@ -133,6 +146,45 @@ Known command families:
 
 `arg_b & 0x40` is treated as the current confirmed pressed/start-state bit for
 switch artwork.
+
+Control target bytes currently decode as:
+
+```text
+00..0F  P0..P15 platform slots
+10..1F  CV0..CV15 conveyor/CV records
+40..4F  R0..R15 section_c reflector records
+```
+
+One control can target multiple objects. Observed switch behavior in Simulation
+combines active controls on the same target by parity/XOR: one active source
+turns the target on, two active sources turn it off again.
+
+### Section A Symbols And Section B Green Blocks
+
+Section_a compact3 entries are wall symbol buttons/emitters. Their low three
+code bits are stored zero-based and displayed as one-based `S1..S7`.
+
+Section_b record12 entries are green-block mechanisms. Each 12-byte record uses:
+
+```text
+0x00  default x_raw
+0x01  default y
+0x02  alternate x_raw
+0x03  alternate y
+0x05..0x09  one-based symbol sequence, zero-terminated
+```
+
+Runtime behavior currently modeled:
+
+- correct next symbol advances progress and hides that symbol from the block;
+- wrong symbol resets progress and restores the original sequence;
+- completing the sequence toggles the block between default and alternate
+  position and restores the sequence for the next toggle;
+- the block owns a 6x2 `0x07` collision footprint at its current runtime
+  position.
+
+Actor VM opcode `0x09` (`emit_symbol`) stores a zero-based raw symbol id. The
+runtime signal is therefore `raw + 1`; raw `0` emits `S1`.
 
 ## Actor Table
 
@@ -193,7 +245,8 @@ passability: `0` is passable, non-zero is solid. Ropes use zero low bits so they
 remain passable; `0x07` is an invisible solid tile. Conveyor footprints are
 terrain tiles plus a visual CV object: `0x0F` is the grey direction and `0x1F`
 is the teal direction. Moving platforms likewise combine a runtime object with
-`0x07` terrain tiles that move with it.
+`0x07` terrain tiles that move with it. Simulation also moves the green-block
+`0x07` footprint so actor tile checks can see current room runtime collision.
 
 Observed VM opcodes in stock data are limited to `0x00..0x1B` excluding `0x06`;
 unknown byte values did not appear as script opcodes in the current actor entry
@@ -249,5 +302,11 @@ room trailing[slot * 3 + 2]  platform y
 ```
 
 The editor can move a platform by updating x/y, or delete it by clearing the
-three-byte slot. Other payload families are intentionally deferred until those
-structures have stronger round-trip coverage.
+three-byte slot. It also keeps the paired `0x07` support footprint in sync for
+platform moves/deletes.
+
+Additional modeled payload write paths include control command bodies, CV belt
+records, section_a symbols, section_b green blocks, section_c reflectors,
+visual compact3 entries, animated decor entries, red apple tail markers, room
+links and actor table records. These paths should get binary fixture coverage
+before large-scale automated editing.

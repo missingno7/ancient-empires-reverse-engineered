@@ -91,6 +91,10 @@ keeps two left-edge tile columns that the editor view has cropped away, so
 
 The condition opcodes are represented exactly as stored: each one guards the next VM command.  Higher-level block syntax should only be added later if the compiler can prove it expands back to equivalent guarded-command bytecode.
 
+`emit_symbol` uses the raw bytecode id. Runtime symbol markers and green-block
+sequences are displayed one-based as `S1..S7`, so Simulation maps actor VM
+`emit_symbol id=0` to displayed `S1`.
+
 ## Tool
 
 Dump actor DSL from stock levels:

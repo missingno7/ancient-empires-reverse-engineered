@@ -4,16 +4,16 @@
 
 The project is now a focused research editor rather than a pile of rendering
 experiments. It can load the game files, decode graphics banks, parse the 20
-level resources, render recognizable static rooms, and show native overlay
-labels for the currently understood gameplay objects.
+level resources, render recognizable static rooms, show native overlay labels
+for understood gameplay objects, and run a room-local Simulation tab for actor,
+control and puzzle behavior.
 
 The editor is not yet a safe full level writer. Treat rendering and overlays as
-the canonical read path. MVP1 write-back edits the 38x18 room tile bytes plus
-the known header object slots for player start, exit door and artifacts. The
-Editor tab can also place conveyor belts as composite objects: CV visible record plus terrain physics tiles `0x0F`/`0x1F`
-and move/delete the editable header object handles plus moving-platform
-triplets. Changed level resources are stored back into `AE001.DAT` as plain
-uncompressed resources.
+the canonical read path. The Editor tab now writes terrain, known header object
+slots, room links, controls, symbol markers, green blocks, visual decor,
+animated decor, reflectors, actors, moving-platform triplets and composite
+conveyor belts where the parser has an explicit model. Changed level resources
+are stored back into `AE001.DAT` as plain uncompressed resources.
 
 ## Start Here
 
@@ -22,11 +22,14 @@ uncompressed resources.
   tables, actor records, room links, header pickups, exit door and player start
   data.
 - `ae_editor/renderer.py` is the static room renderer.
+- `ae_editor/simulation.py` is the in-memory simulation runtime for actor VM
+  stepping, controls, green blocks and runtime collision.
 - `ae_editor/overlay.py` builds editor overlay geometry and relationship lines.
 - `ae_editor/gui.py` wires the Tk UI, tabs, object atlas and overlay presets.
-  The `Editor` tab is the active editing surface; the level viewer stays mostly
-  read-only/diagnostic.
+  The `Editor` tab is the active editing surface; `Simulation` is the active
+  runtime preview; the level viewer stays mostly read-only/diagnostic.
 - `docs/level_format.md` is the canonical current format note.
+- `docs/simulation_mode.md` describes the runtime preview model and known gaps.
 
 ## Validation Loop
 
@@ -47,6 +50,8 @@ Useful smoke rooms:
 - Level 1, Explorer, room 0: border blocks, player start and early actors.
 - Level 2, Explorer, room 0: laser trigger/crystal cases.
 - Level 9, Expert, room 0: puzzle markers and progress panel.
+- Level 9, Explorer, room 0: green-block sequence and runtime footprint tests.
+- Level 9, Explorer, room 6: actor `emit_symbol` behavior.
 - Level 20, both difficulties, room 0: platform and layout divergence.
 
 ## Rules Of Thumb
@@ -57,11 +62,16 @@ Useful smoke rooms:
 - Buttons and floor switches come from length-prefixed control commands.
 - Conveyors are composite: terrain special tiles `0x0F`/`0x1F` provide physics/scrolling, while CV records in the payload directory provide the visible belt.
 - Moving platforms are the ten leading 3-byte room trailing payload triplets.
-  The editor can move/delete these slots, but it still preserves the existing
-  flag byte instead of inventing new path semantics.
+  Travel preview currently uses the shared `platform_motion_delta()` constants:
+  `0x40` right, `0x60` left, `0x80` down, `0xA0` up, all 48 px.
 - Tile code `0x07` is invisible support/collision, not visible platform art.
   It is shown through optional canvas overlays in both the viewer and Editor
-  tab rather than as a separate renderer mode.
+  tab rather than as a separate renderer mode. Simulation moves runtime `0x07`
+  footprints for active platforms and green blocks.
+- Control targets are typed as `P`, `CV` and `R`. Multiple active controls on
+  the same target combine by parity/XOR in Simulation.
+- Wall symbols are one-based `S1..S7`; actor VM `emit_symbol` stores zero-based
+  raw ids, so raw `0` emits `S1`.
 - The two level parts are Explorer and Expert difficulties.
 - The conditional exit door is stored in header bytes `0x05..0x07` and rendered
   from the current theme terrain bank sprite 0.
@@ -71,14 +81,14 @@ Useful smoke rooms:
 ## Good Next Tasks
 
 - Add binary fixture tests around parser invariants.
+- Add behavioral fixtures for Simulation: control XOR, platform `0x07`
+  footprint movement, green-block sequence progress/reset/toggle, and
+  zero-based actor `emit_symbol`.
 - Recover the full terrain/object lookup tables from `AEPROG.EXE`.
 - Recover EXE-derived sprite anchor/origin tables and replace remaining
   screenshot-tuned offsets.
 - Convert the current room model into an explicit editable data model.
-- Add guarded write-back for more object families before broader payload
-  editing.
-- Add actor/enemy placement and path editing once the actor table write-back is
-  covered by round-trip tests.
-- Extend editing to controls, compact3 objects and room exits only after the
-  corresponding payload parser is proven and round-trip tested.
-- Decode more actor script opcodes and connect movement/path overlays to them.
+- Add guarded round-trip tests around the existing payload write paths.
+- Improve actor/enemy path editing now that actor placement and script-space
+  editing exist.
+- Decode remaining VM event side effects and make Simulation closer to the EXE.

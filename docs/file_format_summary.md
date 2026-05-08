@@ -98,10 +98,22 @@ platform records. It decodes length-prefixed control records, puzzle marker
 tables, record12 green-block mechanisms, laser crystal tables and the main compact3
 visual table.
 
+Control targets use typed byte families: `P0..P15` for platform slots,
+`CV0..CV15` for visible conveyor records and `R0..R15` for section_c
+reflectors. Simulation combines active sources targeting the same object by
+parity/XOR.
+
+Green-block record12 mechanisms store default and alternate positions plus a
+one-based symbol sequence. Actor `emit_symbol` bytecode stores zero-based raw
+symbol ids, so raw `0` maps to displayed symbol `S1`.
+
 The part header also stores the conditional exit door in bytes `0x05..0x07`.
 The room byte is zero-based; x/y are a bottom-center screen-space anchor. The
 door uses sprite 0 from the current theme terrain bank (`AE001:021..024`).
 
 MVP editor saves changed level resources as uncompressed DAT resources with
-`flags=0`, while preserving untouched resource blocks exactly. Current editable
-data is limited to terrain bytes and known header object slots.
+`flags=0`, while preserving untouched resource blocks exactly. Editable data
+now includes terrain bytes, known header object slots, room links, controls,
+symbols, green blocks, reflectors, visual/animated decor, red apple markers,
+actor records, moving-platform triplets and composite conveyor belts where the
+parser has an explicit model.
