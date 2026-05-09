@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .coordinates import actor_origin, actor_xy, control_xy, header_object_xy, platform_xy, platform_motion_delta
-from .constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS, ROOM_SCREEN_HEIGHT_PX as ROOM_HEIGHT_PX, ROOM_SCREEN_WIDTH_PX as ROOM_WIDTH_PX
-from .level_format import Room
-from .actor_scripts import actor_script_bytes, decode_actor_script
-from .conveyors import iter_conveyor_runs
-from .room_payload import (
+from ..constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS, ROOM_SCREEN_HEIGHT_PX as ROOM_HEIGHT_PX, ROOM_SCREEN_WIDTH_PX as ROOM_WIDTH_PX
+from ..game_data.level_format import Room
+from ..game_data.actor_scripts import actor_script_bytes, decode_actor_script
+from ..game_data.conveyors import iter_conveyor_runs
+from ..game_data.room_payload import (
     ActorTableRecord,
     ControlCommand,
     actor_records_for_room,

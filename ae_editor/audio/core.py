@@ -7,38 +7,14 @@ import os
 import platform
 import shutil
 import struct
-import subprocess
 import tempfile
 import wave
 
-from .constants import GAME_MASTER_TICK_HZ
+from ..constants import GAME_MASTER_TICK_HZ
+from .gm import GM_PROGRAM_NAMES
 
 SAMPLE_RATE = 44100
 PIT_HZ = 1193180.0
-
-GM_PROGRAM_NAMES = [
-    "Acoustic Grand Piano", "Bright Acoustic Piano", "Electric Grand Piano", "Honky-tonk Piano",
-    "Electric Piano 1", "Electric Piano 2", "Harpsichord", "Clavinet",
-    "Celesta", "Glockenspiel", "Music Box", "Vibraphone", "Marimba", "Xylophone", "Tubular Bells", "Dulcimer",
-    "Drawbar Organ", "Percussive Organ", "Rock Organ", "Church Organ", "Reed Organ", "Accordion", "Harmonica", "Tango Accordion",
-    "Acoustic Guitar (nylon)", "Acoustic Guitar (steel)", "Electric Guitar (jazz)", "Electric Guitar (clean)",
-    "Electric Guitar (muted)", "Overdriven Guitar", "Distortion Guitar", "Guitar Harmonics",
-    "Acoustic Bass", "Electric Bass (finger)", "Electric Bass (pick)", "Fretless Bass", "Slap Bass 1", "Slap Bass 2",
-    "Synth Bass 1", "Synth Bass 2", "Violin", "Viola", "Cello", "Contrabass", "Tremolo Strings", "Pizzicato Strings",
-    "Orchestral Harp", "Timpani", "String Ensemble 1", "String Ensemble 2", "SynthStrings 1", "SynthStrings 2",
-    "Choir Aahs", "Voice Oohs", "Synth Voice", "Orchestra Hit", "Trumpet", "Trombone", "Tuba", "Muted Trumpet",
-    "French Horn", "Brass Section", "SynthBrass 1", "SynthBrass 2", "Soprano Sax", "Alto Sax", "Tenor Sax", "Baritone Sax",
-    "Oboe", "English Horn", "Bassoon", "Clarinet", "Piccolo", "Flute", "Recorder", "Pan Flute",
-    "Blown Bottle", "Shakuhachi", "Whistle", "Ocarina", "Lead 1 (square)", "Lead 2 (sawtooth)",
-    "Lead 3 (calliope)", "Lead 4 (chiff)", "Lead 5 (charang)", "Lead 6 (voice)", "Lead 7 (fifths)", "Lead 8 (bass + lead)",
-    "Pad 1 (new age)", "Pad 2 (warm)", "Pad 3 (polysynth)", "Pad 4 (choir)", "Pad 5 (bowed)", "Pad 6 (metallic)",
-    "Pad 7 (halo)", "Pad 8 (sweep)", "FX 1 (rain)", "FX 2 (soundtrack)", "FX 3 (crystal)", "FX 4 (atmosphere)",
-    "FX 5 (brightness)", "FX 6 (goblins)", "FX 7 (echoes)", "FX 8 (sci-fi)", "Sitar", "Banjo", "Shamisen", "Koto",
-    "Kalimba", "Bag pipe", "Fiddle", "Shanai", "Tinkle Bell", "Agogo", "Steel Drums", "Woodblock",
-    "Taiko Drum", "Melodic Tom", "Synth Drum", "Reverse Cymbal", "Guitar Fret Noise", "Breath Noise", "Seashore",
-    "Bird Tweet", "Telephone Ring", "Helicopter", "Applause", "Gunshot",
-]
-
 
 # PC speaker / CAF1 SFX facts that are now considered stable:
 #
@@ -59,7 +35,7 @@ DEFAULT_PREVIEW_SPEED = 1.0
 
 @dataclass(frozen=True)
 class AudioItem:
-    kind: str  # "pc-speaker-sfx", "pc-speaker-music", "soundcard-music", "soundcard-channel", "raw"
+    kind: str  # "pc-speaker-sfx", "pc-speaker-music", "soundcard-music", "raw"
     key: str
     label: str
     archive_name: str
@@ -1049,7 +1025,7 @@ def build_audio_atlas(project) -> list[AudioItem]:
                         offset=off,
                         length=len(chunk),
                         data=chunk,
-                        notes=f"CAF1/event_07 play_sound stream from confirmed AE000:065 SFX bank; {len(offsets)} ids found. Disassembly shows CAF1 uses the PC-speaker path (PIT channel 2 / ports 0x42 and 0x61); direct ?E effect tones use the one-tick CAF1 effect-duration state unless a 3D command overrides it.",
+                        notes=f"Confirmed play_sound/event_07 PC-speaker SFX from AE000:065 ({len(offsets)} ids).",
                     ))
             elif looks_like_pc_speaker_resource(data):
                 items.append(AudioItem(
@@ -1063,7 +1039,7 @@ def build_audio_atlas(project) -> list[AudioItem]:
                     offset=0x96,
                     length=len(data) - 0x96,
                     data=data,
-                    notes=_music_pair_note(archive_name, res.index, soundcard=False) + "; 0x96 is the stream offset used by the EXE for PC-speaker music.",
+                    notes=_music_pair_note(archive_name, res.index, soundcard=False) + "; PC-speaker music stream.",
                 ))
             elif looks_like_soundcard_music(data):
                 offs = soundcard_music_offsets(data)
@@ -1078,27 +1054,9 @@ def build_audio_atlas(project) -> list[AudioItem]:
                     offset=offs[0],
                     length=len(data),
                     data=data,
-                    notes=_music_pair_note(archive_name, res.index, soundcard=True) + "; " + describe_soundcard_music_header(data) + "; " + describe_opl_patches_for_music(data, getattr(project, "exe", None)) + "; Preview mixes all streams. The bytecode is shared with the PSG/Tandy-style path, but AdLib/Sound Blaster mode gets its FM patch ids from this header and the EXE OPL patch table.",
+                    notes=_music_pair_note(archive_name, res.index, soundcard=True) + "; complete sound-card music mix; FM patches come from the resource header and EXE OPL table.",
                 ))
-                for channel_no, off in enumerate(offs):
-                    end = offs[channel_no + 1] if channel_no + 1 < len(offs) else len(data)
-                    chunk = data[off:end]
-                    if not chunk or chunk[:2] == b"\xff\xff":
-                        continue
-                    items.append(AudioItem(
-                        kind="soundcard-channel",
-                        key=f"soundcard-channel:{archive_name}:{res.index}:{channel_no}",
-                        label=f"Sound-card channel {channel_no} {archive_name}:{res.index:03d} @0x{off:04X}",
-                        archive_name=archive_name,
-                        resource_index=res.index,
-                        resource_type=res.rtype,
-                        sound_id=channel_no,
-                        offset=off,
-                        length=len(chunk),
-                        data=chunk,
-                        notes="Single bytecode stream extracted from the sound-card music resource. AdLib/Sound Blaster instruments are selected by the resource header; 5D/6D are stream control/envelope hints, not the whole FM patch identity.",
-                    ))
-    order = {"pc-speaker-sfx": 0, "pc-speaker-music": 1, "soundcard-music": 2, "soundcard-channel": 3}
+    order = {"pc-speaker-sfx": 0, "pc-speaker-music": 1, "soundcard-music": 2}
     return sorted(items, key=lambda item: (order.get(item.kind, 9), item.archive_name, item.resource_index, item.sound_id or 0))
 
 
@@ -1688,13 +1646,11 @@ def _events_to_absolute_spans(events: list[tuple[float | None, float]], rate: fl
 
 
 def _pitch_mode_from_audio_kind(kind: str | None, data: bytes, *, music: bool) -> str:
-    if kind in {"soundcard-music", "soundcard-channel"}:
+    if kind == "soundcard-music":
         return "soundcard"
     if kind in {"pc-speaker-sfx", "pc-speaker-music"}:
         return "musical"
-    # Auto mode for old callers.  Full AdLib/SoundBlaster resources can be
-    # recognized by their channel-offset header.  Raw channel chunks cannot,
-    # so the GUI passes the selected item kind explicitly.
+    # Auto mode for callers that pass raw bytes without an atlas item kind.
     if music and looks_like_soundcard_music(data):
         return "soundcard"
     return "musical"
@@ -1840,7 +1796,6 @@ def write_midi(
     speed: float = DEFAULT_PREVIEW_SPEED,
     audio_kind: str | None = None,
     channel_programs: dict[int, int | None] | None = None,
-    follow_timbre_changes: bool = True,
 ) -> Path:
     path = Path(path)
     streams = _streams_from_resource(data)
@@ -1899,11 +1854,10 @@ def write_midi(
                     # Release/silent PSG envelope marker; the note parser already
                     # handles timing, so do not convert this into a GM program.
                     continue
-                if not follow_timbre_changes or (channel_programs is not None and stream_no in channel_programs):
-                    continue
-                program = _gm_program_for_timbre(control.value, stream_no, rhythm=is_rhythm)
-                if program is not None:
-                    timed_events.append((midi_tick, 0, bytes([0xC0 | channel, program])))
+                # 5D is an internal envelope/timbre selector, not a reliable
+                # General MIDI program-change stream. Keep export instruments
+                # stable unless the user explicitly changes them in the atlas UI.
+                continue
             elif control.kind == "expression" and not is_rhythm:
                 timed_events.append((midi_tick, 1, bytes([0xB0 | channel, 11, _expression_for_aux_byte(control.value)])))
 
@@ -1940,45 +1894,3 @@ def write_midi(
     path.write_bytes(header + bytes(body))
     return path
 
-_CURRENT_AUDIO_PROCESS: subprocess.Popen | None = None
-
-
-def stop_audio_playback() -> None:
-    """Stop the current Audio Atlas WAV preview, if the platform player allows it."""
-    global _CURRENT_AUDIO_PROCESS
-    system = platform.system().lower()
-    if system == "windows":
-        try:
-            import winsound
-            winsound.PlaySound(None, winsound.SND_PURGE)
-        except Exception:
-            pass
-    if _CURRENT_AUDIO_PROCESS is not None:
-        proc = _CURRENT_AUDIO_PROCESS
-        _CURRENT_AUDIO_PROCESS = None
-        if proc.poll() is None:
-            proc.terminate()
-
-
-def play_audio_file(path: Path | str) -> None:
-    global _CURRENT_AUDIO_PROCESS
-    path = Path(path)
-    stop_audio_playback()
-    system = platform.system().lower()
-    if system == "windows":
-        import winsound
-        winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC)
-        return
-    for cmd in (["afplay", str(path)], ["aplay", str(path)], ["paplay", str(path)], ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", str(path)]):
-        if shutil.which(cmd[0]):
-            _CURRENT_AUDIO_PROCESS = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
-    raise RuntimeError("No audio player found (tried afplay/aplay/paplay/ffplay). Export WAV instead.")
-
-
-def temp_preview_wav(item: AudioItem, *, speed: float = DEFAULT_PREVIEW_SPEED) -> Path:
-    temp_dir = Path(tempfile.gettempdir()) / "ae_audio_atlas"
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    safe = f"{item.kind}_{item.archive_name}_{item.resource_index}_{item.sound_id if item.sound_id is not None else 'res'}"
-    path = temp_dir / f"{safe}.wav"
-    return synthesize_wav(item.data, path, music=item.kind != "pc-speaker-sfx", speed=speed, audio_kind=item.kind)

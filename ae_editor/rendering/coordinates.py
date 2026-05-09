@@ -17,8 +17,8 @@ from typing import Literal
 
 from PIL import Image
 
-from .constants import CELL_SIZE
-from .room_payload import ControlCommand, ObjectTableEntry, PlatformTriplet
+from ..constants import CELL_SIZE
+from ..game_data.room_payload import ControlCommand, ObjectTableEntry, PlatformTriplet
 
 AnchorMode = Literal[
     "terrain",

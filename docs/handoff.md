@@ -100,7 +100,7 @@ python tools/capture_docs_screenshots.py --exe AEPROG.EXE --dat AE000.DAT AE001.
 - The conditional exit door is stored in header bytes `0x05..0x07` and rendered
   from the current theme terrain bank sprite 0.
 - Use the custom palette from `AEPROG.EXE`; standard VGA palettes do not match.
-- Type47 logical colour `0` is transparent for sprites.
+- Game graphics record logical colour `0` is transparent for sprites.
 
 ## Good Next Tasks
 

@@ -76,7 +76,7 @@ entry used by cleanup/death paths, not the normal wake address.
 ## Platforms And Runtime Collision
 
 Moving platforms are the first ten 3-byte room trailing payload triplets. The
-current observed travel vector is centralized in `ae_editor.coordinates`:
+current observed travel vector is centralized in `ae_editor.rendering.coordinates`:
 
 ```text
 0x40  +48 px x

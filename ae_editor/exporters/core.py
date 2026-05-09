@@ -3,10 +3,10 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from .constants import ROOM_COLUMNS, ROOM_COUNT, ROOM_ROWS
-from .project import AncientEmpiresProject
-from .renderer import RenderOptions
-from .room_payload import header_exit_door, parse_exe_payload_directory, parse_platform_triplets, visual_compact3_table, laser_crystal_table
+from ..constants import ROOM_COLUMNS, ROOM_COUNT, ROOM_ROWS
+from ..project import AncientEmpiresProject
+from ..rendering.room_renderer import RenderOptions
+from ..game_data.room_payload import header_exit_door, parse_exe_payload_directory, parse_platform_triplets, visual_compact3_table, laser_crystal_table
 
 DIFFICULTY_LABELS = ["explorer", "expert"]
 

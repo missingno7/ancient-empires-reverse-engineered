@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .exporters import export_bank_sheets, export_probe_csv, export_room_previews
-from .gui import LevelEditorApp
-from .project import AncientEmpiresProject
+from ..exporters import export_bank_sheets, export_probe_csv, export_room_previews
+from .main_window import LevelEditorApp
+from ..project import AncientEmpiresProject
 
 
 def build_parser() -> argparse.ArgumentParser:

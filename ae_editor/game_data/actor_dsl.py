@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
-from .constants import (
+from ..constants import (
     LEVEL_PART_HEADER_SIZE,
     ROOM_COLUMNS,
     ROOM_COUNT,

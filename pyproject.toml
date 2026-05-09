@@ -6,4 +6,4 @@ requires-python = ">=3.10"
 dependencies = ["Pillow>=10.0"]
 
 [project.scripts]
-ae-level-editor = "ae_editor.cli:main"
+ae-level-editor = "ae_editor.app.cli:main"

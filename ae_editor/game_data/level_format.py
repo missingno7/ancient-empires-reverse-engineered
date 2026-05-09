@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .constants import (
+from ..constants import (
     LEVEL_PART_ACTOR_BLOCK_SIZE,
     LEVEL_MAGIC,
     LEVEL_PART_COUNT,

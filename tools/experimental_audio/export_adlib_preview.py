@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ae_editor.dat_archive import DatArchive
+from ae_editor.game_data.dat_archive import DatArchive
 from ae_editor.audio import synthesize_adlib_like_wav, write_opl_register_trace_csv, write_midi
 
 

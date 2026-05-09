@@ -8,9 +8,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ae_editor.actor_scripts import decode_actor_script
+from ae_editor.game_data.actor_scripts import decode_actor_script
 from ae_editor.project import AncientEmpiresProject
-from ae_editor.room_payload import actor_records_for_room, parse_actor_table
+from ae_editor.game_data.room_payload import actor_records_for_room, parse_actor_table
 
 
 def main() -> None:

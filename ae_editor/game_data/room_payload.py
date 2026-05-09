@@ -22,7 +22,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Literal
 
-from .constants import (
+from ..constants import (
     CELL_SIZE,
     LEVEL_PART_ACTOR_BLOCK_OFFSET,
     LEVEL_PART_ACTOR_BLOCK_SIZE,
@@ -1955,7 +1955,7 @@ def add_laser_crystal_entry(room: Room, *, x_raw: int, y: int, code: int) -> int
     This mirrors add_visual_compact3_entry but targets section_c instead of the
     visual/decor table.  Controls can then point at the new item with R<n>
     (encoded as target byte 0x40|n).  M<n> remains accepted by the GUI only as
-    a legacy alias.
+    an older shortcut for existing edited rooms.
     """
     table = laser_crystal_table(room)
     if table is None:

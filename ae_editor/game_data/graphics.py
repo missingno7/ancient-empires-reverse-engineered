@@ -6,8 +6,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from .palette import dac6_to_pillow_palette, find_vga_palette_dac6
-from .type47 import decode_type47, iter_type47
-from .constants import (
+from .game_graphics_records import decode_game_graphics_record, iter_game_graphics_records
+from ..constants import (
     TERRAIN_BANK_COUNT,
     TERRAIN_BANK_RESOURCE_START,
 )
@@ -72,9 +72,9 @@ class GraphicsSet:
         refs: list[SpriteRef] = []
         if not res.ok:
             return images, refs
-        for bitmap in iter_type47(res.decoded, res.rtype):
+        for bitmap in iter_game_graphics_records(res.decoded, res.rtype):
             try:
-                decoded = decode_type47(bitmap.payload, "vga", self.vga_palette, transparent=True)
+                decoded = decode_game_graphics_record(bitmap.payload, "vga", self.vga_palette, transparent=True)
             except ValueError:
                 continue
             rgba = decoded.image.convert("RGBA")

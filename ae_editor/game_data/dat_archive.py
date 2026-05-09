@@ -6,7 +6,7 @@ import struct
 from typing import Iterator
 
 from .compression import decode_resource_block, read_offsets
-from .type47 import iter_type47
+from .game_graphics_records import iter_game_graphics_records
 
 
 @dataclass(frozen=True)
@@ -56,11 +56,11 @@ class DatArchive:
         return self.resources[index]
 
     def iter_images(self) -> Iterator[tuple[Resource, str, bytes]]:
-        """Yield all type47 image payloads as (resource, subname, payload)."""
+        """Yield all decoded game graphics image payloads as (resource, subname, payload)."""
         for res in self.resources:
             if not res.ok:
                 continue
-            for bitmap in iter_type47(res.decoded, res.rtype):
+            for bitmap in iter_game_graphics_records(res.decoded, res.rtype):
                 yield res, bitmap.subname, bitmap.payload
 
     def build_blob_with_decoded_replacements(self, replacements: dict[int, bytes]) -> bytes:

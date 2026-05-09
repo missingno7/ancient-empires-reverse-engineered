@@ -215,3 +215,8 @@ docs/
 The renderer and editor prefer evidence over invention: confirmed structures are
 drawn and edited normally, while uncertain data remains inspectable through
 overlay/debug tooling.
+
+
+## Developer notes
+
+- Current module layout is documented in [`docs/project_structure.md`](docs/project_structure.md).

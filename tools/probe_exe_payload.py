@@ -8,8 +8,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ae_editor.project import AncientEmpiresProject
-from ae_editor.room_payload import control_commands, header_exit_door, parse_exe_payload_directory, parse_platform_triplets, visual_compact3_table, laser_crystal_table
-from ae_editor.overlay import control_ref_values
+from ae_editor.game_data.room_payload import control_commands, header_exit_door, parse_exe_payload_directory, parse_platform_triplets, visual_compact3_table, laser_crystal_table
+from ae_editor.rendering.overlay import control_ref_values
 
 
 def main() -> None:

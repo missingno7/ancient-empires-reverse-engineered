@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from .room_payload import ObjectTableEntry
+from ..game_data.room_payload import ObjectTableEntry
 
 RenderLayer = Literal["background", "foreground"]
 
@@ -38,7 +38,7 @@ def visual_sprite_ref(
     code = entry.code
 
     # Confirmed global/gameplay objects from screenshots and asset browsing.
-    # Do NOT map code 0x0E to AE000:039 here.  That was a legacy mistake:
+    # Do NOT map code 0x0E to AE000:039 here.  That older assumption was wrong:
     # in visual compact3 tables, 0x0E is usually just theme decoration
     # AE001:(25+theme):14.  Real buttons come from control records.
     if code == 0x8E:

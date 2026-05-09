@@ -20,7 +20,7 @@ from typing import Literal
 
 from PIL import Image
 
-from .constants import ROOM_COLUMNS, ROOM_ROWS
+from ..constants import ROOM_COLUMNS, ROOM_ROWS
 
 BeltKind = Literal["grey", "teal"]
 

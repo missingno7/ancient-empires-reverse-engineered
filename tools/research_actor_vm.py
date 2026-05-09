@@ -15,9 +15,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ae_editor.actor_scripts import _command_size, _decode_command  # research-only private helpers
+from ae_editor.game_data.actor_scripts import _command_size, _decode_command  # research-only private helpers
 from ae_editor.project import AncientEmpiresProject
-from ae_editor.room_payload import ACTOR_TABLE_OFFSET, parse_actor_table
+from ae_editor.game_data.room_payload import ACTOR_TABLE_OFFSET, parse_actor_table
 
 
 def _scan_script(data: bytes, *, max_commands: int = 120):

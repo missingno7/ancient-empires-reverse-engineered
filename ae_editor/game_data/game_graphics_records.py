@@ -9,29 +9,36 @@ from PIL import Image
 from .palette import EGA_RGBI
 
 
+"""Decoder for Ancient Empires game graphics bitmap records.
+
+These records store small EGA/VGA bitmap sprites and terrain/decor images used
+by the game. The on-disk marker byte is ``0x47``.
+"""
+
+
 @dataclass(frozen=True)
-class Type47Image:
+class GameGraphicsRecord:
     subname: str
     payload: bytes
 
 
 @dataclass(frozen=True)
-class DecodedType47:
+class DecodedGameGraphic:
     image: Image.Image
     colour_table: list[int]
     row_bytes: int
     height: int
 
 
-def iter_type47(decoded: bytes, rtype: int) -> Iterator[Type47Image]:
-    """Yield type 0x47 bitmap payloads embedded in a decoded resource.
+def iter_game_graphics_records(decoded: bytes, rtype: int) -> Iterator[GameGraphicsRecord]:
+    """Yield game graphics bitmap payloads embedded in a decoded resource.
 
     The game stores both direct bitmaps and packed banks. Resource type 0x00 is
     a linear sequence of 0x47 records; resource type 0x01 starts with a 16-bit
     offset table pointing to 0x47 records.
     """
     if rtype == 0x47:
-        yield Type47Image("direct", decoded)
+        yield GameGraphicsRecord("direct", decoded)
         return
 
     if rtype == 0x00:
@@ -45,7 +52,7 @@ def iter_type47(decoded: bytes, rtype: int) -> Iterator[Type47Image]:
                 break
             # Strip the leading 0x47 and one unused/control byte. The payload
             # starts with the 16-byte EGA table, then the 16-byte VGA table.
-            yield Type47Image(f"seq_{n:03d}_at_{pos:04x}", decoded[pos + 2 : pos + total])
+            yield GameGraphicsRecord(f"seq_{n:03d}_at_{pos:04x}", decoded[pos + 2 : pos + total])
             pos += total
             n += 1
         return
@@ -61,19 +68,19 @@ def iter_type47(decoded: bytes, rtype: int) -> Iterator[Type47Image]:
                     height = decoded[off + 0x23]
                     total = 0x24 + row_bytes * height
                     if row_bytes and height and off + total <= len(decoded):
-                        yield Type47Image(f"table_{i:03d}_at_{off:04x}", decoded[off + 2 : off + total])
+                        yield GameGraphicsRecord(f"table_{i:03d}_at_{off:04x}", decoded[off + 2 : off + total])
 
 
-def decode_type47(payload: bytes, mode: str, vga_palette: list[int] | None = None, transparent: bool = False) -> DecodedType47:
-    """Decode one type47 payload to a Pillow image.
+def decode_game_graphics_record(payload: bytes, mode: str, vga_palette: list[int] | None = None, transparent: bool = False) -> DecodedGameGraphic:
+    """Decode one game graphics bitmap payload to a Pillow image.
 
-    Type47 pixels are two 4-bit logical colour indexes per byte. VGA mode maps
-    logical colours through bytes 16..31 of the type47 header into the custom
+    Game graphics pixels are two 4-bit logical colour indexes per byte. VGA mode maps
+    logical colours through bytes 16..31 of the game graphics header into the custom
     256-colour palette. EGA mode maps through bytes 0..15 into RGBI colours.
     Logical colour 0 is used as the transparent blit key.
     """
     if len(payload) < 0x22:
-        raise ValueError("short type47 payload")
+        raise ValueError("short game graphics payload")
 
     ega_table = list(payload[:16])
     vga_table = list(payload[16:32])
@@ -81,7 +88,7 @@ def decode_type47(payload: bytes, mode: str, vga_palette: list[int] | None = Non
     height = payload[0x21]
     raw = payload[0x22 : 0x22 + row_bytes * height]
     if row_bytes <= 0 or height <= 0 or len(raw) < row_bytes * height:
-        raise ValueError("truncated type47 payload")
+        raise ValueError("truncated game graphics payload")
 
     logical: list[int] = []
     for byte in raw:
@@ -103,7 +110,7 @@ def decode_type47(payload: bytes, mode: str, vga_palette: list[int] | None = Non
             image = Image.new("P", (row_bytes * 2, height))
             image.putdata(pixels)
             image.putpalette(vga_palette)
-        return DecodedType47(image, vga_table, row_bytes, height)
+        return DecodedGameGraphic(image, vga_table, row_bytes, height)
 
     if mode == "ega":
         table = [x & 0x0F for x in ega_table]
@@ -122,6 +129,6 @@ def decode_type47(payload: bytes, mode: str, vga_palette: list[int] | None = Non
             for r, g, b in EGA_RGBI:
                 flat.extend([r, g, b])
             image.putpalette(flat + [0] * (768 - len(flat)))
-        return DecodedType47(image, ega_table, row_bytes, height)
+        return DecodedGameGraphic(image, ega_table, row_bytes, height)
 
-    raise ValueError(f"unknown type47 mode: {mode}")
+    raise ValueError(f"unknown game graphics mode: {mode}")

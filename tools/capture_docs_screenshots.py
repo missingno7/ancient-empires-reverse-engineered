@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ae_editor.gui import LevelEditorApp
+from ae_editor.app.main_window import LevelEditorApp
 from ae_editor.project import AncientEmpiresProject
 
 

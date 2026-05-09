@@ -3,10 +3,10 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from .dat_archive import DatArchive
-from .graphics import GraphicsSet
-from .level_format import Level, load_levels
-from .renderer import RoomRenderer
+from .game_data.dat_archive import DatArchive
+from .game_data.graphics import GraphicsSet
+from .game_data.level_format import Level, load_levels
+from .rendering.room_renderer import RoomRenderer
 
 
 class AncientEmpiresProject:

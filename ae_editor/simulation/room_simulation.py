@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import random
 
-from .actor_dsl import ActorScriptError, branch_target, decode_instruction, opcode_size
-from .constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS
-from .coordinates import platform_motion_delta, platform_xy
-from .overlay import control_targets
-from .room_payload import (
+from ..game_data.actor_dsl import ActorScriptError, branch_target, decode_instruction, opcode_size
+from ..constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS
+from ..rendering.coordinates import platform_motion_delta, platform_xy
+from ..rendering.overlay import control_targets
+from ..game_data.room_payload import (
     ACTOR_TABLE_OFFSET,
     ACTOR_TABLE_SIZE,
     ActorTableRecord,

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 from PIL import Image, ImageDraw
 
-from .constants import (
+from ..constants import (
     CELL_SIZE,
     DEFAULT_TERRAIN_CODE_TO_SPRITE,
     ROOM_COLUMNS,
@@ -24,9 +24,9 @@ from .coordinates import (
     header_object_xy,
     platform_xy,
 )
-from .conveyors import ConveyorSpec, compose_conveyor, iter_conveyor_runs
-from .graphics import GraphicsSet
-from .level_format import Level, Room
+from ..game_data.conveyors import ConveyorSpec, compose_conveyor, iter_conveyor_runs
+from ..game_data.graphics import GraphicsSet
+from ..game_data.level_format import Level, Room
 from .object_mapping import visual_render_layer, visual_sprite_ref
 from .tile_mapping import CONVEYOR_PHYSICS_TILE_CODES
 
@@ -126,7 +126,7 @@ def _draw_sequence_on_panel(graphics, panel: Image.Image, seq_values: list[int])
         x += sprite.width + 1
     return out
 
-from .room_payload import (
+from ..game_data.room_payload import (
     ObjectTableEntry,
     ActorTableRecord,
     actor_records_for_room,
