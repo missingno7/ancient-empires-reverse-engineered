@@ -15,28 +15,20 @@ from .constants import GAME_MASTER_TICK_HZ
 
 SAMPLE_RATE = 44100
 PIT_HZ = 1193180.0
-# Type-0x44 PC-speaker resources begin with a 16-bit table. For AE000:065 the
-# game uses that table as play_sound(id) relative offsets (CAF1 adds DS:175E).
-# The same low-level PC-speaker routines also reference DS:17FC as a pitch
-# divisor base for direct ?E effects. We do not yet have a proven copy routine
-# that maps the offset table 1:1 to the normal-note divisor table, so normal
-# note opcodes use the EXE's semitone-style preview mapping below.
+
+# PC speaker / CAF1 SFX facts that are now considered stable:
 #
-# Keep the original first word for ?E arithmetic: user listening confirmed that
-# direct-pitch SFX such as 0x00/0x01 are closer with this base than when the
-# 0x0096 word is skipped. The 0x0096 value is also the sound-0 stream offset.
+# * AE000:065 is the event SFX bank used by CAF1/play_sound(id).
+# * The leading 16-bit table in AE000:065 is a sound-id -> stream-offset table.
+#   The first word 0x0096 is therefore the start of sound 0x00, not a PIT
+#   divisor or a note table entry.
+# * Normal note opcodes use the EXE music-style chromatic note mapping.
+# * Direct-effect opcodes (?E) use the CA9B PIT arithmetic with a live divisor
+#   base. The base value below is capture-calibrated from real-game recordings
+#   of play_sound(0x00) and play_sound(0x0C). Keep it isolated here so the
+#   known runtime-derived value is not mixed with resource offsets.
 PC_SPEAKER_STREAM_START = 0x0096
-PC_SPEAKER_DIRECT_BASE_DIVISOR = 0x0096
-PC_SPEAKER_OFFSET_OR_DIVISOR_TABLE = [
-    150, 1560, 1592, 1638, 1662, 1788, 1888, 2064, 2160, 2196,
-    2452, 2532, 2730, 2952, 3048, 3184, 3276, 3324, 3370, 3424,
-    3576, 3776, 3904, 4128, 4320, 4392, 4904, 5064, 5460, 5904,
-    6096, 6368, 6552, 6648, 6740, 6848, 7152, 7552, 7808, 8256,
-    8640, 8784, 9808, 10128, 10920, 11808, 12192, 12736, 13104, 13296,
-    13480, 13696, 14304, 15104, 15616, 16512, 17280, 17568, 19616, 20256,
-    21840, 23616, 24384, 25472, 26208, 26592, 26960, 27392, 28608, 30208,
-    31232, 33024, 34560, 35136, 39232,
-]
+PC_SPEAKER_DIRECT_BASE_DIVISOR = 0x8F90
 # The EXE advances audio from the same master timer/update cadence used by the
 # game loop.  Keep preview speed adjustable, but make 1.0x the measured clock.
 DEFAULT_PREVIEW_SPEED = 1.0
@@ -137,20 +129,31 @@ def looks_like_soundcard_music(data: bytes) -> bool:
 
 
 def looks_like_soundcard_patch(data: bytes) -> bool:
-    # AE000:061/062 contain instrument/driver-ish names (BLAKE, Viktor) and a
-    # compact binary body.  Keep them visible as raw resources instead of trying
-    # to synthesize them as songs.
-    if len(data) < 32:
+    # AE000:061/062 are named 27-byte instrument/patch records used by the
+    # sound-card music path. Keep them visible as patch banks, not playable audio.
+    if len(data) < 27 or len(data) % 27 != 0:
         return False
-    head = data[:16]
-    return any(name in head for name in (b"BLAKE", b"Viktor"))
+    head = data[:64]
+    names = (b"Silly", b"Viktor", b"Dj", b"MissingN", b"BLAKE")
+    if any(name in head for name in names):
+        return True
+    # Generic fallback for similar banks: printable/nul-padded name field followed
+    # by compact binary parameters. Avoid classifying arbitrary raw blobs by
+    # requiring several plausible records.
+    records = [data[i:i + 27] for i in range(0, min(len(data), 27 * 4), 27)]
+    plausible = 0
+    for rec in records:
+        name = rec[:9].split(b"\0", 1)[0]
+        if 1 <= len(name) <= 9 and all(32 <= b <= 126 for b in name):
+            plausible += 1
+    return plausible >= 2
 
 
 KNOWN_MUSIC_BASES = {
     ("AE000", 49): "startup/title intro music (confirmed: D26C pushes resource 0x31)",
-    ("AE000", 53): "menu/interstitial music candidate (confirmed D5F9 call with 0x35)",
-    ("AE000", 67): "game/menu music candidate (confirmed D5F9 call with 0x43)",
-    ("AE000", 69): "game/menu music candidate (confirmed D5F9 call with 0x45)",
+    ("AE000", 53): "menu/interstitial music (confirmed D5F9 call with 0x35)",
+    ("AE000", 67): "game/menu music (confirmed D5F9 call with 0x43)",
+    ("AE000", 69): "game/menu music (confirmed D5F9 call with 0x45)",
 }
 
 
@@ -285,45 +288,24 @@ def _direct_pitch_to_freq(pitch: int, octave_shift: int = 0) -> float | None:
     if divisor < 2:
         return None
     freq = PIT_HZ / divisor
-    # The real PIT/speaker path does not turn high divisors into rests.  Keep
-    # ultrasonic/high-frequency events so the preview aliases/clicks instead of
-    # adding artificial gaps into effects such as the jump arcs.
+    # The real PIT/speaker path does not turn high divisors into rests. Keep
+    # high-frequency events so jump/laser sweeps stay continuous.
     return freq if freq >= 20.0 else None
 
 
 def _chromatic_note_to_freq(note: int, octave: int, *, transpose: int = 0) -> float:
-    # EXE sound-card path C384 uses note-1 + octave*12. This also gives the
-    # closest listening match for normal-note CAF1 effects so far. The tempting
-    # alternative was to treat the AE000:065 offset table as the PC-speaker PIT
-    # divisor table, but that makes 0x03/switch-like motifs and PC-speaker music
-    # several octaves too high. Until the real DS:17FC initialization is proven,
-    # keep normal notes data-driven by the bytecode but use this stable mapping.
+    # EXE sound-card path C384 uses note-1 + octave*12. Real-game captures
+    # confirm that CAF1 normal-note SFX should follow this musical mapping; the
+    # AE000:065 leading word table is only a stream offset table.
     midi = NOTE_BASE_MIDI + octave * 12 + (note - 1) + transpose
     return _midi_to_freq(max(24, min(108, midi)))
 
 
-def _offset_table_note_to_freq(note: int, octave_shift: int) -> float | None:
-    # Diagnostic only: this follows C988 literally *if* DS:17FC points at the
-    # AE000:065 leading table. User listening shows this is not the right default
-    # for previews, but keeping it available helps future verification.
-    if not (1 <= note <= len(PC_SPEAKER_OFFSET_OR_DIVISOR_TABLE)):
-        return None
-    divisor = PC_SPEAKER_OFFSET_OR_DIVISOR_TABLE[note - 1] >> max(0, octave_shift)
-    if divisor < 2:
-        return None
-    freq = PIT_HZ / divisor
-    return freq if freq >= 20.0 else None
-
-
 def _note_to_freq(note: int, octave: int, *, transpose: int = 0, pitch_mode: str = "musical") -> float | None:
-    if pitch_mode == "offset_table_pc_speaker":
-        return _offset_table_note_to_freq(note, octave)
-    # "soundcard", "pc_speaker", and "musical" intentionally share the
-    # chromatic preview mapping for normal bytecode notes. Direct ?E events are
-    # still rendered through the PIT-style arithmetic in _direct_pitch_to_freq.
+    # Normal note events are musical bytecode events, not raw PIT divisors.
+    # The pitch_mode argument is retained for older callers, but current PC
+    # speaker and sound-card previews intentionally share this chromatic mapping.
     return _chromatic_note_to_freq(note, octave, transpose=transpose)
-
-
 
 
 def _is_probable_rhythm_stream(stream: bytes, stream_no: int | None = None) -> bool:
@@ -509,22 +491,6 @@ def _append_pc_speaker_event(
         events.append((None, _seconds_from_ticks(silent)))
 
 
-def _pc_pitch_table(data: bytes) -> list[float | None]:
-    # Kept for compatibility with older exports.  Skip the 0x0096 stream-start
-    # marker so table[0] corresponds to the real C988 note 1 divisor, 0x0618.
-    table: list[float | None] = []
-    if len(data) < 0x96 or _u16(data, 0) != PC_SPEAKER_STREAM_START:
-        return table
-    for i in range(1, 75):
-        div = _u16(data, i * 2)
-        if div < 16:
-            table.append(None)
-        else:
-            freq = PIT_HZ / div
-            table.append(freq if 20.0 <= freq <= 12000.0 else None)
-    return table
-
-
 def _streams_from_resource(data: bytes) -> list[bytes]:
     if looks_like_soundcard_music(data):
         offs = soundcard_music_offsets(data)
@@ -644,7 +610,6 @@ def parse_note_pairs(
     *,
     music: bool = False,
     max_events: int = 800,
-    pitch_table: list[float | None] | None = None,
     initial_base_ticks: int | None = None,
     pitch_mode: str = "pc_speaker",
 ) -> list[tuple[float | None, float]]:
@@ -797,7 +762,6 @@ def _pitch_mode_from_audio_kind(kind: str | None, data: bytes, *, music: bool) -
 def synthesize_wav(data: bytes, path: Path | str, *, music: bool = False, speed: float = DEFAULT_PREVIEW_SPEED, audio_kind: str | None = None) -> Path:
     path = Path(path)
     streams = _streams_from_resource(data)
-    pitch_table = _pc_pitch_table(data)
     pitch_mode = _pitch_mode_from_audio_kind(audio_kind, data, music=music)
     shared_base = _shared_initial_base_ticks(streams, music=music)
     rhythm_flags: list[bool] = []
@@ -818,7 +782,6 @@ def synthesize_wav(data: bytes, path: Path | str, *, music: bool = False, speed:
                     s,
                     music=music,
                     max_events=1800 if music else 5000,
-                    pitch_table=pitch_table,
                     initial_base_ticks=shared_base,
                     pitch_mode=pitch_mode,
                 ))

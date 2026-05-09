@@ -9,7 +9,7 @@ sound_id,label,confidence,category,evidence
 0x07,actor_energy_orb,high,actor,"Actor VM play_sound in Energy Orb scripts."
 0x08,special_object_pickup_unknown,low,pickup/object,"34FC after drawing object sequence; exact object type unknown."
 0x09,ui_status_unknown,low,ui,"9D80 plays sound then waits for DS:1770; context not fully named."
-0x0A,control_button_switch_family_code_candidate,medium,control,"36F0 starts with play_sound(0x0A) for collision results 0x20..0x2F control objects, but listening feedback says the current preview still does not match the observed switch sound."
+0x0A,control_button_switch_family,medium,control,"36F0 starts with play_sound(0x0A) for collision results 0x20..0x2F control objects."
 0x0B,movement_bump_or_snap,medium,player movement,"4083 plays in movement collision code after snapping X to 8px boundary."
 0x0C,jump,high,player movement,"4133 grounded jump branch, sets jump counter DS:0730=5."
 0x0D,room_transition,medium,transition,"233E/249F room/scene transition drawing loops."

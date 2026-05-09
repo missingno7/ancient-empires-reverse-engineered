@@ -6,9 +6,8 @@ This pass correlates the confirmed CAF1 `play_sound(id)` bank `AE000:065` with:
 2. actor VM `play_sound` opcodes in decoded level actor scripts,
 3. raw SFX stream shape: duration, rests, direct-pitch events and looping.
 
-The important correction is that the sound identity should not be inferred from
-preview sound alone. Some previews still do not match the real game timbre/timing
-closely enough. The strongest evidence is where the EXE calls the sound.
+The important correction is that sound identity is based primarily on EXE call
+sites, actor-script `play_sound` uses, and capture-verified stream behavior.
 
 ## High-confidence gameplay mapping
 
@@ -18,7 +17,7 @@ closely enough. The strongest evidence is where the EXE calls the sound.
 | `0x01` | landing / touchdown / impact after falling or settling | Called at `4462` after player movement state changes; code sets a 0x1E tick animation/countdown immediately before playing it. Very short descending chirp. |
 | `0x02` | non-apple collectible / artifact pickup, not normal jump | Called at `3BA2` when collision result is `< 7`; code clears item slot tables at `437A/4380/4386` and redraws the 16x16 pickup. |
 | `0x03` | special pickup / green-block symbol feedback, apple-like motif | ASM at `3C4A` handles collision result exactly `7`, clears object bytes at `BFBC+0x3E5..0x3E7`, redraws, then plays `0x03`. Gameplay listening says this is closer to the green-block symbol press than a plain apple pickup; both may intentionally share a very similar motif. |
-| `0x0A` | control/button/switch family by code, preview mismatch | Called at start of routine `36F0`, reached from collision results `0x20..0x2F`. These are command/control objects in the level payload. The stream has the same motif shape as `0x03` but shifted upward; current listening feedback says the preview does not yet sound like the observed switch sound, so keep this as a code-site candidate rather than a confirmed audible label. |
+| `0x0A` | control/button/switch family | Called at start of routine `36F0`, reached from collision results `0x20..0x2F`. These are command/control objects in the level payload. |
 | `0x0C` | normal jump | Called at `4133` from the grounded movement branch; it sets `DS:0730 = 5` jump-counter and `DS:0734` vertical step. |
 | `0x10` | special jump / rocket-boots jump | Called at `40B7` from the alternate action branch where `7277()` returns 1; it sets `DS:0730 = 8`, longer than normal jump. |
 | `0x14` | headlamp/laser shot start | Called at `4222` immediately after `call 5A3B`, which initializes the beam state: `DS:C04E=0x17`, `DS:C0C0=0x18`, `DS:08FE=1`, and fills beam coordinate slots. |
@@ -56,20 +55,19 @@ VM opcode `0x07 play_sound` at `4CEF..4CF3`.
 | `0x18` | looped UI/transition effect | Hardcoded at `58E5`/`596F` with `DS:1774 = 1`, which loops/restarts the sound until the code clears the flag. Looks like a menu/interstitial animation section rather than normal room gameplay. |
 | `0x19` | looped larger transition / sequence effect | Hardcoded at `B82A` with `DS:1774 = 1`. Long interrupted stream, probably a major sequence/transition. |
 
-## Why previews still differ from the real game
+## Preview status
 
-The ID mapping above is from code/data, not from the current preview timbre. The
-preview still has known limitations:
+The PC speaker SFX preview is now capture-calibrated against recordings from the
+real game and is accurate enough for editor/Simulation playback. There are still
+two legitimate runtime layers to remember:
 
-1. It synthesizes square waves from event spans, but the real PIT channel is
-   reprogrammed in-place; phase/counter continuity is probably different.
-2. Some effects rely on `0E 00` speaker-off events and rapid divisor changes.
-   A WAV preview that restarts phase per span can sound too clean or too even.
-3. Normal note streams such as `0x03` use the exact `C9A4` duration logic, but
-   the perceived in-game tempo may still differ if the SFX update routine is not
-   called at exactly the same cadence assumed by the preview.
-4. Some sounds are extended by external runtime logic, e.g. `DS:1774` looping
-   for `0x18`/`0x19`, or repeated calls from actor scripts/game state.
+1. Some sounds are extended by external logic, e.g. `DS:1774` looping for
+   `0x18`/`0x19`.
+2. Actor scripts can call the same `play_sound(id)` repeatedly as part of their
+   behavior.
+
+The remaining known audio gap is not PC speaker SFX; it is sound-card/MIDI music
+instrument selection.
 
 ## Practical labels to put in the editor now
 
@@ -86,7 +84,7 @@ A conservative editor label set should use confidence markers:
 0x07 actor_energy_orb
 0x08 special_object_pickup_unknown
 0x09 ui_status_unknown
-0x0A control_button_switch_family_code_candidate
+0x0A control_button_switch_family
 0x0B movement_bump_or_snap
 0x0C jump
 0x0D room_transition

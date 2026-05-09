@@ -11,4 +11,4 @@ Implementation notes:
 - When several `play_sound` instructions fire during one VM burst/tick, the GUI plays the last one. This is closer to the single-output PC speaker model and avoids many overlapping preview processes.
 - Playback uses `temp_preview_wav(item, speed=DEFAULT_PREVIEW_SPEED)`, so Simulation uses the same SFX decoder as the Audio Atlas preview.
 
-The SFX decoder is still a best-effort reconstruction; this change wires Simulation to the currently best-known sound stream rather than silently showing only `sound XX` in actor debug.
+The SFX decoder is now capture-calibrated. Simulation playback therefore uses the same `play_sound(id)` stream and renderer as the Audio Atlas preview instead of silently showing only `sound XX` in actor debug.

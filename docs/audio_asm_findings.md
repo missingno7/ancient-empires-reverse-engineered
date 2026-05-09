@@ -1,8 +1,7 @@
 # Audio/SFX findings from AEPROG_full_disasm.asm
 
 This note summarizes the current reverse-engineering pass over the PC-speaker
-sound path.  It is focused on why some SFX previews still do not match the real
-game perfectly.
+sound path. For the implementation-level summary, see `docs/audio_engine.md`.
 
 ## Core routines
 
@@ -178,15 +177,8 @@ Meaning:
 * direct-pitch duration is two master ticks per segment (`3D 02`)
 * gate threshold is set to 1 (`0D 01`)
 
-If it still has a few spots that sound like they "jump", the current strongest
-hypotheses are:
-
-1. the data intentionally contains pitch-pattern discontinuities,
-2. the preview does not yet emulate PIT channel reload/phase exactly,
-3. the preview is still too idealized because it renders independent square-wave
-   spans instead of a real 8253/8254 counter state.
-
-Those bytes do not look like unrelated data; they are still valid `?E` events.
+The capture-calibrated decoder now treats this as a valid long direct-pitch
+stream. The bytes are not unrelated padding; they are repeated `?E` events.
 
 ### Sound `0x0E`
 
@@ -207,32 +199,22 @@ The hardcoded call at `0x8DA4` does play `0x0E`, but it sits in a larger action
 routine involving a table around `DS:C316` and calls around `0x9402/0x9466/0x963E`.
 It is not one of the actor VM `play_sound` opcodes.
 
-### Better laser candidates
+### Laser / beam sounds
 
-Streams with explicit direct-pitch rests `0E 00` are better candidates for a
-"broken / interrupted / trrroi" sound than `0x0E`, because `0E 00` literally
-turns the speaker off for the current `?E` duration.
-
-Candidates worth listening to carefully:
+The captured `laser.wav` matches `play_sound(0x14)` better than `0x0F`.
+Hardcoded calls still show `0x0F` inside the beam collision/reflection update
+routine, so the current interpretation is:
 
 ```text
-0x11  has repeated 3E87, 0E00, 0E00, 3E49, 0E00, 0E00...
-0x14  alternates pitch events and 0E00 rests heavily
-0x17  similar repeated pitched/rest pattern
-0x18  long effect, hardcoded loop flag is used in two places
-0x19  long effect, hardcoded loop flag is used at 0xB820
-0x1A  descending mirror-ish version of 0x0E
+0x14  headlamp / laser shot start
+0x0F  beam hit / reflector / interaction feedback
 ```
+
+`0x0E` and `0x1A` belong to the separate laser/jello puzzle cell take/place
+logic rather than the main headlamp shot sound.
 
 ## Practical next step
 
-The next useful debugging feature is not another blind pitch tweak.  The editor
-should show an SFX call map:
-
-1. hardcoded `CAF1` call sites,
-2. actor-script `play_sound` uses per level/room/actor,
-3. raw stream summary including explicit rest events (`0E 00`), `3D` duration,
-   and whether the game ever loops that sound via `DS:1774`.
-
-That would make it much easier to correlate "what I hear in-game" with the
-actual sound id.
+The PC speaker SFX side is now stable enough for editor playback. The next audio
+work should focus on sound-card/MIDI music: decode the 27-byte patch/instrument
+records and use them when exporting or previewing AdLib/SoundBlaster music.
