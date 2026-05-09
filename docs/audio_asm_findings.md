@@ -215,6 +215,4 @@ logic rather than the main headlamp shot sound.
 
 ## Practical next step
 
-The PC speaker SFX side is now stable enough for editor playback. The next audio
-work should focus on sound-card/MIDI music: decode the 27-byte patch/instrument
-records and use them when exporting or previewing AdLib/SoundBlaster music.
+The PC speaker SFX side is now stable enough for editor playback. The next audio work should focus on sound-card/MIDI music: the 27-byte named records are confirmed high-score/player tables, while the real AdLib/OPL instruments are embedded in AEPROG.EXE at DS:301A with a 0x38-byte stride.

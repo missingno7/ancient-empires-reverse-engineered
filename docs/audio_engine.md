@@ -87,7 +87,7 @@ separates it into:
 
 - `pc-speaker-sfx`: split CAF1 streams from `AE000:065`.
 - `pc-speaker-music`: simple PC-speaker music stream beginning at `0x96`.
-- `soundcard-music`: AdLib/SoundBlaster-style multi-channel music with channel offsets.
+- `soundcard-music`: PSG/Tandy-like multi-channel sound-card music with channel offsets.
 - `soundcard-channel`: one channel from a sound-card music resource.
 - `soundcard-patch`: named 27-byte instrument/patch records such as `Silly`, `Viktor`, `Dj`, `MissingN`.
 - `raw`: preserved unknown data.
@@ -98,5 +98,18 @@ The patch banks are intentionally not treated as playable audio.
 
 PC speaker SFX are now considered capture-accurate enough for editor playback.
 The remaining known weakness is the sound-card/MIDI instrument side: exported
-MIDI currently uses generic GM program/drum approximations instead of decoding
-and applying the original 27-byte patch/instrument records.
+MIDI now follows the octave base and 5D/6D timbre hints, but it still uses
+conservative GM approximations instead of emulating the original PSG/Tandy-style
+latched tone/noise/attenuation writes.
+
+## 2026-05 FM instrument correction
+
+The previous hypothesis that `AE000:061/062` were sound-card instrument banks was rejected. They are 27-byte named records and look more like save/high-score/progress data.
+
+The sound-card music resources themselves contain the first real AdLib/Sound Blaster mapping layer. Before the bytecode streams, bytes `0x08..0x10` store nine OPL instrument ids, bytes `0x11..0x19` store voice config values, and bytes `0x1A..0x22` store voice level/routing values. For example, `AE000:054` uses OPL ids:
+
+```text
+01 1B 0F 0E 12 0F 0E 17 14
+```
+
+The EXE AdLib path reads these ids and indexes an internal OPL patch table. The editor therefore treats `5D/6D` as stream control/envelope hints and exposes the resource-header OPL ids separately in the MIDI audition panel.

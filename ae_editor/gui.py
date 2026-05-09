@@ -32,7 +32,7 @@ from .renderer import RenderOptions, KnownExtraPickup
 from .object_mapping import visual_sprite_ref
 from .simulation import RoomSimulation
 from .tile_mapping import AUTO_SOLID_TILE_CODES, CONVEYOR_PHYSICS_TILE_CODES, ROPE_TILE_CODES
-from .audio import AudioItem, DEFAULT_PREVIEW_SPEED, build_audio_atlas, play_audio_file, synthesize_wav, temp_preview_wav, write_midi
+from .audio import AudioItem, DEFAULT_PREVIEW_SPEED, GM_PROGRAM_NAMES, build_audio_atlas, describe_music_channels, play_audio_file, stop_audio_playback, synthesize_wav, temp_preview_wav, write_midi
 from .room_payload import (
     actor_script_space,
     actor_script_space_reachable_addresses,
@@ -314,6 +314,9 @@ class LevelEditorApp(tk.Tk):
         self.audio_selected_key: str | None = None
         self.audio_info_var = tk.StringVar(value="")
         self.audio_speed_var = tk.StringVar(value=f"{DEFAULT_PREVIEW_SPEED:g}")
+        self.audio_channel_program_vars: dict[int, tk.StringVar] = {}
+        self.audio_channel_default_programs: dict[int, int | None] = {}
+        self.audio_gm_choices = [f"{i:03d}: {name}" for i, name in enumerate(GM_PROGRAM_NAMES)]
         self.tree_bold_font = tkfont.nametofont("TkDefaultFont").copy()
         self.tree_bold_font.configure(weight="bold")
 
@@ -626,8 +629,8 @@ class LevelEditorApp(tk.Tk):
         ttk.Label(top, text="Preview speed ×").pack(side=tk.LEFT, padx=(12, 0))
         ttk.Spinbox(top, from_=0.25, to=6.0, increment=0.25, width=5, textvariable=self.audio_speed_var).pack(side=tk.LEFT, padx=(2, 0))
         ttk.Button(top, text="Play preview", command=self.play_selected_audio).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(top, text="Export WAV preview", command=self.export_selected_audio_wav).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(top, text="Export raw", command=self.export_selected_audio_raw).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(top, text="Stop", command=self.stop_audio_preview).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(top, text="Export WAV", command=self.export_selected_audio_wav).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(top, text="Export MIDI", command=self.export_selected_audio_midi).pack(side=tk.LEFT, padx=(8, 0))
 
         ttk.Label(
@@ -636,7 +639,7 @@ class LevelEditorApp(tk.Tk):
                 "play_sound/event_07 uses the CAF1 PC-speaker sound-effect bank. "
                 "Music has PC-speaker and AdLib/Sound Blaster resource pairs. "
                 "Preview speed is adjustable; 1.0x uses the recovered 236.69 Hz master tick. "
-                "Raw export preserves the exact in-game bytes; MIDI export is a best-effort transcription for music candidates."
+                "Preview uses the original internal WAV renderer. MIDI export uses the General MIDI instrument mapping below."
             ),
             justify=tk.LEFT,
             wraplength=1100,
@@ -674,8 +677,22 @@ class LevelEditorApp(tk.Tk):
 
         ttk.Label(right, text="Selected audio").pack(anchor="w")
         ttk.Label(right, textvariable=self.audio_info_var, justify=tk.LEFT, wraplength=420).pack(fill=tk.X, pady=(4, 8))
+        controls = ttk.LabelFrame(right, text="MIDI instrument audition")
+        controls.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(
+            controls,
+            text="For MIDI export only: choose a General MIDI instrument per detected channel. Internal preview does not use GM instruments.",
+            justify=tk.LEFT,
+            wraplength=420,
+        ).pack(fill=tk.X, padx=6, pady=(4, 2))
+        self.audio_channel_frame = ttk.Frame(controls)
+        self.audio_channel_frame.pack(fill=tk.X, padx=6, pady=(2, 4))
+        row = ttk.Frame(controls)
+        row.pack(fill=tk.X, padx=6, pady=(0, 6))
+        ttk.Button(row, text="Reset to defaults", command=self.reset_audio_channel_defaults).pack(side=tk.LEFT)
+
         ttk.Label(right, text="Hex preview").pack(anchor="w")
-        self.audio_hex_text = tk.Text(right, height=24, width=58, wrap="none")
+        self.audio_hex_text = tk.Text(right, height=18, width=58, wrap="none")
         self.audio_hex_text.pack(fill=tk.BOTH, expand=True)
 
         self.refresh_audio_atlas()
@@ -694,6 +711,7 @@ class LevelEditorApp(tk.Tk):
             self.audio_tree.insert("", tk.END, iid=item.key, values=(item.kind, code, source, offset, item.length, item.notes))
         self.audio_info_var.set(f"Found {len(self.audio_items)} audio entries.")
         self.audio_hex_text.delete("1.0", tk.END)
+        self._refresh_audio_channel_controls(None)
 
     def on_audio_select(self, _event=None) -> None:
         selection = self.audio_tree.selection() if hasattr(self, "audio_tree") else ()
@@ -732,6 +750,105 @@ class LevelEditorApp(tk.Tk):
             hex_lines.append(f"{base+i:04X}: {hex_part:<47}  {ascii_part}")
         self.audio_hex_text.delete("1.0", tk.END)
         self.audio_hex_text.insert("1.0", "\n".join(hex_lines))
+        self._refresh_audio_channel_controls(item)
+
+    def _refresh_audio_channel_controls(self, item: AudioItem | None) -> None:
+        if not hasattr(self, "audio_channel_frame"):
+            return
+        for child in self.audio_channel_frame.winfo_children():
+            child.destroy()
+        self.audio_channel_program_vars.clear()
+        self.audio_channel_default_programs.clear()
+        if item is None or item.kind not in {"soundcard-music", "soundcard-channel", "pc-speaker-music"}:
+            ttk.Label(self.audio_channel_frame, text="Select a music mix to edit MIDI instruments.").pack(anchor="w")
+            return
+        try:
+            summaries = describe_music_channels(item.data, audio_kind=item.kind)
+        except Exception as exc:
+            ttk.Label(self.audio_channel_frame, text=f"Could not parse channels: {exc}").pack(anchor="w")
+            return
+        if not summaries:
+            ttk.Label(self.audio_channel_frame, text="No playable channels detected.").pack(anchor="w")
+            return
+        for row_no, summary in enumerate(summaries):
+            row = ttk.Frame(self.audio_channel_frame)
+            row.pack(fill=tk.X, pady=1)
+            kind = "rhythm/noise" if summary.is_rhythm else "melody"
+            timbre_text = ", ".join(f"5D {value:02X}" for value in summary.timbres) or "no 5D"
+            expr_text = ", ".join(f"6D {value:02X}" for value in summary.expressions[:4])
+            if len(summary.expressions) > 4:
+                expr_text += ", ..."
+            label = f"Ch {summary.index} ({kind}; {timbre_text}"
+            if expr_text:
+                label += f"; {expr_text}"
+            if summary.opl_instrument_id is not None:
+                label += f"; OPL id {summary.opl_instrument_id:02X}"
+                if summary.opl_config is not None:
+                    label += f" cfg {summary.opl_config:02X}"
+                if summary.opl_voice_level is not None:
+                    label += f" lvl {summary.opl_voice_level:02X}"
+            label += ")"
+            ttk.Label(row, text=label, width=52).pack(side=tk.LEFT)
+            var = tk.StringVar()
+            if summary.default_program is None:
+                default_index = 0
+            else:
+                default_index = max(0, min(127, summary.default_program))
+            var.set(self.audio_gm_choices[default_index])
+            self.audio_channel_program_vars[summary.index] = var
+            self.audio_channel_default_programs[summary.index] = default_index if summary.default_program is not None else None
+            combo = ttk.Combobox(row, values=self.audio_gm_choices, textvariable=var, width=32, state="readonly")
+            combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    def reset_audio_channel_defaults(self) -> None:
+        for index, var in self.audio_channel_program_vars.items():
+            default = self.audio_channel_default_programs.get(index)
+            default_index = 0 if default is None else max(0, min(127, int(default)))
+            var.set(self.audio_gm_choices[default_index])
+
+    def _audio_channel_program_overrides(self) -> dict[int, int | None]:
+        """Return only user-edited GM programs.
+
+        An empty dict means: use the original MIDI export mapping unchanged.
+        Edited channels are pinned to the chosen program so later in-stream 5D
+        timbre markers do not silently override the user's manual choice.
+        """
+        overrides: dict[int, int | None] = {}
+        for index, var in self.audio_channel_program_vars.items():
+            text = var.get().strip()
+            try:
+                program = int(text.split(":", 1)[0])
+            except Exception:
+                continue
+            default = self.audio_channel_default_programs.get(index)
+            if default is None:
+                if program != 0:
+                    overrides[index] = program
+            elif program != default:
+                overrides[index] = program
+        return overrides
+
+    def _write_selected_music_midi(self, path: Path | str) -> Path:
+        item = self._selected_audio_item()
+        if item is None:
+            raise RuntimeError("No audio item selected")
+        if item.kind not in {"soundcard-music", "soundcard-channel", "pc-speaker-music"}:
+            raise RuntimeError("MIDI export is available for music resources only")
+        return write_midi(
+            item.data,
+            path,
+            speed=self._audio_preview_speed(),
+            audio_kind=item.kind,
+            channel_programs=self._audio_channel_program_overrides(),
+            follow_timbre_changes=True,
+        )
+
+    def stop_audio_preview(self) -> None:
+        try:
+            stop_audio_playback()
+            self.status.set("Audio preview stopped")
+        except Exception as exc:
+            messagebox.showerror("Stop failed", str(exc))
 
     def _audio_preview_speed(self) -> float:
         try:
@@ -753,6 +870,10 @@ class LevelEditorApp(tk.Tk):
         if item is None:
             return
         try:
+            # Keep the original stable Audio Atlas preview path for every audio kind.
+            # Sound-card music preview is intentionally NOT routed through MIDI export
+            # or an external MIDI player: the recovered internal WAV renderer is the
+            # reference preview used by double-click and by the top Play button.
             wav_path = temp_preview_wav(item, speed=self._audio_preview_speed())
             play_audio_file(wav_path)
             self.status.set(f"Playing synthesized preview for {item.label}")
@@ -800,8 +921,11 @@ class LevelEditorApp(tk.Tk):
         if not path:
             return
         try:
-            write_midi(item.data, path, speed=self._audio_preview_speed(), audio_kind=item.kind)
-            self.status.set(f"Exported best-effort MIDI: {path}")
+            if item.kind in {"soundcard-music", "soundcard-channel", "pc-speaker-music"}:
+                self._write_selected_music_midi(path)
+            else:
+                write_midi(item.data, path, speed=self._audio_preview_speed(), audio_kind=item.kind)
+            self.status.set(f"Exported MIDI: {path}")
         except Exception as exc:
             messagebox.showerror("MIDI export failed", str(exc))
 

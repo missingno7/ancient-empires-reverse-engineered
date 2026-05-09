@@ -16,6 +16,30 @@ from .constants import GAME_MASTER_TICK_HZ
 SAMPLE_RATE = 44100
 PIT_HZ = 1193180.0
 
+GM_PROGRAM_NAMES = [
+    "Acoustic Grand Piano", "Bright Acoustic Piano", "Electric Grand Piano", "Honky-tonk Piano",
+    "Electric Piano 1", "Electric Piano 2", "Harpsichord", "Clavinet",
+    "Celesta", "Glockenspiel", "Music Box", "Vibraphone", "Marimba", "Xylophone", "Tubular Bells", "Dulcimer",
+    "Drawbar Organ", "Percussive Organ", "Rock Organ", "Church Organ", "Reed Organ", "Accordion", "Harmonica", "Tango Accordion",
+    "Acoustic Guitar (nylon)", "Acoustic Guitar (steel)", "Electric Guitar (jazz)", "Electric Guitar (clean)",
+    "Electric Guitar (muted)", "Overdriven Guitar", "Distortion Guitar", "Guitar Harmonics",
+    "Acoustic Bass", "Electric Bass (finger)", "Electric Bass (pick)", "Fretless Bass", "Slap Bass 1", "Slap Bass 2",
+    "Synth Bass 1", "Synth Bass 2", "Violin", "Viola", "Cello", "Contrabass", "Tremolo Strings", "Pizzicato Strings",
+    "Orchestral Harp", "Timpani", "String Ensemble 1", "String Ensemble 2", "SynthStrings 1", "SynthStrings 2",
+    "Choir Aahs", "Voice Oohs", "Synth Voice", "Orchestra Hit", "Trumpet", "Trombone", "Tuba", "Muted Trumpet",
+    "French Horn", "Brass Section", "SynthBrass 1", "SynthBrass 2", "Soprano Sax", "Alto Sax", "Tenor Sax", "Baritone Sax",
+    "Oboe", "English Horn", "Bassoon", "Clarinet", "Piccolo", "Flute", "Recorder", "Pan Flute",
+    "Blown Bottle", "Shakuhachi", "Whistle", "Ocarina", "Lead 1 (square)", "Lead 2 (sawtooth)",
+    "Lead 3 (calliope)", "Lead 4 (chiff)", "Lead 5 (charang)", "Lead 6 (voice)", "Lead 7 (fifths)", "Lead 8 (bass + lead)",
+    "Pad 1 (new age)", "Pad 2 (warm)", "Pad 3 (polysynth)", "Pad 4 (choir)", "Pad 5 (bowed)", "Pad 6 (metallic)",
+    "Pad 7 (halo)", "Pad 8 (sweep)", "FX 1 (rain)", "FX 2 (soundtrack)", "FX 3 (crystal)", "FX 4 (atmosphere)",
+    "FX 5 (brightness)", "FX 6 (goblins)", "FX 7 (echoes)", "FX 8 (sci-fi)", "Sitar", "Banjo", "Shamisen", "Koto",
+    "Kalimba", "Bag pipe", "Fiddle", "Shanai", "Tinkle Bell", "Agogo", "Steel Drums", "Woodblock",
+    "Taiko Drum", "Melodic Tom", "Synth Drum", "Reverse Cymbal", "Guitar Fret Noise", "Breath Noise", "Seashore",
+    "Bird Tweet", "Telephone Ring", "Helicopter", "Applause", "Gunshot",
+]
+
+
 # PC speaker / CAF1 SFX facts that are now considered stable:
 #
 # * AE000:065 is the event SFX bank used by CAF1/play_sound(id).
@@ -35,7 +59,7 @@ DEFAULT_PREVIEW_SPEED = 1.0
 
 @dataclass(frozen=True)
 class AudioItem:
-    kind: str  # "pc-speaker-sfx", "pc-speaker-music", "soundcard-music", "soundcard-channel", "soundcard-patch", "raw"
+    kind: str  # "pc-speaker-sfx", "pc-speaker-music", "soundcard-music", "soundcard-channel", "raw"
     key: str
     label: str
     archive_name: str
@@ -46,6 +70,157 @@ class AudioItem:
     length: int
     data: bytes
     notes: str = ""
+
+
+@dataclass(frozen=True)
+class MusicChannelSummary:
+    index: int
+    is_rhythm: bool
+    timbres: tuple[int, ...]
+    expressions: tuple[int, ...]
+    default_program: int | None
+    event_count: int
+    opl_instrument_id: int | None = None
+    opl_config: int | None = None
+    opl_voice_level: int | None = None
+
+
+@dataclass(frozen=True)
+class SoundCardMusicHeader:
+    """AdLib/Sound Blaster metadata found before the bytecode streams.
+
+    The first four words are stream offsets. Bytes 0x08..0x10 are nine OPL
+    instrument ids consumed by the AdLib initialization path in the EXE. Bytes
+    0x11..0x19 and 0x1A..0x22 are per-voice configuration/level hints.
+    """
+
+    offsets: tuple[int, ...]
+    instrument_ids: tuple[int | None, ...]
+    configs: tuple[int | None, ...]
+    voice_levels: tuple[int | None, ...]
+
+
+@dataclass(frozen=True)
+class OplOperatorParams:
+    """Decoded 13-word operator definition from the EXE OPL table.
+
+    The game stores each operator as 13 little-endian words, but the OPL loader
+    only uses the low byte of each word. Two operators plus two waveform words
+    make one 0x38-byte instrument definition at DS:301A.
+    """
+
+    values: tuple[int, ...]
+    waveform: int
+
+    @property
+    def ksl(self) -> int:
+        return self.values[0] & 0x03
+
+    @property
+    def multiple(self) -> int:
+        return self.values[1] & 0x0F
+
+    @property
+    def feedback_or_op_hint(self) -> int:
+        return self.values[2] & 0x0F
+
+    @property
+    def attack(self) -> int:
+        return self.values[3] & 0x0F
+
+    @property
+    def sustain_level(self) -> int:
+        # ASM E324 writes register 0x80 as values[4] << 4 | values[7].
+        return self.values[4] & 0x0F
+
+    @property
+    def sustain_enabled(self) -> bool:
+        # This bit is the OPL envelope-generator type / sustain flag used in
+        # register 0x20. It is not the sustain-level nibble.
+        return bool(self.values[5])
+
+    @property
+    def decay(self) -> int:
+        # ASM E2D6 writes register 0x60 as values[3] << 4 | values[6].
+        return self.values[6] & 0x0F
+
+    @property
+    def release(self) -> int:
+        return self.values[7] & 0x0F
+
+    @property
+    def total_level(self) -> int:
+        return self.values[8] & 0x3F
+
+    @property
+    def tremolo(self) -> bool:
+        return bool(self.values[9])
+
+    @property
+    def vibrato(self) -> bool:
+        return bool(self.values[10])
+
+    @property
+    def key_scale_rate(self) -> bool:
+        return bool(self.values[11])
+
+    @property
+    def carrier_sustain_hint(self) -> bool:
+        return bool(self.values[12])
+
+    def opl20(self) -> int:
+        return ((0x80 if self.tremolo else 0) | (0x40 if self.vibrato else 0) |
+                (0x20 if self.sustain_enabled else 0) | (0x10 if self.key_scale_rate else 0) |
+                self.multiple)
+
+    def opl40(self, *, volume_adjusted_tl: int | None = None) -> int:
+        tl = self.total_level if volume_adjusted_tl is None else (volume_adjusted_tl & 0x3F)
+        return ((self.ksl & 0x03) << 6) | tl
+
+    def opl60(self) -> int:
+        # ASM E2D6: attack nibble from values[3], decay nibble from values[6].
+        return ((self.attack & 0x0F) << 4) | self.decay
+
+    def opl80(self) -> int:
+        # ASM E324: sustain-level nibble from values[4], release from values[7].
+        return ((self.sustain_level & 0x0F) << 4) | self.release
+
+    def ople0(self) -> int:
+        return self.waveform & 0x03
+
+
+@dataclass(frozen=True)
+class OplInstrumentPatch:
+    index: int
+    modulator: OplOperatorParams
+    carrier: OplOperatorParams
+
+    @property
+    def feedback(self) -> int:
+        # The C0 register uses the second operator's byte 2 as feedback-ish
+        # value in the EXE path; the low bit comes from byte 12 as the
+        # additive/FM connection flag.
+        return self.carrier.feedback_or_op_hint & 0x07
+
+    @property
+    def additive(self) -> bool:
+        # In OPL terms: bit 0 of C0. False = FM/modulated, True = additive.
+        return not self.carrier_sustain_disabled
+
+    @property
+    def carrier_sustain_disabled(self) -> bool:
+        return bool(self.carrier.values[12])
+
+    def oplc0(self) -> int:
+        connection = 0 if self.carrier_sustain_disabled else 1
+        return ((self.feedback & 0x07) << 1) | connection
+
+
+@dataclass(frozen=True)
+class SoundCardControlEvent:
+    time_ticks: int
+    kind: str  # "timbre" or "expression"
+    value: int
 
 
 def _u16(data: bytes, off: int) -> int:
@@ -128,25 +303,708 @@ def looks_like_soundcard_music(data: bytes) -> bool:
     return bool(soundcard_music_offsets(data))
 
 
-def looks_like_soundcard_patch(data: bytes) -> bool:
-    # AE000:061/062 are named 27-byte instrument/patch records used by the
-    # sound-card music path. Keep them visible as patch banks, not playable audio.
-    if len(data) < 27 or len(data) % 27 != 0:
+def looks_like_high_score_table(data: bytes) -> bool:
+    """Return True for the AE000:061/062 10x27-byte player/high-score tables.
+
+    These records were once misidentified as sound-card patch banks. They are
+    intentionally filtered out of the Audio Atlas now that the names in them are
+    confirmed to be player/high-score data.
+    """
+    if len(data) != 270:
         return False
-    head = data[:64]
-    names = (b"Silly", b"Viktor", b"Dj", b"MissingN", b"BLAKE")
-    if any(name in head for name in names):
-        return True
-    # Generic fallback for similar banks: printable/nul-padded name field followed
-    # by compact binary parameters. Avoid classifying arbitrary raw blobs by
-    # requiring several plausible records.
-    records = [data[i:i + 27] for i in range(0, min(len(data), 27 * 4), 27)]
+    records = [data[i:i + 27] for i in range(0, len(data), 27)]
     plausible = 0
     for rec in records:
         name = rec[:9].split(b"\0", 1)[0]
         if 1 <= len(name) <= 9 and all(32 <= b <= 126 for b in name):
             plausible += 1
     return plausible >= 2
+
+
+EXE_AUDIO_DS_BASE = 0x0FA30
+EXE_HEADER_SIZE = 0x200
+OPL_PATCH_TABLE_DS_OFFSET = 0x301A
+OPL_PATCH_STRIDE = 0x38
+OPL_PATCH_COUNT = 64
+
+
+
+
+@dataclass(frozen=True)
+class OplRegisterWrite:
+    time_ticks: int
+    voice: int
+    register: int
+    value: int
+    note: str = ""
+
+
+OPL_VOICE_OPERATOR_SLOTS = (
+    (0x00, 0x03), (0x01, 0x04), (0x02, 0x05),
+    (0x08, 0x0B), (0x09, 0x0C), (0x0A, 0x0D),
+    (0x10, 0x13), (0x11, 0x14), (0x12, 0x15),
+)
+
+OPL_MULTIPLIER_TABLE = (0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0,
+                        8.0, 9.0, 10.0, 10.0, 12.0, 12.0, 15.0, 15.0)
+
+# Calibration from AE000:054 real-game capture: the generic sound-card
+# bytecode preview was lowered by one octave so raw channels matched MIDI
+# audition, but once the real AdLib path expands each stream into three OPL
+# voices with DAT header pitch offsets, the 9-voice render sits one octave too
+# high.  Keep the MIDI/PC-speaker path unchanged and apply this only to the
+# recovered AdLib/OPL trace and WAV preview.
+ADLIB_OPL_GLOBAL_TRANSPOSE = -12
+
+# The DAT header deliberately stacks octave voices (for AE000:054: +24/+12).
+# A real YM3812 patch table contains operator levels and spectral behaviour that
+# our small preview synth only approximates.  Slightly damping stacked octave
+# voices keeps the atlas WAV spectrum close to the capture while the exported
+# VGM/trace still preserves all voices.
+ADLIB_PREVIEW_OCTAVE_STACK_GAIN = 0.60
+ADLIB_PREVIEW_SOFT_LOWPASS_HZ = 0.0
+
+
+def _operator_init_registers(slot: int, op: OplOperatorParams, *, total_level_override: int | None = None) -> list[tuple[int, int]]:
+    """Return the OPL register/value pairs that E1F2/E372/E2D6/E324/E44B emit."""
+    return [
+        (0x20 + slot, op.opl20()),
+        (0x40 + slot, op.opl40(volume_adjusted_tl=total_level_override)),
+        (0x60 + slot, op.opl60()),
+        (0x80 + slot, op.opl80()),
+        (0xE0 + slot, op.ople0()),
+    ]
+
+
+def _voice_adjusted_carrier_tl(header: SoundCardMusicHeader, voice: int, patch: OplInstrumentPatch) -> int:
+    """Model D8F0's write to DS:301A + instrument*0x38 + 0x2A.
+
+    Offset 0x2A is the low byte of second-operator word 8, i.e. the carrier
+    total level used by E27B when writing OPL register 0x40+carrier_slot.
+    """
+    level = header.voice_levels[voice] if voice < len(header.voice_levels) else None
+    if level is None:
+        return patch.carrier.total_level
+    return max(0, min(0x3F, 0x3F - (level & 0xFF) * 9))
+
+
+def soundcard_music_opl_init_writes(data: bytes, exe_path: Path | str) -> list[OplRegisterWrite]:
+    """Return the AdLib/OPL register writes used when a sound-card song starts.
+
+    This mirrors the D8F0 -> DA66 -> E0C0/E1F2... initialization path enough to
+    debug instruments without having to run the DOS binary.
+    """
+    header = soundcard_music_header(data)
+    if header is None:
+        return []
+    table = load_opl_instrument_table(exe_path)
+    writes: list[OplRegisterWrite] = []
+    for voice, inst_id in enumerate(header.instrument_ids[:9]):
+        if inst_id is None:
+            continue
+        patch = table.get(inst_id)
+        if patch is None:
+            continue
+        mod_slot, car_slot = OPL_VOICE_OPERATOR_SLOTS[voice]
+        carrier_tl = _voice_adjusted_carrier_tl(header, voice, patch)
+        for reg, value in _operator_init_registers(mod_slot, patch.modulator):
+            writes.append(OplRegisterWrite(0, voice, reg, value, f"voice {voice} inst {inst_id:02X} mod"))
+        for reg, value in _operator_init_registers(car_slot, patch.carrier, total_level_override=carrier_tl):
+            writes.append(OplRegisterWrite(0, voice, reg, value, f"voice {voice} inst {inst_id:02X} car"))
+        writes.append(OplRegisterWrite(0, voice, 0xC0 + voice, patch.oplc0(), f"voice {voice} inst {inst_id:02X} C0"))
+    return writes
+
+
+def write_opl_register_trace_csv(data: bytes, exe_path: Path | str, path: Path | str) -> Path:
+    path = Path(path)
+    rows = ["time_ticks,voice,register,value,note"]
+    for write in soundcard_music_opl_init_writes(data, exe_path):
+        rows.append(f"{write.time_ticks},{write.voice},0x{write.register:02X},0x{write.value:02X},{write.note}")
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return path
+
+
+def _opl_fnum_block_from_freq(freq: float) -> tuple[int, int]:
+    """Convert a Hz frequency to YM3812 F-number/block fields.
+
+    The game ultimately writes OPL A0/B0 registers through E48A.  The exact DOS
+    code uses precomputed tables built at runtime, but the YM3812 relationship
+    is stable enough to reproduce the same register layer for debugging/VGM
+    export:
+
+        freq ~= fnum * 49716 / 2 ** (20 - block)
+
+    Choose the block with an in-range 10-bit fnum, preferring the normal OPL
+    0x157..0x2AE-ish range to minimize rounding error.
+    """
+    if freq <= 0:
+        return 0, 0
+    best: tuple[float, int, int] | None = None
+    for block in range(8):
+        fnum = int(round(freq * (2 ** (20 - block)) / 49716.0))
+        if not (0 <= fnum <= 0x3FF):
+            continue
+        # Prefer the central range used by normal OPL note tables, but allow
+        # anything legal when very low/high notes need it.
+        penalty = 0.0 if 0x100 <= fnum <= 0x3FF else 1000.0
+        actual = fnum * 49716.0 / (2 ** (20 - block))
+        err = abs(actual - freq) + penalty
+        if best is None or err < best[0]:
+            best = (err, block, fnum)
+    if best is None:
+        return 0x3FF, 7
+    _err, block, fnum = best
+    return fnum & 0x3FF, block & 0x07
+
+
+def _opl_note_register_writes(voice: int, freq: float | None, *, key_on: bool) -> list[tuple[int, int]]:
+    """Return A0/B0 writes for one OPL voice.
+
+    Mirrors the useful part of E52A/E48A: E52A turns a voice off by writing B0
+    then A0, and E48A writes A0 low fnum and B0 block/fnum-hi/key-on.  For note
+    on we keep the A0/B0 order used by E48A.
+    """
+    if freq is None or not key_on:
+        return [(0xB0 + voice, 0x00), (0xA0 + voice, 0x00)]
+    fnum, block = _opl_fnum_block_from_freq(freq)
+    return [
+        (0xA0 + voice, fnum & 0xFF),
+        (0xB0 + voice, 0x20 | ((block & 0x07) << 2) | ((fnum >> 8) & 0x03)),
+    ]
+
+
+def soundcard_music_opl_full_writes(data: bytes, exe_path: Path | str, *, speed: float = DEFAULT_PREVIEW_SPEED) -> list[OplRegisterWrite]:
+    """Return a pragmatic full-song OPL register trace for a sound-card song.
+
+    The earlier CSV only emitted instrument initialization.  This adds the note
+    layer: stream 0 drives voices 0..2, stream 1 drives 3..5, stream 2 drives
+    6..8, with per-voice pitch offsets from the DAT header.  The trace is meant
+    for debugging and VGM export; the exact YM3812 synthesis should be delegated
+    to an OPL emulator/player rather than approximated by the atlas WAV synth.
+    """
+    header = soundcard_music_header(data)
+    if header is None:
+        return []
+    writes: list[OplRegisterWrite] = []
+    # Core AdLib setup seen around D99B/DA49/D9E1 in the EXE.
+    writes.append(OplRegisterWrite(0, -1, 0x01, 0x20, "enable OPL waveform select"))
+    writes.append(OplRegisterWrite(0, -1, 0x08, 0x00, "normal OPL mode"))
+    writes.append(OplRegisterWrite(0, -1, 0xBD, 0x00, "melodic mode / rhythm off"))
+    for voice in range(9):
+        for reg, value in _opl_note_register_writes(voice, None, key_on=False):
+            writes.append(OplRegisterWrite(0, voice, reg, value, f"voice {voice} initial off"))
+    writes.extend(soundcard_music_opl_init_writes(data, exe_path))
+
+    streams = _streams_from_resource(data)
+    parsed = _parse_music_streams_synchronized(
+        streams,
+        [False for _ in streams],
+        max_events=2400,
+        pitch_mode="soundcard",
+    )
+    speed = max(0.10, min(8.0, float(speed)))
+
+    def transpose_freq(freq: float, semitones: int | None) -> float:
+        if semitones is None:
+            offset = ADLIB_OPL_GLOBAL_TRANSPOSE
+        else:
+            offset = semitones - 0x100 if semitones >= 0x80 else semitones
+            offset += ADLIB_OPL_GLOBAL_TRANSPOSE
+        return freq * (2.0 ** (offset / 12.0))
+
+    for group, events in enumerate(parsed[:3]):
+        pos_ticks = 0
+        for freq, dur_seconds in events:
+            event_ticks = max(1, int(round((dur_seconds * speed) / TICK_SECONDS)))
+            voices = range(group * 3, min(group * 3 + 3, 9))
+            if freq is None or freq < 0:
+                for voice in voices:
+                    for reg, value in _opl_note_register_writes(voice, None, key_on=False):
+                        writes.append(OplRegisterWrite(pos_ticks, voice, reg, value, f"stream {group} rest/off"))
+            else:
+                for voice in voices:
+                    # The real DB60 calls E52A immediately before E48A.
+                    for reg, value in _opl_note_register_writes(voice, None, key_on=False):
+                        writes.append(OplRegisterWrite(pos_ticks, voice, reg, value, f"voice {voice} retrigger off"))
+                    cfg = header.configs[voice] if voice < len(header.configs) else 0
+                    note_freq = transpose_freq(freq, cfg)
+                    for reg, value in _opl_note_register_writes(voice, note_freq, key_on=True):
+                        writes.append(OplRegisterWrite(pos_ticks, voice, reg, value, f"stream {group} note voice {voice}"))
+            pos_ticks += event_ticks
+    writes.sort(key=lambda w: w.time_ticks)
+    return writes
+
+
+def write_opl_full_register_trace_csv(data: bytes, exe_path: Path | str, path: Path | str, *, speed: float = DEFAULT_PREVIEW_SPEED) -> Path:
+    path = Path(path)
+    rows = ["time_ticks,time_seconds,voice,register,value,note"]
+    for write in soundcard_music_opl_full_writes(data, exe_path, speed=speed):
+        seconds = write.time_ticks * TICK_SECONDS / max(0.10, min(8.0, float(speed)))
+        rows.append(f"{write.time_ticks},{seconds:.6f},{write.voice},0x{write.register:02X},0x{write.value:02X},{write.note}")
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return path
+
+
+def write_opl_vgm(data: bytes, exe_path: Path | str, path: Path | str, *, speed: float = DEFAULT_PREVIEW_SPEED) -> Path:
+    """Export a YM3812 VGM trace for use with an accurate OPL emulator/player.
+
+    This is the most accurate output added so far: it does not try to fake FM
+    synthesis in Python.  It emits the recovered YM3812 register writes so a VGM
+    player can synthesize them with its own OPL core.
+    """
+    path = Path(path)
+    writes = soundcard_music_opl_full_writes(data, exe_path, speed=speed)
+    speed = max(0.10, min(8.0, float(speed)))
+    sample_rate = 44100
+    stream = bytearray()
+    current_sample = 0
+    total_sample = 0
+
+    def emit_wait(samples: int) -> None:
+        nonlocal current_sample
+        samples = max(0, int(samples))
+        while samples > 0:
+            chunk = min(samples, 0xFFFF)
+            stream.extend((0x61, chunk & 0xFF, (chunk >> 8) & 0xFF))
+            current_sample += chunk
+            samples -= chunk
+
+    for w in writes:
+        target_sample = int(round((w.time_ticks * TICK_SECONDS / speed) * sample_rate))
+        if target_sample > current_sample:
+            emit_wait(target_sample - current_sample)
+        stream.extend((0x5A, w.register & 0xFF, w.value & 0xFF))
+        total_sample = max(total_sample, current_sample)
+    # Let the last note/release breathe a little; callers can trim in a DAW.
+    emit_wait(int(sample_rate * 1.0))
+    total_sample = current_sample
+    stream.append(0x66)
+
+    header_size = 0x100
+    blob = bytearray(header_size)
+    blob[0:4] = b"Vgm "
+    # VGM version 1.51 with data offset and YM3812 clock field.
+    struct.pack_into("<I", blob, 0x08, 0x00000151)
+    struct.pack_into("<I", blob, 0x14, 0)                 # GD3 offset
+    struct.pack_into("<I", blob, 0x18, total_sample)      # total samples
+    struct.pack_into("<I", blob, 0x1C, 0)                 # loop offset
+    struct.pack_into("<I", blob, 0x20, 0)                 # loop samples
+    struct.pack_into("<I", blob, 0x24, 60)                # nominal rate
+    struct.pack_into("<I", blob, 0x34, header_size - 0x34) # data offset
+    struct.pack_into("<I", blob, 0x50, 3579545)           # YM3812 clock
+    out = bytes(blob) + bytes(stream)
+    # EOF offset is relative to 0x04.
+    out = bytearray(out)
+    struct.pack_into("<I", out, 0x04, len(out) - 4)
+    path.write_bytes(bytes(out))
+    return path
+
+
+def _opl_waveform(kind: int, phase: float) -> float:
+    x = math.sin(phase)
+    kind &= 0x03
+    if kind == 0:
+        return x
+    if kind == 1:
+        return max(0.0, x)
+    if kind == 2:
+        return abs(x) * 2.0 - 1.0
+    # OPL2 waveform 3 is a quarter-ish sine family; this is intentionally only
+    # a preview approximation, not a cycle-accurate YM3812 emulator.
+    return max(0.0, math.sin(phase)) * 2.0 - 1.0
+
+
+def _opl_envelope(op: OplOperatorParams, t: float, dur: float) -> float:
+    attack = 0.004 + (15 - op.attack) * 0.010
+    decay = 0.018 + (15 - op.decay) * 0.018
+    # OPL sustain level: 0 is loudest, 15 is quietest.
+    sustain_amp = max(0.08, 1.0 - (op.sustain_level / 15.0) * 0.88)
+    if t < attack:
+        return t / max(attack, 1e-6)
+    if t < attack + decay:
+        f = (t - attack) / max(decay, 1e-6)
+        return 1.0 + (sustain_amp - 1.0) * f
+    # Apply a tiny tail fade at the end so bytecode note boundaries do not click.
+    release = min(0.045 + (15 - op.release) * 0.003, max(0.0, dur * 0.35))
+    if release > 0 and t > dur - release:
+        return sustain_amp * max(0.0, (dur - t) / release)
+    return sustain_amp
+
+
+def _tl_to_amp(total_level: int) -> float:
+    # YM3812 total-level attenuation is 0.75 dB per step.  Older atlas previews
+    # used a deliberately gentle curve, which made modulators too loud and kept
+    # high FM sidebands visible for the whole note.  Use the real attenuation
+    # curve for AdLib matching; users can raise track gain after mixing.
+    return 10.0 ** (-((total_level & 0x3F) * 0.75) / 20.0)
+
+
+def _fm_render_note(patch: OplInstrumentPatch, freq: float, dur: float, sample_rate: int, *, carrier_tl: int | None = None) -> list[float]:
+    n = max(1, int(round(dur * sample_rate)))
+    out = [0.0] * n
+    mod_mul = OPL_MULTIPLIER_TABLE[patch.modulator.multiple & 0x0F]
+    car_mul = OPL_MULTIPLIER_TABLE[patch.carrier.multiple & 0x0F]
+    mod_amp = _tl_to_amp(patch.modulator.total_level)
+    car_amp = _tl_to_amp(patch.carrier.total_level if carrier_tl is None else carrier_tl)
+    # A rough FM index. High modulator TL means quieter modulator, lower index.
+    fm_index = 0.4 + 6.0 * mod_amp
+    mod_phase = 0.0
+    car_phase = 0.0
+    mod_step = 2.0 * math.pi * freq * mod_mul / sample_rate
+    car_step = 2.0 * math.pi * freq * car_mul / sample_rate
+    for i in range(n):
+        t = i / sample_rate
+        env = _opl_envelope(patch.carrier, t, dur)
+        # Both OPL operators have their own envelope.  A previous approximation
+        # applied only the carrier envelope and left the modulator at a constant
+        # strength, which produced bright, clean high-frequency sidebands that
+        # are not present in the in-game capture.
+        mod_env = _opl_envelope(patch.modulator, t, dur)
+        m = _opl_waveform(patch.modulator.waveform, mod_phase) * mod_env
+        if patch.additive:
+            c = 0.45 * _opl_waveform(patch.modulator.waveform, mod_phase) * mod_amp * mod_env + _opl_waveform(patch.carrier.waveform, car_phase) * car_amp
+        else:
+            c = _opl_waveform(patch.carrier.waveform, car_phase + fm_index * m)
+            c *= car_amp
+        out[i] = c * env
+        mod_phase += mod_step
+        car_phase += car_step
+    return out
+
+
+
+def _fm_render_note_numpy(patch: OplInstrumentPatch, freq: float, dur: float, sample_rate: int, *, carrier_tl: int | None = None):
+    """Vectorized version of _fm_render_note used when numpy is available."""
+    try:
+        import numpy as np  # type: ignore
+    except Exception:
+        return _fm_render_note(patch, freq, dur, sample_rate, carrier_tl=carrier_tl)
+    n = max(1, int(round(dur * sample_rate)))
+    t = np.arange(n, dtype=np.float64) / float(sample_rate)
+    mod_mul = OPL_MULTIPLIER_TABLE[patch.modulator.multiple & 0x0F]
+    car_mul = OPL_MULTIPLIER_TABLE[patch.carrier.multiple & 0x0F]
+    mod_amp = _tl_to_amp(patch.modulator.total_level)
+    car_amp = _tl_to_amp(patch.carrier.total_level if carrier_tl is None else carrier_tl)
+    fm_index = 0.4 + 6.0 * mod_amp
+    mod_phase = 2.0 * math.pi * freq * mod_mul * t
+    car_phase = 2.0 * math.pi * freq * car_mul * t
+
+    def wave_np(kind: int, phase):
+        x = np.sin(phase)
+        kind &= 0x03
+        if kind == 0:
+            return x
+        if kind == 1:
+            return np.maximum(0.0, x)
+        if kind == 2:
+            return np.abs(x) * 2.0 - 1.0
+        return np.maximum(0.0, x) * 2.0 - 1.0
+
+    attack = 0.004 + (15 - patch.carrier.attack) * 0.010
+    decay = 0.018 + (15 - patch.carrier.decay) * 0.018
+    sustain_amp = max(0.08, 1.0 - (patch.carrier.sustain_level / 15.0) * 0.88)
+    env = np.empty(n, dtype=np.float64)
+    if attack > 0:
+        attack_mask = t < attack
+        env[attack_mask] = t[attack_mask] / attack
+    else:
+        attack_mask = np.zeros(n, dtype=bool)
+    decay_mask = (t >= attack) & (t < attack + decay)
+    if decay > 0:
+        f = (t[decay_mask] - attack) / decay
+        env[decay_mask] = 1.0 + (sustain_amp - 1.0) * f
+    sustain_mask = ~(attack_mask | decay_mask)
+    env[sustain_mask] = sustain_amp
+    release = min(0.020 + (15 - patch.carrier.release) * 0.004, max(0.0, dur * 0.35))
+    if release > 0:
+        rel_mask = t > dur - release
+        env[rel_mask] = sustain_amp * np.maximum(0.0, (dur - t[rel_mask]) / release)
+
+    # Use the modulator's own envelope as the FM-index envelope.  Without this
+    # the atlas preview is much brighter than the AdLib capture because the
+    # modulating operator never decays.
+    mod_attack = 0.004 + (15 - patch.modulator.attack) * 0.010
+    mod_decay = 0.018 + (15 - patch.modulator.decay) * 0.018
+    mod_sustain_amp = max(0.08, 1.0 - (patch.modulator.sustain_level / 15.0) * 0.88)
+    mod_env = np.empty(n, dtype=np.float64)
+    if mod_attack > 0:
+        mod_attack_mask = t < mod_attack
+        mod_env[mod_attack_mask] = t[mod_attack_mask] / mod_attack
+    else:
+        mod_attack_mask = np.zeros(n, dtype=bool)
+    mod_decay_mask = (t >= mod_attack) & (t < mod_attack + mod_decay)
+    if mod_decay > 0:
+        f = (t[mod_decay_mask] - mod_attack) / mod_decay
+        mod_env[mod_decay_mask] = 1.0 + (mod_sustain_amp - 1.0) * f
+    mod_sustain_mask = ~(mod_attack_mask | mod_decay_mask)
+    mod_env[mod_sustain_mask] = mod_sustain_amp
+    mod_release = min(0.020 + (15 - patch.modulator.release) * 0.004, max(0.0, dur * 0.35))
+    if mod_release > 0:
+        mod_rel_mask = t > dur - mod_release
+        mod_env[mod_rel_mask] = mod_sustain_amp * np.maximum(0.0, (dur - t[mod_rel_mask]) / mod_release)
+
+    m = wave_np(patch.modulator.waveform, mod_phase) * mod_env
+    if patch.additive:
+        out = 0.45 * wave_np(patch.modulator.waveform, mod_phase) * mod_amp * mod_env + wave_np(patch.carrier.waveform, car_phase) * car_amp
+    else:
+        out = wave_np(patch.carrier.waveform, car_phase + fm_index * m) * car_amp
+    return out * env
+
+def synthesize_adlib_like_wav(
+    data: bytes,
+    exe_path: Path | str,
+    path: Path | str,
+    *,
+    speed: float = DEFAULT_PREVIEW_SPEED,
+) -> Path:
+    """Render a pragmatic AdLib-like preview using extracted EXE FM patches.
+
+    This is not a cycle-accurate YM3812 emulator. It is an atlas/audition render
+    that uses the real instrument table, the music header's patch ids and the
+    same bytecode timing/note parser as MIDI/WAV preview.
+    """
+    path = Path(path)
+    header = soundcard_music_header(data)
+    if header is None:
+        return synthesize_wav(data, path, music=True, audio_kind="soundcard-music", speed=speed)
+    table = load_opl_instrument_table(exe_path)
+    streams = _streams_from_resource(data)
+    # The AdLib driver does not treat the three resource streams as only three
+    # final voices. ASM DB60 maps each stream group to a triad of OPL voices:
+    #   stream 0 -> voices 0,1,2
+    #   stream 1 -> voices 3,4,5
+    #   stream 2 -> voices 6,7,8
+    # Bytes 0x11..0x19 copied to DS:CA62..CA6A are pitch offsets for those
+    # nine voices.  Earlier previews rendered only one voice per stream, which
+    # lost most of the organ/plucked FM texture heard in the real capture.
+    rhythm_flags = [False for _ in streams]
+    parsed = _parse_music_streams_synchronized(streams, rhythm_flags, max_events=2200, pitch_mode="soundcard")
+    speed = max(0.10, min(8.0, float(speed)))
+    parsed = [[(freq, dur / speed) for freq, dur in events] for events in parsed]
+    total_duration = max(sum(d for _f, d in ev) for ev in parsed)
+    total_samples = max(1, int(round(total_duration * SAMPLE_RATE)) + 1)
+    try:
+        import numpy as np  # type: ignore
+        mix = np.zeros(total_samples, dtype=np.float64)
+        use_numpy = True
+    except Exception:
+        np = None  # type: ignore
+        mix = [0.0] * total_samples
+        use_numpy = False
+
+    def transpose_freq(freq: float, semitones: int | None) -> float:
+        # Header values are unsigned in the known resources, but keep signed
+        # handling for future music records if a composer uses downward offsets.
+        if semitones is None:
+            offset = ADLIB_OPL_GLOBAL_TRANSPOSE
+        else:
+            offset = semitones - 0x100 if semitones >= 0x80 else semitones
+            offset += ADLIB_OPL_GLOBAL_TRANSPOSE
+        return freq * (2.0 ** (offset / 12.0))
+
+    for group, events in enumerate(parsed[:3]):
+        for local_voice in range(3):
+            voice = group * 3 + local_voice
+            if voice >= 9:
+                continue
+            inst_id = header.instrument_ids[voice] if voice < len(header.instrument_ids) else None
+            patch = table.get(inst_id) if inst_id is not None else None
+            if patch is None:
+                continue
+            carrier_tl = _voice_adjusted_carrier_tl(header, voice, patch)
+            pitch_offset = header.configs[voice] if voice < len(header.configs) else 0
+            pos = 0
+            # AE000:054 capture matching: the third stream is a light rhythmic
+            # ostinato/noise layer, not a full-volume lead. Keep it lower so
+            # the organ/plucked voices dominate like the real recording.  Also
+            # damp octave-stacked header voices in the WAV-only preview; the
+            # exact OPL trace/VGM still emits the real voice events.
+            amp = (0.12, 0.12, 0.045)[group] if group < 3 else 0.08
+            if pitch_offset and abs(pitch_offset if pitch_offset < 0x80 else pitch_offset - 0x100) >= 12:
+                amp *= ADLIB_PREVIEW_OCTAVE_STACK_GAIN
+            for freq, dur in events:
+                n = max(1, int(round(dur * SAMPLE_RATE)))
+                if freq is None:
+                    pos += n
+                    continue
+                if freq < 0:
+                    # Reserved for future rhythm-mode decoding. AE000:054's
+                    # third stream is percussive by composition, but the AdLib
+                    # code still routes it through ordinary OPL voices.
+                    pos += n
+                    continue
+                note_freq = transpose_freq(freq, pitch_offset)
+                if use_numpy:
+                    note = _fm_render_note_numpy(patch, note_freq, dur, SAMPLE_RATE, carrier_tl=carrier_tl)
+                    end = min(total_samples, pos + len(note))
+                    if end > pos:
+                        mix[pos:end] += amp * note[:end - pos]
+                else:
+                    note = _fm_render_note(patch, note_freq, dur, SAMPLE_RATE, carrier_tl=carrier_tl)
+                    for j, v in enumerate(note):
+                        if pos + j >= total_samples:
+                            break
+                        mix[pos + j] += amp * v
+                pos += n
+    if use_numpy:
+        # Gentle spectral calibration for the atlas WAV preview.  The real OPL
+        # chip/player should be used for exact synthesis; this only prevents the
+        # Python approximation from sounding much brighter than the capture.
+        if ADLIB_PREVIEW_SOFT_LOWPASS_HZ and len(mix) > 8:
+            freqs = np.fft.rfftfreq(len(mix), 1.0 / SAMPLE_RATE)
+            spec = np.fft.rfft(mix)
+            filt = 1.0 / np.sqrt(1.0 + (freqs / ADLIB_PREVIEW_SOFT_LOWPASS_HZ) ** 4)
+            mix = np.fft.irfft(spec * filt, n=len(mix))
+        peak = float(max(0.01, abs(mix).max()))
+        scale = 0.92 / peak if peak > 0.92 else 1.0
+        pcm = (mix * scale).clip(-1.0, 1.0)
+        frames_bytes = (pcm * 32767.0).astype('<i2').tobytes()
+    else:
+        peak = max(0.01, max(abs(v) for v in mix))
+        scale = 0.92 / peak if peak > 0.92 else 1.0
+        frames = bytearray()
+        for v in mix:
+            sample = int(max(-1.0, min(1.0, v * scale)) * 32767)
+            frames += struct.pack("<h", sample)
+        frames_bytes = bytes(frames)
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(SAMPLE_RATE)
+        wf.writeframes(frames_bytes)
+    return path
+
+def _exe_file_offset_for_ds(ds_offset: int) -> int:
+    return EXE_HEADER_SIZE + EXE_AUDIO_DS_BASE + ds_offset
+
+
+def parse_opl_instrument_patch(raw: bytes, index: int) -> OplInstrumentPatch | None:
+    if len(raw) < OPL_PATCH_STRIDE:
+        return None
+    words = struct.unpack("<28H", raw[:OPL_PATCH_STRIDE])
+    mod_values = tuple(word & 0xFF for word in words[:13])
+    car_values = tuple(word & 0xFF for word in words[13:26])
+    mod_wave = words[26] & 0x03
+    car_wave = words[27] & 0x03
+    return OplInstrumentPatch(
+        index=index,
+        modulator=OplOperatorParams(mod_values, mod_wave),
+        carrier=OplOperatorParams(car_values, car_wave),
+    )
+
+
+def load_opl_instrument_table(exe_path: Path | str, *, count: int = OPL_PATCH_COUNT) -> dict[int, OplInstrumentPatch]:
+    """Extract the internal AdLib/OPL instrument table from AEPROG.EXE.
+
+    ASM evidence: D8F0 multiplies the music header instrument id by 0x38 and
+    adds DS:301A. DA66 then reads two 13-word operator blocks plus two waveform
+    words and programs the OPL registers through C898.
+    """
+    blob = Path(exe_path).read_bytes()
+    base = _exe_file_offset_for_ds(OPL_PATCH_TABLE_DS_OFFSET)
+    out: dict[int, OplInstrumentPatch] = {}
+    for index in range(count):
+        off = base + index * OPL_PATCH_STRIDE
+        patch = parse_opl_instrument_patch(blob[off:off + OPL_PATCH_STRIDE], index)
+        if patch is None:
+            break
+        out[index] = patch
+    return out
+
+
+def describe_opl_patch(patch: OplInstrumentPatch) -> str:
+    def op_summary(name: str, op: OplOperatorParams) -> str:
+        flags = "".join(flag for flag, active in [("T", op.tremolo), ("V", op.vibrato), ("S", op.sustain_enabled), ("K", op.key_scale_rate)] if active) or "-"
+        return (
+            f"{name}: 20={op.opl20():02X} 40={op.opl40():02X} 60={op.opl60():02X} "
+            f"80={op.opl80():02X} E0={op.ople0():02X} "
+            f"mul={op.multiple:X} TL={op.total_level:02X} ADSR={op.attack:X}/{op.decay:X}/{op.sustain_level:X}/{op.release:X} flags={flags}"
+        )
+    return (
+        f"OPL patch {patch.index:02X}: C0={patch.oplc0():02X}; "
+        + op_summary("mod", patch.modulator)
+        + "; "
+        + op_summary("car", patch.carrier)
+    )
+
+
+def describe_opl_patches_for_music(data: bytes, exe_path: Path | str | None) -> str:
+    header = soundcard_music_header(data)
+    if header is None or exe_path is None:
+        return ""
+    try:
+        table = load_opl_instrument_table(exe_path)
+    except Exception as exc:
+        return f"Unable to extract EXE OPL table: {exc}"
+    ids = [value for value in header.instrument_ids if value is not None]
+    seen = []
+    for value in ids:
+        if value not in seen:
+            seen.append(value)
+    parts = []
+    for value in seen[:8]:
+        patch = table.get(value)
+        if patch is not None:
+            parts.append(describe_opl_patch(patch))
+    if not parts:
+        return "No matching OPL patches found in EXE table."
+    suffix = "" if len(seen) <= 8 else f"; +{len(seen) - 8} more instrument ids"
+    return "EXE OPL table DS:301A / stride 0x38: " + " | ".join(parts) + suffix
+
+
+def soundcard_music_header(data: bytes) -> SoundCardMusicHeader | None:
+    """Parse the AdLib/Sound Blaster pre-stream header of a music resource.
+
+    Layout observed in AE000 sound-card music records:
+      0x00..0x07  four little-endian stream offsets
+      0x08..0x10  nine OPL instrument ids, FF for unused voice
+      0x11..0x19  nine voice config bytes
+      0x1A..0x22  nine voice level/routing bytes
+    The EXE's AdLib path reads these bytes before playback and combines the
+    ids with its internal OPL patch table, so this is the first real FM mapping
+    layer in the DAT files.
+    """
+    offsets = soundcard_music_offsets(data)
+    if len(offsets) < 1 or len(data) < 0x23 or offsets[0] < 0x23:
+        return None
+
+    def clean(values: bytes) -> tuple[int | None, ...]:
+        return tuple(None if value == 0xFF else value for value in values[:9])
+
+    return SoundCardMusicHeader(
+        offsets=tuple(offsets),
+        instrument_ids=clean(data[0x08:0x11]),
+        configs=clean(data[0x11:0x1A]),
+        voice_levels=clean(data[0x1A:0x23]),
+    )
+
+
+def describe_soundcard_music_header(data: bytes) -> str:
+    header = soundcard_music_header(data)
+    if header is None:
+        return "no AdLib/Sound Blaster header detected"
+
+    def fmt(values: tuple[int | None, ...]) -> str:
+        return " ".join("FF" if value is None else f"{value:02X}" for value in values)
+
+    return (
+        "AdLib/Sound Blaster header detected: "
+        f"stream offsets={', '.join('0x%04X' % o for o in header.offsets)}; "
+        f"OPL instrument ids={fmt(header.instrument_ids)}; "
+        f"voice cfg={fmt(header.configs)}; voice level={fmt(header.voice_levels)}"
+    )
+
+
+def soundcard_music_preamble(data: bytes) -> bytes:
+    """Return bytes between the channel-offset table and stream 0."""
+    offsets = soundcard_music_offsets(data)
+    if not offsets:
+        return b""
+    table_len = len(offsets) * 2
+    first_stream = offsets[0]
+    if first_stream <= table_len:
+        return b""
+    return data[table_len:first_stream]
 
 
 KNOWN_MUSIC_BASES = {
@@ -163,7 +1021,7 @@ def _music_pair_note(archive_name: str, resource_index: int, *, soundcard: bool)
     if base:
         return base
     if soundcard:
-        return f"sound-card half of music pair {base_index:03d}/{resource_index:03d}"
+        return f"PSG/Tandy-like sound-card half of music pair {base_index:03d}/{resource_index:03d}"
     return f"PC-speaker half of music pair {resource_index:03d}/{resource_index + 1:03d}"
 
 
@@ -174,6 +1032,9 @@ def build_audio_atlas(project) -> list[AudioItem]:
             if not res.ok or res.rtype != 0x44:
                 continue
             data = res.decoded
+            if looks_like_high_score_table(data):
+                # Confirmed player/high-score tables (AE000:061/062), not audio.
+                continue
             if looks_like_event_sfx_bank(data):
                 offsets = _validated_event_offsets(data)
                 for sound_id, off, chunk in split_event_sfx_bank(data):
@@ -217,7 +1078,7 @@ def build_audio_atlas(project) -> list[AudioItem]:
                     offset=offs[0],
                     length=len(data),
                     data=data,
-                    notes=_music_pair_note(archive_name, res.index, soundcard=True) + f"; AdLib/SoundBlaster music resource. The first words are channel offsets: {', '.join('0x%04X' % o for o in offs)}. Preview mixes all streams; instruments are approximate.",
+                    notes=_music_pair_note(archive_name, res.index, soundcard=True) + "; " + describe_soundcard_music_header(data) + "; " + describe_opl_patches_for_music(data, getattr(project, "exe", None)) + "; Preview mixes all streams. The bytecode is shared with the PSG/Tandy-style path, but AdLib/Sound Blaster mode gets its FM patch ids from this header and the EXE OPL patch table.",
                 ))
                 for channel_no, off in enumerate(offs):
                     end = offs[channel_no + 1] if channel_no + 1 < len(offs) else len(data)
@@ -235,23 +1096,9 @@ def build_audio_atlas(project) -> list[AudioItem]:
                         offset=off,
                         length=len(chunk),
                         data=chunk,
-                        notes="Single channel stream extracted from the AdLib/SoundBlaster music resource. Useful for identifying melody/bass/drum voices separately.",
+                        notes="Single bytecode stream extracted from the sound-card music resource. AdLib/Sound Blaster instruments are selected by the resource header; 5D/6D are stream control/envelope hints, not the whole FM patch identity.",
                     ))
-            elif looks_like_soundcard_patch(data):
-                items.append(AudioItem(
-                    kind="soundcard-patch",
-                    key=f"soundcard-patch:{archive_name}:{res.index}",
-                    label=f"Sound-card patch/instrument {archive_name}:{res.index:03d}",
-                    archive_name=archive_name,
-                    resource_index=res.index,
-                    resource_type=res.rtype,
-                    sound_id=None,
-                    offset=None,
-                    length=len(data),
-                    data=data,
-                    notes="Named instrument/driver/patch resource; export raw for now, not playable as a song.",
-                ))
-    order = {"pc-speaker-sfx": 0, "pc-speaker-music": 1, "soundcard-music": 2, "soundcard-channel": 3, "soundcard-patch": 4}
+    order = {"pc-speaker-sfx": 0, "pc-speaker-music": 1, "soundcard-music": 2, "soundcard-channel": 3}
     return sorted(items, key=lambda item: (order.get(item.kind, 9), item.archive_name, item.resource_index, item.sound_id or 0))
 
 
@@ -303,8 +1150,12 @@ def _chromatic_note_to_freq(note: int, octave: int, *, transpose: int = 0) -> fl
 
 def _note_to_freq(note: int, octave: int, *, transpose: int = 0, pitch_mode: str = "musical") -> float | None:
     # Normal note events are musical bytecode events, not raw PIT divisors.
-    # The pitch_mode argument is retained for older callers, but current PC
-    # speaker and sound-card previews intentionally share this chromatic mapping.
+    # Real-game capture of AE000:054 confirms that the sound-card branch is one
+    # octave lower than the older generic preview: byte 35 01 should sound as E4,
+    # not E5. Keep PC speaker previews on the old base and shift only the
+    # sound-card/Tandy-style branch.
+    if pitch_mode == "soundcard":
+        transpose -= 12
     return _chromatic_note_to_freq(note, octave, transpose=transpose)
 
 
@@ -330,6 +1181,96 @@ def _is_probable_rhythm_stream(stream: bytes, stream_no: int | None = None) -> b
     if stream_no is not None and stream_no >= 2 and len(set(op & 0x0F for op in note_ops)) <= 3:
         return True
     return False
+
+
+def _is_release_timbre(selector: int) -> bool:
+    # AE000:054 uses 5D 23 at note boundaries where the real driver points the
+    # PSG envelope reader at a release/silent sequence. Treat it as articulation,
+    # not as a new MIDI instrument.
+    return selector in {0x23}
+
+
+def _gm_program_for_timbre(selector: int | None, stream_no: int, *, rhythm: bool = False) -> int | None:
+    if rhythm:
+        return None
+    if selector == 0x02:
+        return 8   # Celesta / bell-like lead, zero-based GM program.
+    if selector == 0x06:
+        return 34  # Electric Bass (picked), zero-based GM program.
+    # Sensible defaults for resources/channels without an explicit non-release
+    # 5D selector before their first note.
+    if stream_no == 0:
+        return 8
+    if stream_no == 1:
+        return 34
+    return 80      # Lead 1 (square) fallback for old exports.
+
+
+def _expression_for_aux_byte(value: int) -> int:
+    # 6D is a live auxiliary driver byte. It is not tempo and not pitch. MIDI has
+    # no direct PSG-envelope equivalent, so expose it as a gentle expression hint
+    # rather than making it dominate dynamics.
+    if value <= 0x0F:
+        return max(48, min(127, 127 - value * 4))
+    return max(48, min(127, value))
+
+
+def scan_soundcard_control_events(
+    data: bytes,
+    *,
+    initial_base_ticks: int | None = None,
+    music: bool = True,
+    max_events: int = 2400,
+) -> list[SoundCardControlEvent]:
+    """Return timed 5D/6D controls from one sound-card music stream.
+
+    The EXE handlers at C5B3/C5C6 do not program an AdLib OPL instrument. 5D
+    stores an envelope/timbre pointer and 6D stores an auxiliary byte that later
+    affects PSG-style latched writes. For MIDI we keep these as timed metadata
+    and translate them conservatively to program/expression events.
+    """
+    controls: list[SoundCardControlEvent] = []
+    i = 0
+    time_ticks = 0
+    base_ticks = initial_base_ticks if initial_base_ticks is not None else _shared_initial_base_ticks([data], music=music)
+    bend_ticks = 0
+    effect_ticks = 1
+    seen = 0
+    while i + 1 < len(data) and seen < max_events:
+        op = data[i]
+        arg = data[i + 1]
+        i += 2
+        if op == 0xFF and arg == 0xFF:
+            break
+        lo = op & 0x0F
+        hi = (op >> 4) & 0x0F
+        if lo == 0x0F:
+            break
+        if lo == 0x0D:
+            if hi in (1, 2):
+                if arg:
+                    delta = (base_ticks * arg + 50) // 100
+                    bend_ticks = delta if hi == 1 else -delta
+                else:
+                    bend_ticks = 0
+            elif hi == 3:
+                effect_ticks = max(1, arg)
+            elif hi == 4:
+                base_ticks = max(1, arg * 4)
+                bend_ticks = 0
+            elif hi == 5:
+                controls.append(SoundCardControlEvent(time_ticks, "timbre", arg))
+            elif hi == 6:
+                controls.append(SoundCardControlEvent(time_ticks, "expression", arg))
+            continue
+        if lo == 0x0E:
+            time_ticks += max(1, effect_ticks)
+            seen += 1
+            continue
+        if lo == 0 or 1 <= lo <= 12:
+            time_ticks += _duration_ticks_from_game_code(arg, base_ticks, bend_ticks)
+            seen += 1
+    return controls
 
 
 def _drum_note_for_op(op: int) -> int:
@@ -851,6 +1792,36 @@ def _pitch_to_midi(freq: float | None, fallback_pitch: int = 60) -> int:
     return max(24, min(108, midi))
 
 
+def describe_music_channels(data: bytes, *, audio_kind: str | None = None) -> list[MusicChannelSummary]:
+    """Return channel/timbre metadata used by the audio-atlas MIDI audition UI."""
+    streams = _streams_from_resource(data)
+    shared_base = _shared_initial_base_ticks(streams, music=True)
+    rhythm_flags = [
+        _is_probable_rhythm_stream(stream, stream_no if len(streams) > 1 else None)
+        for stream_no, stream in enumerate(streams)
+    ]
+    pitch_mode = _pitch_mode_from_audio_kind(audio_kind, data, music=True)
+    parsed = _parse_music_streams_synchronized(streams, rhythm_flags, max_events=1800, pitch_mode=pitch_mode) if len(streams) > 1 else []
+    out: list[MusicChannelSummary] = []
+    for stream_no, stream in enumerate(streams[:8]):
+        is_rhythm = rhythm_flags[stream_no]
+        controls = scan_soundcard_control_events(stream, initial_base_ticks=shared_base, music=True)
+        timbres = tuple(dict.fromkeys(event.value for event in controls if event.kind == "timbre"))
+        expressions = tuple(dict.fromkeys(event.value for event in controls if event.kind == "expression"))
+        first_timbre = next((value for value in timbres if not _is_release_timbre(value)), None)
+        default_program = _gm_program_for_timbre(first_timbre, stream_no, rhythm=is_rhythm)
+        if len(streams) > 1:
+            event_count = len(parsed[stream_no]) if stream_no < len(parsed) else 0
+        else:
+            event_count = 0
+        header = soundcard_music_header(data) if len(streams) > 1 else None
+        opl_id = header.instrument_ids[stream_no] if header and stream_no < len(header.instrument_ids) else None
+        opl_cfg = header.configs[stream_no] if header and stream_no < len(header.configs) else None
+        opl_level = header.voice_levels[stream_no] if header and stream_no < len(header.voice_levels) else None
+        out.append(MusicChannelSummary(stream_no, is_rhythm, timbres, expressions, default_program, event_count, opl_id, opl_cfg, opl_level))
+    return out
+
+
 def _midi_event_ticks(events: list[tuple[float | None, float]], ticks_per_second: float) -> list[tuple[float | None, int, int]]:
     out: list[tuple[float | None, int, int]] = []
     pos = 0.0
@@ -862,7 +1833,15 @@ def _midi_event_ticks(events: list[tuple[float | None, float]], ticks_per_second
     return out
 
 
-def write_midi(data: bytes, path: Path | str, *, speed: float = DEFAULT_PREVIEW_SPEED, audio_kind: str | None = None) -> Path:
+def write_midi(
+    data: bytes,
+    path: Path | str,
+    *,
+    speed: float = DEFAULT_PREVIEW_SPEED,
+    audio_kind: str | None = None,
+    channel_programs: dict[int, int | None] | None = None,
+    follow_timbre_changes: bool = True,
+) -> Path:
     path = Path(path)
     streams = _streams_from_resource(data)
     ticks_per_quarter = 96
@@ -902,27 +1881,55 @@ def write_midi(data: bytes, path: Path | str, *, speed: float = DEFAULT_PREVIEW_
         is_rhythm = rhythm_flags[stream_no]
         channel = 9 if is_rhythm else (stream_no % 15)
         tr = bytearray()
-        if not is_rhythm:
-            tr += b"\x00" + bytes([0xC0 | channel, 80 if stream_no else 24])  # program change
-        last_tick = 0
+        timed_events: list[tuple[int, int, bytes]] = []
+
+        controls = scan_soundcard_control_events(stream, initial_base_ticks=shared_base, music=True)
+        first_timbre = next((event.value for event in controls if event.kind == "timbre" and not _is_release_timbre(event.value)), None)
+        if channel_programs is not None and stream_no in channel_programs:
+            initial_program = channel_programs[stream_no]
+        else:
+            initial_program = _gm_program_for_timbre(first_timbre, stream_no, rhythm=is_rhythm)
+        if initial_program is not None:
+            timed_events.append((0, 0, bytes([0xC0 | channel, max(0, min(127, int(initial_program)))])))
+
+        for control in controls:
+            midi_tick = int(round((control.time_ticks * TICK_SECONDS / speed) * ticks_per_second))
+            if control.kind == "timbre":
+                if _is_release_timbre(control.value):
+                    # Release/silent PSG envelope marker; the note parser already
+                    # handles timing, so do not convert this into a GM program.
+                    continue
+                if not follow_timbre_changes or (channel_programs is not None and stream_no in channel_programs):
+                    continue
+                program = _gm_program_for_timbre(control.value, stream_no, rhythm=is_rhythm)
+                if program is not None:
+                    timed_events.append((midi_tick, 0, bytes([0xC0 | channel, program])))
+            elif control.kind == "expression" and not is_rhythm:
+                timed_events.append((midi_tick, 1, bytes([0xB0 | channel, 11, _expression_for_aux_byte(control.value)])))
+
+        note_spans = _midi_event_ticks(parsed_streams[stream_no], ticks_per_second)
         if is_rhythm:
-            for freq, start, end in _midi_event_ticks(parsed_streams[stream_no], ticks_per_second):
+            for freq, start, end in note_spans:
                 if freq is None:
                     continue
                 note = int(-freq) if freq < 0 else _pitch_to_midi(freq)
                 audible_ticks = max(1, min(end - start, int(ticks_per_quarter * 0.10)))
-                tr += _midi_varlen(start - last_tick) + bytes([0x90 | channel, note, 80])
-                tr += _midi_varlen(audible_ticks) + bytes([0x80 | channel, note, 0])
-                last_tick = start + audible_ticks
+                timed_events.append((start, 2, bytes([0x90 | channel, note, 80])))
+                timed_events.append((start + audible_ticks, 3, bytes([0x80 | channel, note, 0])))
         else:
-            for freq, start, end in _midi_event_ticks(parsed_streams[stream_no], ticks_per_second):
+            for freq, start, end in note_spans:
                 if freq is None:
                     continue
                 note = _pitch_to_midi(freq)
-                tr += _midi_varlen(start - last_tick) + bytes([0x90 | channel, note, 80])
-                tr += _midi_varlen(end - start) + bytes([0x80 | channel, note, 0])
-                last_tick = end
-        track_end = _midi_event_ticks(parsed_streams[stream_no], ticks_per_second)[-1][2] if parsed_streams[stream_no] else last_tick
+                timed_events.append((start, 2, bytes([0x90 | channel, note, 80])))
+                timed_events.append((end, 3, bytes([0x80 | channel, note, 0])))
+
+        timed_events.sort(key=lambda item: (item[0], item[1]))
+        last_tick = 0
+        for tick, _priority, payload in timed_events:
+            tr += _midi_varlen(tick - last_tick) + payload
+            last_tick = tick
+        track_end = note_spans[-1][2] if note_spans else last_tick
         tr += _midi_varlen(max(0, track_end - last_tick)) + b"\xFF\x2F\x00"
         tracks.append(bytes(tr))
 
@@ -933,8 +1940,30 @@ def write_midi(data: bytes, path: Path | str, *, speed: float = DEFAULT_PREVIEW_
     path.write_bytes(header + bytes(body))
     return path
 
+_CURRENT_AUDIO_PROCESS: subprocess.Popen | None = None
+
+
+def stop_audio_playback() -> None:
+    """Stop the current Audio Atlas WAV preview, if the platform player allows it."""
+    global _CURRENT_AUDIO_PROCESS
+    system = platform.system().lower()
+    if system == "windows":
+        try:
+            import winsound
+            winsound.PlaySound(None, winsound.SND_PURGE)
+        except Exception:
+            pass
+    if _CURRENT_AUDIO_PROCESS is not None:
+        proc = _CURRENT_AUDIO_PROCESS
+        _CURRENT_AUDIO_PROCESS = None
+        if proc.poll() is None:
+            proc.terminate()
+
+
 def play_audio_file(path: Path | str) -> None:
+    global _CURRENT_AUDIO_PROCESS
     path = Path(path)
+    stop_audio_playback()
     system = platform.system().lower()
     if system == "windows":
         import winsound
@@ -942,7 +1971,7 @@ def play_audio_file(path: Path | str) -> None:
         return
     for cmd in (["afplay", str(path)], ["aplay", str(path)], ["paplay", str(path)], ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", str(path)]):
         if shutil.which(cmd[0]):
-            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _CURRENT_AUDIO_PROCESS = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return
     raise RuntimeError("No audio player found (tried afplay/aplay/paplay/ffplay). Export WAV instead.")
 
