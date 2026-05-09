@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from .common import (
     DIFFICULTY_LABELS,
+    ROOM_COUNT,
+    tk,
     ImageTk,
     actor_records_for_room,
     header_exit_door,
@@ -23,6 +25,7 @@ class NavigationMixin:
         self.simulation_key = None
         self.sim_selected_actor_index = None
         self.refresh_room_labels()
+        self.refresh_room_link_buttons()
         self.redraw_room()
         self.redraw_objects_atlas()
         if hasattr(self, "audio_tree"):
@@ -41,6 +44,7 @@ class NavigationMixin:
         self.simulation_key = None
         self.sim_selected_actor_index = None
         self.refresh_room_labels()
+        self.refresh_room_link_buttons()
         self.redraw_room()
         self.redraw_objects_atlas()
         if hasattr(self, "audio_tree"):
@@ -66,12 +70,53 @@ class NavigationMixin:
         self.redraw_actor_palette()
         self.refresh_actor_scripting_tab()
 
+    def _room_link_targets(self) -> dict[str, int]:
+        links = transition_links_for_room(self.current_level().part(self.part_var.get()), self.room_var.get())
+        if links is None:
+            return {}
+        raw = {
+            "left": links.left,
+            "right": links.right,
+            "up": links.up,
+            "down": links.down,
+        }
+        targets: dict[str, int] = {}
+        for direction, value in raw.items():
+            if value:
+                target = value - 1
+                if 0 <= target < ROOM_COUNT:
+                    targets[direction] = target
+        return targets
+
+    def refresh_room_link_buttons(self) -> None:
+        if not hasattr(self, "room_link_buttons"):
+            return
+        targets = self._room_link_targets()
+        arrows = {"left": "←", "right": "→", "up": "↑", "down": "↓"}
+        for direction, button in self.room_link_buttons.items():
+            target = targets.get(direction)
+            if target is None:
+                button.configure(text=f"{arrows[direction]} -", state=tk.DISABLED)
+            else:
+                button.configure(text=f"{arrows[direction]} {target:02d}", state=tk.NORMAL)
+
+    def go_room_link(self, direction: str) -> None:
+        target = self._room_link_targets().get(direction)
+        if target is None:
+            self.status.set(f"No {direction} room link from room {self.room_var.get():02d}.")
+            return
+        current = self.room_var.get()
+        self.set_room(target)
+        self.status.set(f"Room link {direction}: {current:02d} -> {target:02d}.")
+
     def redraw_room(self) -> None:
         image = self.current_image()
         self.tk_image = ImageTk.PhotoImage(image)
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, anchor="nw", image=self.tk_image)
         self.canvas.config(scrollregion=(0, 0, image.width, image.height))
+        if self.grid_var.get():
+            self.draw_room_grid(self.canvas)
 
         level = self.current_level()
         part = level.part(self.part_var.get())
@@ -95,6 +140,7 @@ class NavigationMixin:
             f"exit_door={door_txt} crystals={crystal_txt} visual={visual_txt} "
             f"unique_tiles={unique} separator={part.separator.hex(' ')}"
         )
+        self.refresh_room_link_buttons()
         if self.show_collision_var.get() and self.mode_var.get() != "trailing_hex":
             self.draw_collision_overlay(self.canvas, room)
         if self.mode_var.get() == "codes_hex":

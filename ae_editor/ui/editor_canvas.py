@@ -84,15 +84,15 @@ class EditorCanvasMixin:
         self.editor_canvas.config(scrollregion=(0, 0, image.width, image.height))
         self._update_editor_info()
         self.refresh_property_panel()
-        if self.editor_collision_var.get():
+        if self.show_collision_var.get():
             self.draw_collision_overlay(self.editor_canvas, self.current_room())
         self.draw_editor_selection_preview()
         if self.editor_overlay_var.get() or self.editor_tool_var.get() == "select":
             part = self.current_level().part(self.part_var.get())
             room = part.room(self.room_var.get())
             self.draw_editor_object_handles(part, room)
-        if self.editor_grid_var.get():
-            self.draw_editor_grid()
+        if self.grid_var.get():
+            self.draw_room_grid(self.editor_canvas)
 
     def draw_editor_selection_preview(self) -> None:
         tool = self.editor_tool_var.get()
@@ -154,7 +154,7 @@ class EditorCanvasMixin:
                 )
                 canvas.create_line(x0 + 2, y0 + 2, x1 - 2, y1 - 2, fill="#ffd6f6", width=1)
 
-    def draw_editor_grid(self) -> None:
+    def draw_room_grid(self, canvas: tk.Canvas) -> None:
         zoom = self.zoom_var.get()
         width = ROOM_COLUMNS * CELL_SIZE * zoom
         height = ROOM_ROWS * CELL_SIZE * zoom
@@ -163,11 +163,11 @@ class EditorCanvasMixin:
         for x in range(ROOM_COLUMNS + 1):
             px = x * CELL_SIZE * zoom
             colour = major if x % 4 == 0 else minor
-            self.editor_canvas.create_line(px, 0, px, height, fill=colour, stipple="gray75")
+            canvas.create_line(px, 0, px, height, fill=colour, stipple="gray75")
         for y in range(ROOM_ROWS + 1):
             py = y * CELL_SIZE * zoom
             colour = major if y % 4 == 0 else minor
-            self.editor_canvas.create_line(0, py, width, py, fill=colour, stipple="gray75")
+            canvas.create_line(0, py, width, py, fill=colour, stipple="gray75")
 
     def _known_extra_pickups_for_room(self, part, room):
         apple = room_apple_marker(room)
@@ -290,6 +290,8 @@ class EditorCanvasMixin:
             suffix = "" if not targets else "→" + ",".join(t.label for t in targets)
             handles.append(EditorHandle(("control", cmd.record.index), cx + 8, cy + 8, f"{prefix}{cmd.record.index}{suffix}", "#00e0ff"))
         for actor in actor_records_for_room(part, room.index):
+            if actor.hidden and not self.overlay_hidden_var.get():
+                continue
             # Actor record x/y is the real runtime anchor.  Use that same point as
             # the editor handle so dragging can write x/y back without introducing
             # a per-frame offset.  The sprite top-left is derived via actor_xy()
@@ -496,6 +498,8 @@ class EditorCanvasMixin:
         # stored actor-table anchor smoothly.  This avoids the old jumpy behavior
         # where the visual handle was offset from the value being written back.
         for actor in reversed(actor_records_for_room(part, room.index)):
+            if actor.hidden and not self.overlay_hidden_var.get():
+                continue
             ax, ay = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
             # Most enemy sprites in this game fit in roughly a 24x24 box.  Use a
             # slightly forgiving box because some frames have transparent margins.

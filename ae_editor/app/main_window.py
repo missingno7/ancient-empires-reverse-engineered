@@ -10,7 +10,6 @@ from ..ui.common import (
     GM_PROGRAM_NAMES,
     Instruction,
     OVERLAY_OPTION_SPECS,
-    ROOM_COUNT,
     RoomSimulation,
     tk,
     tkfont,
@@ -59,9 +58,7 @@ class LevelEditorApp(
         self.tile_value_var = tk.StringVar(value="00")
         self.editor_tool_var = tk.StringVar(value="select")
         self.editor_object_var = tk.StringVar(value="exit_door")
-        self.editor_grid_var = tk.BooleanVar(value=True)
         self.editor_overlay_var = tk.BooleanVar(value=True)
-        self.editor_collision_var = tk.BooleanVar(value=True)
         self.belt_kind_var = tk.StringVar(value="grey")
         self.belt_length_var = tk.IntVar(value=4)
         self.platform_kind_var = tk.StringVar(value="horizontal_left")
@@ -114,13 +111,12 @@ class LevelEditorApp(
         self.simulation_key: tuple[int, int, int] | None = None
         self.sim_after_id: str | None = None
         self.sim_running_var = tk.BooleanVar(value=True)
-        self.sim_grid_var = tk.BooleanVar(value=False)
         self.sim_speed_var = tk.IntVar(value=DEFAULT_SIMULATION_TICK_HZ)
         self.sim_info_var = tk.StringVar(value="")
         self.sim_detail_var = tk.StringVar(value="")
         self.sim_actor_debug_var = tk.StringVar(value="")
         self.sim_selected_actor_index: int | None = None
-        self.sim_room_link_buttons: dict[str, ttk.Button] = {}
+        self.room_link_buttons: dict[str, ttk.Button] = {}
         self.sim_sound_items_by_id: dict[int, AudioItem] | None = None
         self.sim_last_sound_status: str = ""
 
@@ -149,6 +145,7 @@ class LevelEditorApp(
         self.tree_bold_font = tkfont.nametofont("TkDefaultFont").copy()
         self.tree_bold_font.configure(weight="bold")
 
+        self._build_menu_bar()
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close_window)
         self.redraw_room()
@@ -164,6 +161,32 @@ class LevelEditorApp(
         self.refresh_placeable_settings()
         self.reset_simulation(announce=False)
         self._schedule_simulation_tick()
+
+    def _build_menu_bar(self) -> None:
+        menu_bar = tk.Menu(self)
+
+        file_menu = tk.Menu(menu_bar, tearoff=False)
+        file_menu.add_command(label="Save AE001", command=self.save_ae001, accelerator="Ctrl+S")
+        file_menu.add_command(label="Save AE001 As...", command=self.save_ae001_as)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.close_window)
+        menu_bar.add_cascade(label="File", menu=file_menu)
+
+        export_menu = tk.Menu(menu_bar, tearoff=False)
+        export_menu.add_command(label="Current room PNG...", command=self.export_current)
+        export_menu.add_command(label="All room previews...", command=self.export_all_rooms)
+        export_menu.add_command(label="Room probe CSV...", command=self.export_csv)
+        export_menu.add_command(label="Graphics bank sheets...", command=self.export_sheets)
+        menu_bar.add_cascade(label="Export", menu=export_menu)
+
+        view_menu = tk.Menu(menu_bar, tearoff=False)
+        view_menu.add_checkbutton(label="Grid", variable=self.grid_var, command=self.redraw_room)
+        view_menu.add_checkbutton(label="Hidden actors", variable=self.overlay_hidden_var, command=self.redraw_room)
+        view_menu.add_checkbutton(label="Collision 07", variable=self.show_collision_var, command=self.redraw_room)
+        menu_bar.add_cascade(label="View", menu=view_menu)
+
+        self.config(menu=menu_bar)
+        self.bind_all("<Control-s>", lambda _event: self.save_ae001())
 
     def _build_ui(self) -> None:
         top = ttk.Frame(self)
@@ -191,27 +214,17 @@ class LevelEditorApp(
         self.room_combo.current(0)
         self.room_combo.pack(side=tk.LEFT)
         self.room_combo.bind("<<ComboboxSelected>>", lambda _event: self.set_room(self.room_combo.current()))
-        ttk.Button(top, text="Prev", command=lambda: self.set_room((self.room_var.get() - 1) % ROOM_COUNT)).pack(side=tk.LEFT)
-        ttk.Button(top, text="Next", command=lambda: self.set_room((self.room_var.get() + 1) % ROOM_COUNT)).pack(side=tk.LEFT)
+        links = ttk.Frame(top)
+        links.pack(side=tk.LEFT, padx=(8, 4))
+        for direction, label in (("left", "←"), ("up", "↑"), ("down", "↓"), ("right", "→")):
+            button = ttk.Button(links, text=label, width=5, command=lambda d=direction: self.go_room_link(d))
+            button.pack(side=tk.LEFT, padx=1)
+            self.room_link_buttons[direction] = button
 
-        ttk.Label(top, text="Mode").pack(side=tk.LEFT, padx=(10, 0))
-        mode = ttk.Combobox(top, textvariable=self.mode_var, state="readonly", width=13, values=["game", "payload_debug", "codes_hex", "trailing_hex"])
-        mode.pack(side=tk.LEFT)
-        mode.bind("<<ComboboxSelected>>", lambda _event: self.redraw_room())
-
-        ttk.Checkbutton(top, text="grid", variable=self.grid_var, command=self.redraw_room).pack(side=tk.LEFT, padx=6)
-
-        ttk.Label(top, text="Zoom").pack(side=tk.LEFT)
+        ttk.Label(top, text="Zoom").pack(side=tk.LEFT, padx=(8, 0))
         zoom = ttk.Combobox(top, textvariable=self.zoom_var, state="readonly", width=3, values=[1, 2, 3, 4])
         zoom.pack(side=tk.LEFT)
         zoom.bind("<<ComboboxSelected>>", lambda _event: self.redraw_room())
-
-        ttk.Button(top, text="Export current", command=self.export_current).pack(side=tk.LEFT, padx=8)
-        ttk.Button(top, text="Export all rooms", command=self.export_all_rooms).pack(side=tk.LEFT)
-        ttk.Button(top, text="Export CSV", command=self.export_csv).pack(side=tk.LEFT, padx=4)
-        ttk.Button(top, text="Export bank sheets", command=self.export_sheets).pack(side=tk.LEFT)
-        ttk.Button(top, text="Save AE001", command=self.save_ae001).pack(side=tk.LEFT, padx=(10, 0))
-        ttk.Button(top, text="Save as...", command=self.save_ae001_as).pack(side=tk.LEFT, padx=(4, 0))
 
         self.status_label = ttk.Label(self, textvariable=self.status, justify=tk.LEFT, anchor="w")
         self.status_label.pack(side=tk.TOP, fill=tk.X, padx=6)
@@ -250,13 +263,24 @@ class LevelEditorApp(
         overlay_frame = ttk.LabelFrame(right, text="Overlay view")
         overlay_frame.pack(fill=tk.X, padx=4, pady=(0, 6))
 
+        mode_frame = ttk.LabelFrame(right, text="Level viewer mode")
+        mode_frame.pack(fill=tk.X, padx=4, pady=(0, 6))
+        render_modes = (
+            ("Game view", "game"),
+            ("Payload debug", "payload_debug"),
+            ("Tile codes hex", "codes_hex"),
+            ("Trailing bytes hex", "trailing_hex"),
+        )
+        for label, value in render_modes:
+            ttk.Radiobutton(mode_frame, text=label, variable=self.mode_var, value=value, command=self.redraw_room).pack(
+                anchor="w", padx=6, pady=1
+            )
+
         general = ttk.Frame(overlay_frame)
         general.pack(fill=tk.X, padx=6, pady=(4, 2))
         ttk.Checkbutton(general, text="Enable overlay", variable=self.overlay_var, command=self.redraw_room).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(general, text="Labels", variable=self.overlay_labels_var, command=self.redraw_room).grid(row=0, column=1, sticky="w", padx=(10, 0))
         ttk.Checkbutton(general, text="Master lines", variable=self.overlay_links_var, command=self.redraw_room).grid(row=0, column=2, sticky="w", padx=(10, 0))
-        ttk.Checkbutton(general, text="Hidden actors", variable=self.overlay_hidden_var, command=self.redraw_room).grid(row=1, column=0, sticky="w")
-        ttk.Checkbutton(general, text="Collision 07", variable=self.show_collision_var, command=self.redraw_room).grid(row=1, column=1, sticky="w", padx=(10, 0))
 
         preset_bar = ttk.Frame(overlay_frame)
         preset_bar.pack(fill=tk.X, padx=6, pady=(0, 4))

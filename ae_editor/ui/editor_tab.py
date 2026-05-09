@@ -36,9 +36,7 @@ class EditorTabMixin:
 
         view_row = ttk.Frame(right)
         view_row.pack(fill=tk.X, padx=6, pady=(0, 6))
-        ttk.Checkbutton(view_row, text="Grid", variable=self.editor_grid_var, command=self.on_editor_tool_changed).pack(side=tk.LEFT)
-        ttk.Checkbutton(view_row, text="Overlay", variable=self.editor_overlay_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Checkbutton(view_row, text="Collision", variable=self.editor_collision_var, command=self.redraw_editor_room).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Checkbutton(view_row, text="Overlay", variable=self.editor_overlay_var, command=self.redraw_editor_room).pack(side=tk.LEFT)
 
         action_row = ttk.Frame(right)
         action_row.pack(fill=tk.X, padx=6, pady=(0, 6))
@@ -397,7 +395,7 @@ class EditorTabMixin:
         return RenderOptions(
             mode=self.mode_var.get(),
             zoom=self.zoom_var.get() if zoom is None else zoom,
-            grid=self.grid_var.get(),
+            grid=False,
             part_index=self.part_var.get(),
         )
 

@@ -12,7 +12,6 @@ from .common import (
     ImageTk,
     Instruction,
     LASER_CRYSTAL_DELTA,
-    ROOM_COUNT,
     RenderOptions,
     RoomSimulation,
     actor_script_space,
@@ -35,7 +34,6 @@ from .common import (
     section_a_symbol_table,
     temp_preview_wav,
     tk,
-    transition_links_for_room,
     ttk,
 )
 
@@ -66,24 +64,8 @@ class SimulationTabMixin:
         ttk.Label(speed_row, text="Ticks/s").pack(side=tk.LEFT)
         ttk.Spinbox(speed_row, from_=1, to=60, textvariable=self.sim_speed_var, width=5, command=self._schedule_simulation_tick).pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(speed_row, text=f"game ~{ACTOR_TICK_HZ:.2f}").pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Checkbutton(speed_row, text="Grid", variable=self.sim_grid_var, command=self.redraw_simulation).pack(side=tk.LEFT)
 
         ttk.Label(right, textvariable=self.sim_info_var, justify=tk.LEFT, wraplength=260).pack(fill=tk.X, padx=6, pady=(0, 8))
-
-        links_frame = ttk.LabelFrame(right, text="Room links")
-        links_frame.pack(fill=tk.X, padx=6, pady=(0, 6))
-        link_layout = {
-            "up": (0, 1, "Up"),
-            "left": (1, 0, "Left"),
-            "right": (1, 2, "Right"),
-            "down": (2, 1, "Down"),
-        }
-        for direction, (row, col, label) in link_layout.items():
-            button = ttk.Button(links_frame, text=label, command=lambda d=direction: self.go_simulation_room_link(d))
-            button.grid(row=row, column=col, sticky="ew", padx=2, pady=2)
-            self.sim_room_link_buttons[direction] = button
-        for col in range(3):
-            links_frame.columnconfigure(col, weight=1)
 
         controls_frame = ttk.LabelFrame(right, text="Controls")
         controls_frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=(0, 6))
@@ -263,16 +245,18 @@ class SimulationTabMixin:
         self._draw_simulation_player(image, sim)
         if zoom != 1:
             image = image.resize((image.width * zoom, image.height * zoom), Image.Resampling.NEAREST)
-        if self.sim_grid_var.get():
-            self.project.renderer._draw_grid(image, zoom=zoom)
         self.tk_sim_image = ImageTk.PhotoImage(image)
         self.sim_canvas.delete("all")
         self.sim_canvas.create_image(0, 0, anchor="nw", image=self.tk_sim_image)
         self.sim_canvas.config(scrollregion=(0, 0, image.width, image.height))
-        self.refresh_simulation_room_link_buttons()
+        if self.grid_var.get():
+            self.draw_room_grid(self.sim_canvas)
+        if self.show_collision_var.get():
+            self.draw_collision_overlay(self.sim_canvas, self.current_room())
+        self.refresh_room_link_buttons()
         self.refresh_simulation_control_tree()
         self.refresh_simulation_actor_debug()
-        visible_actors = [a for a in sim.actors.values() if a.room_index == sim.room_index and not a.hidden]
+        visible_actors = [a for a in sim.actors.values() if a.room_index == sim.room_index and (self.overlay_hidden_var.get() or not a.hidden)]
         active_parts = [
             f"P{idx}" for idx in sorted(sim.active_target_indices("platform"))
         ] + [
@@ -288,45 +272,6 @@ class SimulationTabMixin:
         last_events = [f"A{a.index}: {a.last_event}" for a in visible_actors if a.last_event]
         block_events = [f"GB{block.index}: {block.last_event}" for block in sim.green_blocks if block.last_event]
         self.sim_detail_var.set("\n".join((block_events + last_events)[:8]))
-
-    def _simulation_room_link_targets(self) -> dict[str, int]:
-        links = transition_links_for_room(self.current_level().part(self.part_var.get()), self.room_var.get())
-        if links is None:
-            return {}
-        raw = {
-            "left": links.left,
-            "right": links.right,
-            "up": links.up,
-            "down": links.down,
-        }
-        targets: dict[str, int] = {}
-        for direction, value in raw.items():
-            if value:
-                target = value - 1
-                if 0 <= target < ROOM_COUNT:
-                    targets[direction] = target
-        return targets
-
-    def refresh_simulation_room_link_buttons(self) -> None:
-        if not hasattr(self, "sim_room_link_buttons"):
-            return
-        targets = self._simulation_room_link_targets()
-        labels = {"left": "Left", "right": "Right", "up": "Up", "down": "Down"}
-        for direction, button in self.sim_room_link_buttons.items():
-            target = targets.get(direction)
-            if target is None:
-                button.configure(text=f"{labels[direction]} -", state=tk.DISABLED)
-            else:
-                button.configure(text=f"{labels[direction]} -> {target:02d}", state=tk.NORMAL)
-
-    def go_simulation_room_link(self, direction: str) -> None:
-        target = self._simulation_room_link_targets().get(direction)
-        if target is None:
-            self.status.set(f"No {direction} room link from room {self.room_var.get():02d}.")
-            return
-        current = self.room_var.get()
-        self.set_room(target)
-        self.status.set(f"Simulation room link {direction}: {current:02d} -> {target:02d}.")
 
     def refresh_simulation_control_tree(self) -> None:
         if not hasattr(self, "sim_control_tree"):
@@ -575,7 +520,9 @@ class SimulationTabMixin:
         sim = self.ensure_simulation()
         x, y = self._screen_xy_from_event(event, self.sim_canvas)
         for actor in reversed(list(sim.actors.values())):
-            if actor.room_index != sim.room_index or actor.hidden:
+            if actor.room_index != sim.room_index:
+                continue
+            if actor.hidden and not self.overlay_hidden_var.get():
                 continue
             sprite = self.project.renderer._sprite_for_actor_record(actor)
             if sprite is None:
@@ -695,7 +642,9 @@ class SimulationTabMixin:
     def _draw_simulation_actors(self, image: Image.Image, sim: RoomSimulation) -> None:
         draw = ImageDraw.Draw(image, "RGBA")
         for actor in sim.actors.values():
-            if actor.room_index != sim.room_index or actor.hidden:
+            if actor.room_index != sim.room_index:
+                continue
+            if actor.hidden and not self.overlay_hidden_var.get():
                 continue
             sprite = self.project.renderer._sprite_for_actor_record(actor)
             if sprite is None:
