@@ -12,6 +12,8 @@ AE000:038 stores conveyor art as strips, not as one sprite per object:
     teal frame 3: 21 left, 22 middle, 23 right
 
 This module composes AE000:038 art and exposes helpers for both sides of a belt.  The terrain codes 0x0F/0x1F are the physics/scrolling footprint.  Visible belts are CV records in the room payload directory header.  The first ten room payload triplets are platform/control runtime slots; the editor must not write them for belts.
+
+Belts are always active. A switch/control signal toggles the belt family/direction: teal <-> grey, and the terrain footprint mirrors that as 0x1F <-> 0x0F. It is not an off/on state.
 """
 from __future__ import annotations
 
@@ -159,7 +161,8 @@ class ConveyorRun:
     Terrain codes 0x0F/0x1F are the physics/scrolling footprint.  They must be
     paired with a CV payload record to be visible in the original game.  The
     renderer uses tile runs only to identify the footprint and grey/teal family;
-    it does not write platform/runtime triplets for belts.
+    it does not write platform/runtime triplets for belts.  Runtime controls
+    toggle 0x0F <-> 0x1F rather than enabling/disabling the belt.
     """
 
     index: int

@@ -261,7 +261,7 @@ class SimulationTabMixin:
         active_parts = [
             f"P{idx}" for idx in sorted(sim.active_target_indices("platform"))
         ] + [
-            f"CV{idx}" for idx in sorted(sim.active_target_indices("conveyor"))
+            f"CV{idx} toggled" for idx in sorted(sim.active_target_indices("conveyor"))
         ] + [
             f"R{idx}" for idx in sorted(sim.active_target_indices("reflector"))
         ]
@@ -554,25 +554,29 @@ class SimulationTabMixin:
             if dx or dy:
                 self._draw_simulation_motion_arrow(draw, x + sprite.width // 2, y + sprite.height // 2, dx, dy)
 
-        if active_conveyors:
-            parts = [self.project.graphics.sprite("AE000", 38, i) for i in range(24)]
-            runs = iter_conveyor_runs(room)
-            frame = (sim.tick_count // 3) % 4
-            for cv in parse_conveyor_visual_records(room):
-                if cv.index not in active_conveyors:
-                    continue
-                kind = "teal"
-                for run in runs:
-                    if run.cells & cv.cells:
-                        kind = run.kind
-                        break
-                width = max(8, (cv.length + 1) * CELL_SIZE)
-                strip = compose_conveyor(parts, ConveyorSpec(kind=kind, x=0, y=0, width=width, frame=frame))
-                if strip is None:
-                    continue
-                x = cv.x_raw * 2 - 8
-                y = cv.y - 18
-                image.alpha_composite(strip, (x, y))
+        # Belts are always running.  A control signal does not start/stop a
+        # conveyor; it toggles the conveyor family/direction.  The terrain
+        # footprint mirrors this as 0x0F <-> 0x1F.
+        parts = [self.project.graphics.sprite("AE000", 38, i) for i in range(24)]
+        runs = iter_conveyor_runs(room)
+        frame = (sim.tick_count // 3) % 4
+        for cv in parse_conveyor_visual_records(room):
+            kind = "teal"
+            for run in runs:
+                if run.cells & cv.cells:
+                    kind = run.kind
+                    break
+            toggled = cv.index in active_conveyors
+            if toggled:
+                kind = "grey" if kind == "teal" else "teal"
+            width = max(8, (cv.length + 1) * CELL_SIZE)
+            strip = compose_conveyor(parts, ConveyorSpec(kind=kind, x=0, y=0, width=width, frame=frame))
+            if strip is None:
+                continue
+            x = cv.x_raw * 2 - 8
+            y = cv.y - 18
+            image.alpha_composite(strip, (x, y))
+            if toggled:
                 draw.rectangle((x, y, x + strip.width - 1, y + strip.height - 1), outline=(80, 245, 255, 210), width=1)
 
         if active_reflectors:

@@ -15,11 +15,18 @@ from ..game_data.room_payload import (
     header_player_start,
     parse_actor_table,
     parse_platform_triplets,
+    parse_conveyor_visual_records,
     record12_green_block_records,
     room_cell_for_runtime_offset,
 )
 
 COLLISION_TILE_CODE = 0x07
+CONVEYOR_GREY_TILE_CODE = 0x0F
+CONVEYOR_TEAL_TILE_CODE = 0x1F
+CONVEYOR_TILE_TOGGLE = {
+    CONVEYOR_GREY_TILE_CODE: CONVEYOR_TEAL_TILE_CODE,
+    CONVEYOR_TEAL_TILE_CODE: CONVEYOR_GREY_TILE_CODE,
+}
 PLATFORM_FOOTPRINT_CELLS = {
     "horizontal": (6, 1),
     "vertical": (1, 6),
@@ -530,6 +537,16 @@ class RoomSimulation:
                 continue
             clear_cells(start_cells)
             write_cells(self._platform_footprint_cells(platform, offset=platform_motion_delta(platform)))
+
+        active_conveyors = self.active_target_indices("conveyor")
+        if active_conveyors:
+            for cv in parse_conveyor_visual_records(self.room):
+                if cv.index not in active_conveyors:
+                    continue
+                for x, y in cv.cells:
+                    if 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS:
+                        idx = y * ROOM_COLUMNS + x
+                        tiles[idx] = CONVEYOR_TILE_TOGGLE.get(tiles[idx], tiles[idx])
 
         for block in self.green_blocks:
             clear_cells(_green_block_footprint_cells(block, alternate=False))
