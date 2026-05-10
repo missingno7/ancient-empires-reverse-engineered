@@ -6,7 +6,7 @@ from typing import Iterator
 
 from PIL import Image
 
-from .palette import EGA_RGBI
+from .palette import CGA_PALETTE_1_HIGH, GAME_EGA_RGB, cga_colour_from_table_byte
 
 
 """Decoder for Ancient Empires game graphics bitmap records.
@@ -71,7 +71,7 @@ def iter_game_graphics_records(decoded: bytes, rtype: int) -> Iterator[GameGraph
                         yield GameGraphicsRecord(f"table_{i:03d}_at_{off:04x}", decoded[off + 2 : off + total])
 
 
-def decode_game_graphics_record(payload: bytes, mode: str, vga_palette: list[int] | None = None, transparent: bool = False) -> DecodedGameGraphic:
+def decode_game_graphics_record(payload: bytes, mode: str, vga_palette: list[int] | None = None, transparent: bool = False, ega_palette: list[tuple[int, int, int]] | None = None) -> DecodedGameGraphic:
     """Decode one game graphics bitmap payload to a Pillow image.
 
     Game graphics pixels are two 4-bit logical colour indexes per byte. VGA mode maps
@@ -84,6 +84,7 @@ def decode_game_graphics_record(payload: bytes, mode: str, vga_palette: list[int
 
     ega_table = list(payload[:16])
     vga_table = list(payload[16:32])
+    ega_rgb = ega_palette or GAME_EGA_RGB
     row_bytes = payload[0x20]
     height = payload[0x21]
     raw = payload[0x22 : 0x22 + row_bytes * height]
@@ -118,7 +119,7 @@ def decode_game_graphics_record(payload: bytes, mode: str, vga_palette: list[int
         if transparent:
             rgba = []
             for ega_index, logical_colour in zip(pixels, logical):
-                r, g, b = EGA_RGBI[ega_index]
+                r, g, b = ega_rgb[ega_index]
                 rgba.append((r, g, b, 0 if logical_colour == 0 else 255))
             image = Image.new("RGBA", (row_bytes * 2, height))
             image.putdata(rgba)
@@ -126,9 +127,33 @@ def decode_game_graphics_record(payload: bytes, mode: str, vga_palette: list[int
             image = Image.new("P", (row_bytes * 2, height))
             image.putdata(pixels)
             flat: list[int] = []
-            for r, g, b in EGA_RGBI:
+            for r, g, b in ega_rgb:
                 flat.extend([r, g, b])
             image.putpalette(flat + [0] * (768 - len(flat)))
         return DecodedGameGraphic(image, ega_table, row_bytes, height)
+
+    if mode == "cga":
+        # CGA is encoded directly in the first 16-byte colour table.  The low
+        # nibble is the EGA colour register, while the high nibble is half of
+        # the repeated 2-bit CGA pixel pattern: 0, 5, A, F -> colours 0..3.
+        # This is why a nearest-colour reduction from EGA/VGA is wrong: the
+        # game artists already chose the four-colour mapping per image.
+        cga_lookup = [cga_colour_from_table_byte(x) for x in ega_table]
+        pixels = [cga_lookup[x] for x in logical]
+        if transparent:
+            rgba = []
+            for cga_index, logical_colour in zip(pixels, logical):
+                r, g, b = CGA_PALETTE_1_HIGH[cga_index]
+                rgba.append((r, g, b, 0 if logical_colour == 0 else 255))
+            image = Image.new("RGBA", (row_bytes * 2, height))
+            image.putdata(rgba)
+        else:
+            image = Image.new("P", (row_bytes * 2, height))
+            image.putdata(pixels)
+            flat: list[int] = []
+            for r, g, b in CGA_PALETTE_1_HIGH:
+                flat.extend([r, g, b])
+            image.putpalette(flat + [0] * (768 - len(flat)))
+        return DecodedGameGraphic(image, cga_lookup, row_bytes, height)
 
     raise ValueError(f"unknown game graphics mode: {mode}")

@@ -232,6 +232,7 @@ class SimulationTabMixin:
                 zoom=1,
                 grid=False,
                 part_index=self.part_var.get(),
+                display_mode=self.display_mode_var.get(),
                 draw_platforms=False,
                 draw_puzzle_panels=False,
                 draw_actors=False,

@@ -167,6 +167,7 @@ class RenderOptions:
     draw_actors: bool = True
     draw_player_start: bool = True
     control_state_overrides: dict[int, bool] | None = None
+    display_mode: str = "vga"  # vga, ega, cga
 
 
 @dataclass
@@ -210,6 +211,14 @@ class RoomRenderer:
 
     def render_room(self, level: Level, room_index: int, options: RenderOptions | None = None) -> Image.Image:
         options = options or RenderOptions()
+        previous_display_mode = self.graphics.display_mode
+        self.graphics.set_display_mode(options.display_mode)
+        try:
+            return self._render_room_with_current_graphics(level, room_index, options)
+        finally:
+            self.graphics.set_display_mode(previous_display_mode)
+
+    def _render_room_with_current_graphics(self, level: Level, room_index: int, options: RenderOptions) -> Image.Image:
         part = level.part(options.part_index)
         room = part.room(room_index)
         image = Image.new("RGBA", (ROOM_SCREEN_WIDTH_PX, ROOM_SCREEN_HEIGHT_PX), (0, 0, 0, 255))

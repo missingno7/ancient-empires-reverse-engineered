@@ -397,6 +397,7 @@ class EditorTabMixin:
             zoom=self.zoom_var.get() if zoom is None else zoom,
             grid=False,
             part_index=self.part_var.get(),
+            display_mode=self.display_mode_var.get(),
         )
 
     def current_level(self):

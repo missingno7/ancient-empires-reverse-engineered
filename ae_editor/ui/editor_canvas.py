@@ -76,7 +76,13 @@ class EditorCanvasMixin:
         image = self.project.renderer.render_room(
             self.current_level(),
             self.room_var.get(),
-            RenderOptions(mode="game", zoom=self.zoom_var.get(), grid=False, part_index=self.part_var.get()),
+            RenderOptions(
+                mode="game",
+                zoom=self.zoom_var.get(),
+                grid=False,
+                part_index=self.part_var.get(),
+                display_mode=self.display_mode_var.get(),
+            ),
         )
         self.tk_editor_image = ImageTk.PhotoImage(image)
         self.editor_canvas.delete("all")

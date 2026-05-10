@@ -5,13 +5,15 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from .palette import dac6_to_pillow_palette, find_vga_palette_dac6
+from .palette import build_game_ega_palette, dac6_to_pillow_palette, find_vga_palette_dac6
 from .game_graphics_records import decode_game_graphics_record, iter_game_graphics_records
 from ..constants import (
     TERRAIN_BANK_COUNT,
     TERRAIN_BANK_RESOURCE_START,
 )
 from .dat_archive import DatArchive
+
+GRAPHICS_DISPLAY_MODES = ("vga", "ega", "cga")
 
 
 @dataclass
@@ -23,12 +25,14 @@ class SpriteRef:
 
 
 class GraphicsSet:
-    """Decoded VGA graphics banks used by the editor.
+    """Decoded graphics banks used by the editor.
 
-    The game uses type 0x47 images. In VGA mode each logical 4-bit pixel is
-    mapped through the second 16-byte colour table to the custom 256-colour VGA
-    palette embedded in AEPROG.EXE. Logical colour 0 is used as a transparent key
-    for sprites.
+    The game uses type 0x47 images.  Each bitmap has one packed 4-bit pixel
+    stream and per-sprite colour lookup tables.  VGA uses the second 16-byte
+    table with the custom 256-colour DAC palette embedded in AEPROG.EXE.  EGA
+    uses the first 16-byte table.  No separate CGA bitmap bank has been found in
+    AE000/AE001, so the CGA view is decoded from the same pixels and reduced
+    from the EGA colour table to a four-colour CGA palette.
 
     Graphics are loaded from both AE001.DAT and AE000.DAT. Terrain/decor banks
     live in AE001, while many actor, UI and gameplay sprites live in AE000. The
@@ -36,51 +40,77 @@ class GraphicsSet:
     """
 
     def __init__(self, ae001: DatArchive, exe_path: Path | str, ae000: DatArchive | None = None):
-        _, dac = find_vga_palette_dac6(Path(exe_path))
+        exe_path = Path(exe_path)
+        _, dac = find_vga_palette_dac6(exe_path)
         self.vga_palette = dac6_to_pillow_palette(dac)
-        self.banks: dict[str, list[Image.Image]] = {}
-        self.refs: dict[str, list[SpriteRef]] = {}
-        self.ae001_banks: dict[int, list[Image.Image]] = {}
-        self.ae000_banks: dict[int, list[Image.Image]] = {}
-        self.terrain_banks: list[list[Image.Image]] = []
+        self.ega_palette = build_game_ega_palette(exe_path)
+        self.display_mode = "vga"
+        self.banks_by_mode: dict[str, dict[str, list[Image.Image]]] = {mode: {} for mode in GRAPHICS_DISPLAY_MODES}
+        self.refs_by_mode: dict[str, dict[str, list[SpriteRef]]] = {mode: {} for mode in GRAPHICS_DISPLAY_MODES}
+        self.ae001_banks_by_mode: dict[str, dict[int, list[Image.Image]]] = {mode: {} for mode in GRAPHICS_DISPLAY_MODES}
+        self.ae000_banks_by_mode: dict[str, dict[int, list[Image.Image]]] = {mode: {} for mode in GRAPHICS_DISPLAY_MODES}
+        self.terrain_banks_by_mode: dict[str, list[list[Image.Image]]] = {mode: [] for mode in GRAPHICS_DISPLAY_MODES}
 
         self._load_archive_banks("AE001", ae001)
         if ae000 is not None:
             self._load_archive_banks("AE000", ae000)
 
-        for theme in range(TERRAIN_BANK_COUNT):
-            rid = TERRAIN_BANK_RESOURCE_START + theme
-            self.terrain_banks.append(self.ae001_banks.get(rid, []))
+        for mode in GRAPHICS_DISPLAY_MODES:
+            for theme in range(TERRAIN_BANK_COUNT):
+                rid = TERRAIN_BANK_RESOURCE_START + theme
+                self.terrain_banks_by_mode[mode].append(self.ae001_banks_by_mode[mode].get(rid, []))
+
+        # Backward-compatible attributes used by the bank browser and older code.
+        self._refresh_mode_aliases()
+
+    def set_display_mode(self, mode: str) -> None:
+        mode = mode.lower()
+        if mode not in GRAPHICS_DISPLAY_MODES:
+            raise ValueError(f"unknown graphics display mode: {mode}")
+        if self.display_mode != mode:
+            self.display_mode = mode
+            self._refresh_mode_aliases()
+
+    def _refresh_mode_aliases(self) -> None:
+        self.banks = self.banks_by_mode[self.display_mode]
+        self.refs = self.refs_by_mode[self.display_mode]
+        self.ae001_banks = self.ae001_banks_by_mode[self.display_mode]
+        self.ae000_banks = self.ae000_banks_by_mode[self.display_mode]
+        self.terrain_banks = self.terrain_banks_by_mode[self.display_mode]
 
     def _load_archive_banks(self, archive_name: str, dat: DatArchive) -> None:
         # Scan the full DAT.  This is cheap for these small archives and avoids
         # hiding useful actor banks below resource 21.
         for rid in range(0, len(dat)):
-            bank, refs = self._load_bank(dat, archive_name, rid)
-            if bank:
-                key = f"{archive_name}:{rid:03d}"
-                self.banks[key] = bank
-                self.refs[key] = refs
-                if archive_name == "AE001":
-                    self.ae001_banks[rid] = bank
-                elif archive_name == "AE000":
-                    self.ae000_banks[rid] = bank
+            by_mode = self._load_bank(dat, archive_name, rid)
+            for mode, (bank, refs) in by_mode.items():
+                if bank:
+                    key = f"{archive_name}:{rid:03d}"
+                    self.banks_by_mode[mode][key] = bank
+                    self.refs_by_mode[mode][key] = refs
+                    if archive_name == "AE001":
+                        self.ae001_banks_by_mode[mode][rid] = bank
+                    elif archive_name == "AE000":
+                        self.ae000_banks_by_mode[mode][rid] = bank
 
-    def _load_bank(self, dat: DatArchive, archive_name: str, resource_id: int) -> tuple[list[Image.Image], list[SpriteRef]]:
+    def _load_bank(self, dat: DatArchive, archive_name: str, resource_id: int) -> dict[str, tuple[list[Image.Image], list[SpriteRef]]]:
         res = dat[resource_id]
-        images: list[Image.Image] = []
-        refs: list[SpriteRef] = []
+        out: dict[str, tuple[list[Image.Image], list[SpriteRef]]] = {
+            mode: ([], []) for mode in GRAPHICS_DISPLAY_MODES
+        }
         if not res.ok:
-            return images, refs
+            return out
         for bitmap in iter_game_graphics_records(res.decoded, res.rtype):
-            try:
-                decoded = decode_game_graphics_record(bitmap.payload, "vga", self.vga_palette, transparent=True)
-            except ValueError:
-                continue
-            rgba = decoded.image.convert("RGBA")
-            images.append(rgba)
-            refs.append(SpriteRef(archive_name, resource_id, bitmap.subname, rgba))
-        return images, refs
+            for mode in GRAPHICS_DISPLAY_MODES:
+                images, refs = out[mode]
+                try:
+                    decoded = decode_game_graphics_record(bitmap.payload, mode, self.vga_palette, transparent=True, ega_palette=self.ega_palette)
+                except ValueError:
+                    continue
+                rgba = decoded.image.convert("RGBA")
+                images.append(rgba)
+                refs.append(SpriteRef(archive_name, resource_id, bitmap.subname, rgba))
+        return out
 
     def terrain_sprite(self, theme: int, sprite_index: int) -> Image.Image | None:
         bank = self.terrain_banks[theme % len(self.terrain_banks)] if self.terrain_banks else []
@@ -96,7 +126,6 @@ class GraphicsSet:
         if len(bank) > 11:
             return bank[11]
         return bank[0] if bank else None
-
 
     def sprite(self, archive_name: str, resource_id: int, sprite_index: int = 0) -> Image.Image | None:
         """Return a decoded sprite by source-qualified DAT resource.

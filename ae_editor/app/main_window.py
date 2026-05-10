@@ -49,6 +49,7 @@ class LevelEditorApp(
         self.part_var = tk.IntVar(value=0)
         self.zoom_var = tk.IntVar(value=3)
         self.mode_var = tk.StringVar(value="game")
+        self.display_mode_var = tk.StringVar(value="vga")
         self.grid_var = tk.BooleanVar(value=False)
         self.show_collision_var = tk.BooleanVar(value=False)
         self.overlay_var = tk.BooleanVar(value=True)
@@ -180,6 +181,12 @@ class LevelEditorApp(
         menu_bar.add_cascade(label="Export", menu=export_menu)
 
         view_menu = tk.Menu(menu_bar, tearoff=False)
+        display_menu = tk.Menu(view_menu, tearoff=False)
+        display_menu.add_radiobutton(label="VGA", variable=self.display_mode_var, value="vga", command=self.set_display_mode)
+        display_menu.add_radiobutton(label="EGA", variable=self.display_mode_var, value="ega", command=self.set_display_mode)
+        display_menu.add_radiobutton(label="CGA", variable=self.display_mode_var, value="cga", command=self.set_display_mode)
+        view_menu.add_cascade(label="Display mode", menu=display_menu)
+        view_menu.add_separator()
         view_menu.add_checkbutton(label="Grid", variable=self.grid_var, command=self.redraw_room)
         view_menu.add_checkbutton(label="Hidden actors", variable=self.overlay_hidden_var, command=self.redraw_room)
         view_menu.add_checkbutton(label="Collision 07", variable=self.show_collision_var, command=self.redraw_room)
@@ -187,6 +194,21 @@ class LevelEditorApp(
 
         self.config(menu=menu_bar)
         self.bind_all("<Control-s>", lambda _event: self.save_ae001())
+
+
+    def set_display_mode(self) -> None:
+        mode = self.display_mode_var.get()
+        self.project.graphics.set_display_mode(mode)
+        self.redraw_room()
+        self.redraw_bank_sheet()
+        self.redraw_objects_atlas()
+        self.redraw_tile_palette()
+        self.redraw_editor_object_palette()
+        self.redraw_decor_palette()
+        self.redraw_actor_palette()
+        self.redraw_editor_room()
+        self.redraw_simulation()
+        self.status.set(f"Display mode: {mode.upper()}")
 
     def _build_ui(self) -> None:
         top = ttk.Frame(self)
