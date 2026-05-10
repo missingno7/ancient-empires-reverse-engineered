@@ -18,6 +18,7 @@ from ..game_data.room_payload import (
     parse_conveyor_visual_records,
     record12_green_block_records,
     room_cell_for_runtime_offset,
+    laser_crystal_table,
 )
 
 COLLISION_TILE_CODE = 0x07
@@ -32,6 +33,8 @@ PLATFORM_FOOTPRINT_CELLS = {
     "vertical": (1, 6),
     "unknown": (1, 1),
 }
+REFLECTOR_FRAME_COUNT = 24
+REFLECTOR_AUTO_TICKS = 6
 
 
 @dataclass
@@ -192,9 +195,12 @@ class RoomSimulation:
         self.control_states: dict[int, bool] = {}
         self.pending_sound_ids: list[int] = []
         self.green_blocks: list[SimGreenBlockState] = []
+        self.reflector_frames: dict[int, int] = {}
+        self.reflector_events: dict[int, str] = {}
         self.runtime_tiles_cache: list[int] | None = None
         self._load_initial_controls()
         self._load_green_blocks()
+        self._load_reflectors()
         self.player_x, self.player_y = self._initial_player_position()
 
     @property
@@ -214,6 +220,23 @@ class RoomSimulation:
             if len(record) >= 4
         ]
 
+    def _load_reflectors(self) -> None:
+        """Initialise section_c laser reflector runtime frames.
+
+        Section C stores one compact3 byte per reflector.  The low six bits are
+        the sprite/orientation frame used by AE000:019.  Bit 0x80 marks
+        self-rotating reflectors and bit 0x40 reverses the rotation direction.
+        Controlled reflectors do not spin while the control is held; a control
+        trigger advances the referenced reflector by exactly one frame.
+        """
+        table = laser_crystal_table(self.room)
+        self.reflector_frames = {}
+        self.reflector_events = {}
+        if table is None:
+            return
+        for entry in table.entries:
+            self.reflector_frames[entry.index] = (entry.code & 0x3F) % REFLECTOR_FRAME_COUNT
+
     def _initial_player_position(self) -> tuple[int, int]:
         start = header_player_start(self.part.header)
         if start is not None and start.room_index == self.room_index:
@@ -227,8 +250,40 @@ class RoomSimulation:
         if index not in self.control_states:
             return None
         self.control_states[index] = not self.control_states[index]
+        self._trigger_reflector_targets(index)
         self._invalidate_runtime_tiles()
         return self.control_states[index]
+
+    def _trigger_reflector_targets(self, control_index: int) -> None:
+        cmd = next((cmd for cmd in self.controls() if cmd.record.index == control_index), None)
+        if cmd is None:
+            return
+        table = laser_crystal_table(self.room)
+        if table is None:
+            return
+        entries = {entry.index: entry for entry in table.entries}
+        for target in control_targets(cmd):
+            if target.kind != "reflector":
+                continue
+            entry = entries.get(target.index)
+            if entry is None:
+                continue
+            self._advance_reflector(entry.index, entry.code, reason=f"C{control_index}")
+
+    def _advance_reflector(self, index: int, code: int, *, reason: str) -> None:
+        direction = -1 if (code & 0x40) else 1
+        current = self.reflector_frames.get(index, (code & 0x3F) % REFLECTOR_FRAME_COUNT)
+        self.reflector_frames[index] = (current + direction) % REFLECTOR_FRAME_COUNT
+        self.reflector_events[index] = f"{reason}: frame {self.reflector_frames[index]}"
+
+    def reflector_sprite_index(self, entry) -> int:
+        return self.reflector_frames.get(entry.index, (entry.code & 0x3F) % REFLECTOR_FRAME_COUNT)
+
+    def reflector_runtime_summary(self) -> list[str]:
+        table = laser_crystal_table(self.room)
+        if table is None:
+            return []
+        return [f"R{entry.index}={self.reflector_sprite_index(entry)}" for entry in table.entries]
 
     def drain_pending_sound_ids(self) -> list[int]:
         """Return and clear play_sound ids emitted by actor scripts.
@@ -295,9 +350,20 @@ class RoomSimulation:
     def step(self, ticks: int = 1) -> None:
         for _ in range(max(1, ticks)):
             self.tick_count += 1
+            self._step_auto_reflectors()
             for actor in list(self.actors.values()):
                 if actor.room_index == self.room_index and actor.active:
                     self._step_actor(actor)
+
+    def _step_auto_reflectors(self) -> None:
+        if self.tick_count % REFLECTOR_AUTO_TICKS != 0:
+            return
+        table = laser_crystal_table(self.room)
+        if table is None:
+            return
+        for entry in table.entries:
+            if entry.code & 0x80:
+                self._advance_reflector(entry.index, entry.code, reason="auto")
 
     def _step_actor(self, actor: SimActorState) -> None:
         if actor.halted:

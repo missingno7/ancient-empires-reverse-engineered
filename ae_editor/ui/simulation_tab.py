@@ -262,9 +262,7 @@ class SimulationTabMixin:
             f"P{idx}" for idx in sorted(sim.active_target_indices("platform"))
         ] + [
             f"CV{idx} toggled" for idx in sorted(sim.active_target_indices("conveyor"))
-        ] + [
-            f"R{idx}" for idx in sorted(sim.active_target_indices("reflector"))
-        ]
+        ] + sim.reflector_runtime_summary()
         self.sim_info_var.set(
             f"tick={sim.tick_count} running={'yes' if self.sim_running_var.get() else 'no'}\n"
             f"player x={sim.player_x} y={sim.player_y}\n"
@@ -272,7 +270,8 @@ class SimulationTabMixin:
         )
         last_events = [f"A{a.index}: {a.last_event}" for a in visible_actors if a.last_event]
         block_events = [f"GB{block.index}: {block.last_event}" for block in sim.green_blocks if block.last_event]
-        self.sim_detail_var.set("\n".join((block_events + last_events)[:8]))
+        reflector_events = [f"R{idx}: {event}" for idx, event in sorted(sim.reflector_events.items())]
+        self.sim_detail_var.set("\n".join((block_events + reflector_events + last_events)[:8]))
 
     def refresh_simulation_control_tree(self) -> None:
         if not hasattr(self, "sim_control_tree"):
@@ -538,8 +537,6 @@ class SimulationTabMixin:
         draw = ImageDraw.Draw(image, "RGBA")
         active_platforms = sim.active_target_indices("platform")
         active_conveyors = sim.active_target_indices("conveyor")
-        active_reflectors = sim.active_target_indices("reflector")
-
         horizontal = self.project.graphics.sprite("AE000", 47, 0)
         vertical = self.project.graphics.sprite("AE000", 48, 0)
         for platform in parse_platform_triplets(room):
@@ -579,20 +576,19 @@ class SimulationTabMixin:
             if toggled:
                 draw.rectangle((x, y, x + strip.width - 1, y + strip.height - 1), outline=(80, 245, 255, 210), width=1)
 
-        if active_reflectors:
-            table = laser_crystal_table(room)
-            if table is not None:
-                turn = (sim.tick_count // 6) % 4
-                for entry in table.entries:
-                    if entry.index not in active_reflectors:
-                        continue
-                    sprite_index = ((entry.code & 0x3F) + turn) & 0x3F
-                    sprite = self.project.graphics.sprite("AE000", 19, sprite_index) or self.project.graphics.sprite("AE000", 19, entry.code & 0x3F)
-                    if sprite is None:
-                        continue
-                    x, y = compact3_xy(entry, sprite, "screen_exe", delta=LASER_CRYSTAL_DELTA)
-                    image.alpha_composite(sprite, (x, y))
+        table = laser_crystal_table(room)
+        if table is not None:
+            for entry in table.entries:
+                sprite_index = sim.reflector_sprite_index(entry)
+                sprite = self.project.graphics.sprite("AE000", 19, sprite_index) or self.project.graphics.sprite("AE000", 19, entry.code & 0x3F)
+                if sprite is None:
+                    continue
+                x, y = compact3_xy(entry, sprite, "screen_exe", delta=LASER_CRYSTAL_DELTA)
+                image.alpha_composite(sprite, (x, y))
+                if entry.code & 0x80:
                     draw.ellipse((entry.x_raw * 2 - 9, entry.y - 9, entry.x_raw * 2 + 9, entry.y + 9), outline=(90, 220, 255, 220), width=2)
+                elif entry.index in sim.reflector_events:
+                    draw.ellipse((entry.x_raw * 2 - 9, entry.y - 9, entry.x_raw * 2 + 9, entry.y + 9), outline=(255, 210, 70, 220), width=2)
 
     def _simulation_platform_offset(self, platform) -> tuple[int, int]:
         return platform_motion_delta(platform)
