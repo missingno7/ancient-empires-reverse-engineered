@@ -164,6 +164,7 @@ class EditorTabMixin:
         decor_settings.pack(fill=tk.X, padx=6, pady=(6, 4))
         ttk.Label(decor_settings, text="Code").pack(side=tk.LEFT)
         ttk.Entry(decor_settings, textvariable=self.decor_code_var, width=6).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Checkbutton(decor_settings, text="Flip", variable=self.decor_flip_var, command=self.on_palette_setting_changed).pack(side=tk.LEFT, padx=(10, 0))
         ttk.Label(
             decor_tab,
             text="Theme decor from the room visual compact3 table. Choose a decal, click to place it, or select an existing V handle to move/delete it.",
@@ -188,6 +189,7 @@ class EditorTabMixin:
         ).pack(fill=tk.X, padx=6, pady=(6, 4))
         ttk.Radiobutton(self.actor_settings_frame, text="New blank/wait script", variable=self.actor_script_mode_var, value="new").pack(anchor="w", padx=6, pady=(0, 0))
         ttk.Radiobutton(self.actor_settings_frame, text="Share selected actor's script_pc", variable=self.actor_script_mode_var, value="share_selected").pack(anchor="w", padx=6)
+        ttk.Checkbutton(self.actor_settings_frame, text="Flip", variable=self.actor_flip_var).pack(anchor="w", padx=6)
         addr_row = ttk.Frame(self.actor_settings_frame)
         addr_row.pack(fill=tk.X, padx=6, pady=(0, 4))
         ttk.Radiobutton(addr_row, text="Use address", variable=self.actor_script_mode_var, value="address").pack(side=tk.LEFT)
@@ -247,8 +249,9 @@ class EditorTabMixin:
             ),
         ]
         self.property_actor_bool_row = ttk.Frame(prop_box)
-        self.property_actor_facing_check = ttk.Checkbutton(self.property_actor_bool_row, text="Facing variant", variable=self.property_actor_facing_var)
+        self.property_actor_facing_check = ttk.Checkbutton(self.property_actor_bool_row, text="Flip", variable=self.property_actor_facing_var)
         self.property_actor_hidden_check = ttk.Checkbutton(self.property_actor_bool_row, text="Hidden", variable=self.property_actor_hidden_var)
+        self.property_decor_flip_check = ttk.Checkbutton(prop_box, text="Flip", variable=self.property_decor_flip_var)
         self.property_apply_button = ttk.Button(prop_box, text="Apply", command=self.apply_selected_properties)
         self.property_note_label = ttk.Label(prop_box, textvariable=self.property_note_var, wraplength=260, justify=tk.LEFT)
         prop_box.columnconfigure(3, weight=1)
@@ -411,4 +414,3 @@ class EditorTabMixin:
 
     def _current_room_actors(self):
         return actor_records_for_room(self.current_level().part(self.part_var.get()), self.current_room().index)
-

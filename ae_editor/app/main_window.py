@@ -14,6 +14,7 @@ from ..ui.common import (
     tk,
     tkfont,
     ttk,
+    messagebox,
 )
 from ..ui.actor_scripting_tab import ActorScriptingTabMixin
 from ..ui.audio_tab import AudioTabMixin
@@ -24,6 +25,8 @@ from ..ui.file_actions import FileActionsMixin
 from ..ui.navigation import NavigationMixin
 from ..ui.palettes import PaletteMixin
 from ..ui.simulation_tab import SimulationTabMixin
+from ..game_data.level_flip import flip_level_horizontally
+from ..game_data.level_format import Level
 
 
 class LevelEditorApp(
@@ -69,6 +72,7 @@ class LevelEditorApp(
         self.brush_size_var = tk.IntVar(value=1)
         self.tile_brush_mode_var = tk.StringVar(value="exact")
         self.decor_code_var = tk.StringVar(value="00")
+        self.decor_flip_var = tk.BooleanVar(value=False)
         self.editor_info = tk.StringVar(value="")
         self.palette_selection_var = tk.StringVar(value="Selection mode")
         self.property_title_var = tk.StringVar(value="No object selected")
@@ -87,6 +91,7 @@ class LevelEditorApp(
         self.property_note_var = tk.StringVar(value="")
         self.property_actor_facing_var = tk.BooleanVar(value=False)
         self.property_actor_hidden_var = tk.BooleanVar(value=False)
+        self.property_decor_flip_var = tk.BooleanVar(value=False)
         self.scripting_actor_title_var = tk.StringVar(value="No actor selected")
         self.scripting_summary_var = tk.StringVar(value="")
         self.scripting_status_var = tk.StringVar(value="")
@@ -96,6 +101,7 @@ class LevelEditorApp(
         self.actor_script_mode_var = tk.StringVar(value="new")
         self.actor_script_address_var = tk.StringVar(value="")
         self.actor_script_reset_address_var = tk.StringVar(value="")
+        self.actor_flip_var = tk.BooleanVar(value=False)
         self.editor_selected_ref: tuple[str, int | None] | None = None
         self.editor_drag_offset: tuple[int, int] | None = None
         self.scripting_selected_actor_index: int | None = None
@@ -145,6 +151,9 @@ class LevelEditorApp(
         self.audio_gm_choices = [f"{i:03d}: {name}" for i, name in enumerate(GM_PROGRAM_NAMES)]
         self.tree_bold_font = tkfont.nametofont("TkDefaultFont").copy()
         self.tree_bold_font.configure(weight="bold")
+        self.undo_stack: list[tuple[int, bytes, bytes]] = []
+        self.redo_stack: list[tuple[int, bytes, bytes]] = []
+        self.undo_level_bytes: dict[int, bytes] = {level.index: level.to_bytes() for level in self.project.levels}
 
         self._build_menu_bar()
         self._build_ui()
@@ -170,6 +179,9 @@ class LevelEditorApp(
         file_menu.add_command(label="Save AE001", command=self.save_ae001, accelerator="Ctrl+S")
         file_menu.add_command(label="Save AE001 As...", command=self.save_ae001_as)
         file_menu.add_separator()
+        file_menu.add_command(label="Undo", command=self.undo_edit, accelerator="Ctrl+Z")
+        file_menu.add_command(label="Redo", command=self.redo_edit, accelerator="Ctrl+Y")
+        file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.close_window)
         menu_bar.add_cascade(label="File", menu=file_menu)
 
@@ -192,8 +204,115 @@ class LevelEditorApp(
         view_menu.add_checkbutton(label="Collision 07", variable=self.show_collision_var, command=self.redraw_room)
         menu_bar.add_cascade(label="View", menu=view_menu)
 
+        experimental_menu = tk.Menu(menu_bar, tearoff=False)
+        experimental_menu.add_command(label="Flip current level horizontally", command=self.flip_current_level_horizontally)
+        menu_bar.add_cascade(label="Experimental", menu=experimental_menu)
+
         self.config(menu=menu_bar)
         self.bind_all("<Control-s>", lambda _event: self.save_ae001())
+        self.bind_all("<Control-z>", lambda _event: self.undo_edit())
+        self.bind_all("<Control-y>", lambda _event: self.redo_edit())
+        self.bind_all("<Control-Shift-Z>", lambda _event: self.redo_edit())
+
+    def _record_undo_snapshot(self, level_index: int) -> None:
+        position = self._level_position(level_index)
+        level = self.project.levels[position]
+        current = level.to_bytes()
+        previous = self.undo_level_bytes.get(level.index, current)
+        if current == previous:
+            return
+        self.undo_stack.append((level.index, previous, current))
+        self.redo_stack.clear()
+        self.undo_level_bytes[level.index] = current
+
+    def _restore_level_bytes(self, level_index: int, data: bytes) -> None:
+        position = self._level_position(level_index)
+        self.project.levels[position] = Level(level_index, data)
+        self.level_var.set(position)
+        if hasattr(self, "level_combo"):
+            self.level_combo.current(position)
+        self.project.mark_level_dirty(level_index)
+        self.undo_level_bytes[level_index] = data
+        self.title("Ancient Empires Level Editor *")
+        self.editor_selected_ref = None
+        self.editor_drag_offset = None
+        self.scripting_selected_actor_index = None
+        self.simulation = None
+        self.simulation_key = None
+        self.sim_selected_actor_index = None
+        self.refresh_room_labels()
+        self.refresh_room_link_buttons()
+        self.redraw_room()
+        self.redraw_objects_atlas()
+        self.redraw_tile_palette()
+        self.redraw_editor_object_palette()
+        self.redraw_decor_palette()
+        self.redraw_actor_palette()
+        self.refresh_actor_scripting_tab()
+        self.refresh_placeable_settings()
+
+    def _level_position(self, level_index: int) -> int:
+        for position, level in enumerate(self.project.levels):
+            if level.index == level_index:
+                return position
+        raise IndexError(f"level index not loaded: {level_index}")
+
+    def undo_edit(self) -> str:
+        if not self.undo_stack:
+            self.status.set("Nothing to undo.")
+            return "break"
+        level_index, before, after = self.undo_stack.pop()
+        self.redo_stack.append((level_index, before, after))
+        self._restore_level_bytes(level_index, before)
+        self.status.set(f"Undo: level {level_index + 1:02d}")
+        return "break"
+
+    def redo_edit(self) -> str:
+        if not self.redo_stack:
+            self.status.set("Nothing to redo.")
+            return "break"
+        level_index, before, after = self.redo_stack.pop()
+        self.undo_stack.append((level_index, before, after))
+        self._restore_level_bytes(level_index, after)
+        self.status.set(f"Redo: level {level_index + 1:02d}")
+        return "break"
+
+
+    def flip_current_level_horizontally(self) -> None:
+        level = self.current_level()
+        if not messagebox.askyesno(
+            "Flip level horizontally",
+            "This experimental action mirrors the whole current level in both difficulties.\n\n"
+            "It flips room tiles, payload objects, actors, actor-script directions, "
+            "conveyors, horizontal platforms, reflectors and left/right room links.\n\n"
+            "Continue?",
+        ):
+            return
+        original = level.to_bytes()
+        report = flip_level_horizontally(level, graphics=self.project.graphics)
+        # Safety net for the transform itself: it should be an involution.  Run
+        # it on a throwaway copy loaded from the original bytes so the edited
+        # level remains flipped.
+        probe = type(level)(level.index, original)
+        flip_level_horizontally(probe, graphics=self.project.graphics)
+        flip_level_horizontally(probe, graphics=self.project.graphics)
+        if probe.to_bytes() != original:
+            messagebox.showerror(
+                "Flip level horizontally",
+                "Safety check failed: flipping the level twice did not reconstruct the original bytes. "
+                "The edited level was still flipped, but please review before saving.",
+            )
+        self.project.mark_level_dirty(level.index)
+        self._record_undo_snapshot(level.index)
+        self.editor_selected_ref = None
+        self.scripting_selected_actor_index = None
+        self.reset_simulation(announce=False)
+        self.redraw_room()
+        self.redraw_editor_room()
+        self.redraw_simulation()
+        self.refresh_actor_scripting_tab()
+        self.refresh_placeable_settings()
+        self.status.set(f"Experimental horizontal flip: {report.summary()}")
 
 
     def set_display_mode(self) -> None:

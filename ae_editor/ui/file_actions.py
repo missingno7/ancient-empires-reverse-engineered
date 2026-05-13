@@ -14,6 +14,8 @@ from .common import (
 
 class FileActionsMixin:
     def _after_save(self, path: Path) -> None:
+        if hasattr(self, "undo_level_bytes"):
+            self.undo_level_bytes = {level.index: level.to_bytes() for level in self.project.levels}
         self.title("Ancient Empires Level Editor")
         self.refresh_room_labels()
         self.redraw_room()
@@ -91,4 +93,3 @@ class FileActionsMixin:
         directory = filedialog.askdirectory(title="Export bank sheets")
         if directory:
             export_bank_sheets(self.project, Path(directory))
-

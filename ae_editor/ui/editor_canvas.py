@@ -550,6 +550,7 @@ class EditorCanvasMixin:
                 entry = self._decor_from_ref(self.current_room(), handle.ref)
                 if entry is not None:
                     self.decor_code_var.set(f"{entry.code:02X}")
+                    self.decor_flip_var.set(bool(entry.code & 0x40))
                     if not keep_select_tool:
                         self.editor_tool_var.set("decor")
                         if hasattr(self, "editor_palettes"):
@@ -888,7 +889,7 @@ class EditorCanvasMixin:
                 y=self._clamp_byte(y),
                 actor_type=spec.actor_type,
                 frame=spec.frame,
-                frame_variant=0,
+                frame_variant=1 if self.actor_flip_var.get() else 0,
                 hidden=0,
                 frame_min=spec.frame_min,
                 frame_max=spec.frame_max,
@@ -934,6 +935,7 @@ class EditorCanvasMixin:
                 entry = self._decor_from_ref(self.current_room(), handle.ref)
                 if entry is not None:
                     self.decor_code_var.set(f"{entry.code:02X}")
+                    self.decor_flip_var.set(bool(entry.code & 0x40))
                     if not keep_select_tool:
                         self.editor_tool_var.set("decor")
                         if hasattr(self, "editor_palettes"):
@@ -980,6 +982,7 @@ class EditorCanvasMixin:
         code = self._parse_decor_code()
         if code is None:
             return
+        code = (code | 0x40) if self.decor_flip_var.get() else (code & ~0x40)
         room = self.current_room()
         try:
             idx = add_visual_compact3_entry(room, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y), code=code)
@@ -1357,4 +1360,3 @@ class EditorCanvasMixin:
                     arrow=tk.LAST,
                 )
                 label((line.start[0] + line.end[0]) // 2, (line.start[1] + line.end[1]) // 2, line.label, line.colour)
-

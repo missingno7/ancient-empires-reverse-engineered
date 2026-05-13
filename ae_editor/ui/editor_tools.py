@@ -154,6 +154,7 @@ class EditorToolsMixin:
         self.editor_selected_ref = None
         self.editor_drag_offset = None
         self.decor_code_var.set(f"{code & 0xFF:02X}")
+        self.decor_flip_var.set(bool(code & 0x40))
         self.select_decor_mode()
 
     def _brush_size(self) -> int:
@@ -449,7 +450,10 @@ class EditorToolsMixin:
         return None
 
     def _set_dirty(self) -> None:
-        self.project.mark_level_dirty(self.current_level().index)
+        level_index = self.current_level().index
+        self.project.mark_level_dirty(level_index)
+        if hasattr(self, "_record_undo_snapshot"):
+            self._record_undo_snapshot(level_index)
         suffix = " *" if self.project.dirty else ""
         self.title(f"Ancient Empires Level Editor{suffix}")
 
@@ -546,7 +550,14 @@ class EditorToolsMixin:
             label.grid(row=row, column=0, sticky="e", padx=(6, 2), pady=2)
             entry.grid(row=row, column=1, columnspan=3, sticky="ew", pady=2)
 
-    def _layout_property_panel(self, *, rows: tuple[bool, ...] = (False, False, False, False), actor_bools: bool = False, apply: bool = False) -> None:
+    def _layout_property_panel(
+        self,
+        *,
+        rows: tuple[bool, ...] = (False, False, False, False),
+        actor_bools: bool = False,
+        decor_flip: bool = False,
+        apply: bool = False,
+    ) -> None:
         padded_rows = tuple(rows) + (False,) * max(0, len(self.property_rows) - len(rows))
         for index in range(len(self.property_rows)):
             self._set_property_row_visible(index, bool(padded_rows[index]))
@@ -557,6 +568,11 @@ class EditorToolsMixin:
         else:
             self.property_actor_bool_row.grid_remove()
             action_row = base_row
+        if decor_flip:
+            self.property_decor_flip_check.grid(row=action_row, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 2))
+            action_row += 1
+        else:
+            self.property_decor_flip_check.grid_remove()
         if apply:
             self.property_apply_button.grid(row=action_row, column=0, columnspan=4, sticky="ew", padx=6, pady=(4, 4))
             note_row = action_row + 1
@@ -738,7 +754,7 @@ class EditorToolsMixin:
                 self._clear_property_values()
                 self._layout_property_panel()
                 return
-            self._layout_property_panel(rows=(True, True, True, True), apply=True)
+            self._layout_property_panel(rows=(True, True, False, True), decor_flip=True, apply=True)
             sprite_ref = visual_sprite_ref(
                 entry,
                 theme=self.current_level().part(self.part_var.get()).theme,
@@ -751,12 +767,12 @@ class EditorToolsMixin:
             self.property_label_y_var.set("raw y")
             self.property_label_len_var.set("raw code")
             self.property_label_code_var.set("sprite")
-            self.property_label_props_var.set("flip")
             self.property_x_var.set(str(entry.x_raw))
             self.property_y_var.set(str(entry.y))
             self.property_len_var.set(f"{entry.code:02X}")
             self.property_code_var.set(f"{sprite_ref.archive}:{sprite_ref.resource_id:03d}:{sprite_ref.sprite_index}")
-            self.property_props_var.set("1" if entry.code & 0x40 else "0")
+            self.property_props_var.set("")
+            self.property_decor_flip_var.set(bool(entry.code & 0x40))
             self.property_room_var.set(str(room.index))
             self.property_note_var.set((sprite_ref.note or "Theme visual compact3 entry.") + "  Flip edits bit 0x40 while preserving the raw code/layer bits. Change Room to move this decal to another room that has a visual table.")
         elif kind == "animated_decor":
@@ -1124,10 +1140,8 @@ class EditorToolsMixin:
                 x_raw = self._parse_int_property(self.property_x_var.get(), default=entry.x_raw) & 0xFF
                 y_raw = self._parse_int_property(self.property_y_var.get(), default=entry.y) & 0xFF
                 code = self._parse_int_property(self.property_len_var.get(), default=entry.code) & 0xFF
-                flip_text = self.property_props_var.get().strip().lower()
-                if flip_text:
-                    flip = flip_text in {"1", "true", "yes", "y", "on", "flip", "flipped"}
-                    code = (code | 0x40) if flip else (code & ~0x40)
+                flip = self.property_decor_flip_var.get()
+                code = (code | 0x40) if flip else (code & ~0x40)
                 target_room_index = self._parse_room_property(default=room.index)
                 if target_room_index != room.index:
                     target_room = self.current_level().part(self.part_var.get()).room(target_room_index)
@@ -1245,4 +1259,3 @@ class EditorToolsMixin:
         self.redraw_decor_palette()
         self.redraw_actor_palette()
         self.refresh_actor_scripting_tab()
-
