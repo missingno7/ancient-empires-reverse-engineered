@@ -16,7 +16,7 @@ from .common import (
     add_section_a_symbol_entry,
     add_visual_compact3_entry,
     animated_decor_table,
-    clear_room_apple_marker,
+    clear_part_apple_marker,
     control_commands,
     control_ref_values,
     control_targets,
@@ -36,6 +36,7 @@ from .common import (
     messagebox,
     parse_conveyor_visual_records,
     parse_platform_triplets,
+    part_apple_marker,
     platform_xy,
     re,
     record12_green_block_records,
@@ -46,13 +47,14 @@ from .common import (
     set_control_command_body,
     set_conveyor_visual_record,
     set_record12_green_block,
-    set_room_apple_marker,
+    set_part_apple_marker,
     set_section_a_symbol_entry,
     set_visual_compact3_entry,
     tk,
     transition_links_for_room,
     visual_compact3_table,
     visual_sprite_ref,
+    apple_marker_raw_xy,
 )
 
 
@@ -904,25 +906,27 @@ class EditorToolsMixin:
             self.property_note_var.set("Room navigation data. Values are zero-based room ids; '-' means no link. Stored format is one-based, but the editor hides that.")
         elif kind == "known_pickup":
             idx = ref[1]
-            pickups = self._known_extra_pickups_for_room(self.current_level().part(self.part_var.get()), room)
-            if idx is None or not 0 <= idx < len(pickups):
+            part = self.current_level().part(self.part_var.get())
+            apple = self._apple_pickup_for_room(part, room)
+            if idx not in (None, 0) or apple is None:
                 self.property_title_var.set("Selected apple no longer exists")
                 self._clear_property_values()
                 self._layout_property_panel()
                 return
-            pickup = pickups[idx]
             self._layout_property_panel(rows=(True, True, False, True), apply=True)
             self.property_title_var.set("Apple")
             self.property_label_x_var.set("raw x")
             self.property_label_y_var.set("y")
             self.property_label_len_var.set("storage")
             self.property_label_code_var.set("sprite")
-            self.property_x_var.set(str(self._clamp_byte(round(pickup.x / 2))))
-            self.property_y_var.set(str(self._clamp_byte(pickup.y)))
-            self.property_len_var.set("room tail")
+            marker = part_apple_marker(part, room.index)
+            x_raw, y_raw = apple_marker_raw_xy(marker)
+            self.property_x_var.set(str(x_raw))
+            self.property_y_var.set(str(y_raw))
+            self.property_len_var.set("runtime tail")
             self.property_code_var.set("AE000:045:0")
             self.property_room_var.set(str(room.index))
-            self.property_note_var.set("Real red apple pickup. New/moved apples are written to the final 3 bytes of this room record: x_raw, y, room+1. The game supports one such apple marker per room. Change Room to move it.")
+            self.property_note_var.set("Real red apple pickup. Runtime storage is split across the current record tail and the next record preamble: x_raw, y, room+1 gate. The game supports one such apple marker per room. Change Room to move it.")
         elif kind in {"exit_door", "player_start", "artifact"}:
             self._layout_property_panel(rows=(True, True, False), apply=True)
             self.property_label_x_var.set("raw x")
@@ -1232,20 +1236,20 @@ class EditorToolsMixin:
                 part.set_artifact_slot(slot, room_index, x_raw, y_raw)
                 self.status.set(f"Updated artifact {slot}: room={room_index} x={x_raw} y={y_raw}")
             elif kind == "known_pickup":
+                part = self.current_level().part(self.part_var.get())
                 x_raw = self._parse_int_property(self.property_x_var.get(), default=0) & 0xFF
                 y_raw = self._parse_int_property(self.property_y_var.get(), default=0) & 0xFF
                 target_room_index = self._parse_room_property(default=room.index)
                 if target_room_index != room.index:
-                    target_room = self.current_level().part(self.part_var.get()).room(target_room_index)
-                    clear_room_apple_marker(room)
-                    set_room_apple_marker(target_room, x_raw=x_raw, y=y_raw)
+                    clear_part_apple_marker(part, room.index)
+                    set_part_apple_marker(part, target_room_index, x_raw=x_raw, y=y_raw)
                     self.status.set(f"Moved apple to room {target_room_index:02d}: x={x_raw * 2} y={y_raw}")
                     self._set_dirty()
                     self.set_room(target_room_index)
                     self.editor_selected_ref = ("known_pickup", 0)
                     self.redraw_editor_room()
                     return
-                set_room_apple_marker(room, x_raw=x_raw, y=y_raw)
+                set_part_apple_marker(part, room.index, x_raw=x_raw, y=y_raw)
                 self.status.set(f"Updated apple: x={x_raw * 2} y={y_raw}")
             else:
                 self.status.set("Properties are editable for CV belts, platforms, controls and header objects for now.")

@@ -59,7 +59,7 @@ class PaletteMixin:
                 "Pickups",
                 [
                     *[(f"D{i} artifact", "AE000", 44, 0, f"artifact slot {i}") for i in range(6)],
-                    ("Apple", "AE000", 45, 0, "room-tail pickup, max one per room"),
+                    ("Apple", "AE000", 45, 0, "runtime tail pickup, max one per room"),
                 ],
             ),
             (
@@ -150,9 +150,9 @@ class PaletteMixin:
         for cand in header_object_candidates(part.header):
             if cand.room_plus_one == room.index + 1:
                 pickups.append((f"D{cand.index} artifact", "AE000", 44, 0, f"x={cand.x_raw} y={cand.y_raw}"))
-        for pickup in self._known_extra_pickups_for_room(part, room):
-            label = "Apple" if pickup.resource_id == 45 else "Known pickup"
-            pickups.append((label, pickup.archive, pickup.resource_id, pickup.sprite_index, f"x={pickup.x} y={pickup.y} room-tail marker"))
+        apple = self._apple_pickup_for_room(part, room)
+        if apple is not None:
+            pickups.append(("Apple", "AE000", 45, 0, f"x={apple[0]} y={apple[1]} runtime tail marker"))
         if pickups:
             dynamic.append(("Current room: pickups", pickups))
 
@@ -642,4 +642,3 @@ class PaletteMixin:
         if 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS:
             value = self.current_level().part(self.part_var.get()).room(self.room_var.get()).get(x, y)
             self.status.set(self.status.get() + f" | click x={x} y={y} tile={value:02X}/{value}")
-

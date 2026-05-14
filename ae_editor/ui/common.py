@@ -28,7 +28,7 @@ from ..game_data.actor_dsl import (
 from ..rendering.coordinates import platform_motion_delta, platform_xy
 from ..game_data.conveyors import ConveyorSpec, compose_conveyor, iter_conveyor_runs
 from ..project import AncientEmpiresProject
-from ..rendering.room_renderer import RenderOptions, KnownExtraPickup
+from ..rendering.room_renderer import RenderOptions
 from ..rendering.object_mapping import visual_sprite_ref
 from ..simulation import RoomSimulation
 from ..rendering.tile_mapping import AUTO_SOLID_TILE_CODES, CONVEYOR_PHYSICS_TILE_CODES, ROPE_TILE_CODES
@@ -48,9 +48,11 @@ from ..game_data.room_payload import (
     set_animated_decor_record,
     add_animated_decor_record,
     delete_animated_decor_record,
-    room_apple_marker,
-    set_room_apple_marker,
-    clear_room_apple_marker,
+    part_apple_marker,
+    apple_marker_screen_xy,
+    apple_marker_raw_xy,
+    set_part_apple_marker,
+    clear_part_apple_marker,
     section_a_symbol_table,
     set_section_a_symbol_entry,
     add_section_a_symbol_entry,
@@ -207,5 +209,3 @@ ACTOR_TEMPLATE_SPECS = (
     ActorTemplateSpec("sparkles", "Sparkles", "AE000", 22, 37, 0x50, 0x53, 1),
 )
 ACTOR_TEMPLATE_BY_KEY = {spec.key: spec for spec in ACTOR_TEMPLATE_SPECS}
-
-

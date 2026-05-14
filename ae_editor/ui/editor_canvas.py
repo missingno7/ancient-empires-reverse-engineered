@@ -11,7 +11,6 @@ from .common import (
     DELETE_SELECTION_HINT,
     EditorHandle,
     ImageTk,
-    KnownExtraPickup,
     PLATFORM_TRIPLET_SIZE,
     ROOM_COLUMNS,
     ROOM_ROWS,
@@ -28,7 +27,7 @@ from .common import (
     add_visual_compact3_entry,
     animated_decor_table,
     build_room_overlay,
-    clear_room_apple_marker,
+    clear_part_apple_marker,
     clear_runtime_triplet_slot,
     control_commands,
     control_targets,
@@ -50,17 +49,19 @@ from .common import (
     laser_crystal_table,
     parse_conveyor_visual_records,
     parse_platform_triplets,
+    part_apple_marker,
     re,
     record12_green_block_records,
-    room_apple_marker,
+    apple_marker_screen_xy,
+    apple_marker_raw_xy,
     section_a_symbol_table,
     set_actor_record_placement,
     set_animated_decor_record,
     set_control_command_body,
     set_conveyor_visual_record,
     set_laser_crystal_entry,
+    set_part_apple_marker,
     set_record12_green_block,
-    set_room_apple_marker,
     set_section_a_symbol_entry,
     set_visual_compact3_entry,
     tk,
@@ -175,18 +176,9 @@ class EditorCanvasMixin:
             colour = major if y % 4 == 0 else minor
             canvas.create_line(0, py, width, py, fill=colour, stipple="gray75")
 
-    def _known_extra_pickups_for_room(self, part, room):
-        apple = room_apple_marker(room)
-        if apple is not None:
-            return [KnownExtraPickup("AE000", 45, 0, apple.x_raw * 2, apple.y_raw)]
-        # Compatibility override for shipped apples with non-local marker ids.
-        # A cleared zero marker means the user intentionally deleted the apple.
-        from ..game_data.room_payload import room_tail_marker
-        if room_tail_marker(room) is None:
-            return []
-        key = (self.current_level().index + 1, part.index, room.index)
-        pickup = getattr(self.project.renderer, "KNOWN_LEGACY_APPLES", {}).get(key)
-        return [] if pickup is None else [pickup]
+    def _apple_pickup_for_room(self, part, room) -> tuple[int, int] | None:
+        apple = part_apple_marker(part, room.index)
+        return None if apple is None else apple_marker_screen_xy(apple)
 
     def _draw_editor_handle(self, handle: EditorHandle) -> None:
         zoom = self.zoom_var.get()
@@ -257,9 +249,11 @@ class EditorCanvasMixin:
         for cand in header_object_candidates(part.header):
             if cand.room_plus_one == room.index + 1:
                 handles.append(EditorHandle(("artifact", cand.index), cand.x_raw * 2, cand.y_raw, f"D{cand.index}", "#ff40ff"))
-        for i, pickup in enumerate(self._known_extra_pickups_for_room(part, room)):
-            label = "Apple" if pickup.resource_id == 45 else f"Pickup{i}"
-            handles.append(EditorHandle(("known_pickup", i), pickup.x + 8, pickup.y + 8, label, "#ff5050"))
+        apple = self._apple_pickup_for_room(part, room)
+        if apple is not None:
+            marker = part_apple_marker(part, room.index)
+            x_raw, y_raw = apple_marker_raw_xy(marker)
+            handles.append(EditorHandle(("known_pickup", 0), x_raw * 2, y_raw, "Apple", "#ff5050"))
         for platform in parse_platform_triplets(room):
             if platform.visible:
                 handles.append(EditorHandle(("platform", platform.index), platform.x_raw * 2, platform.y, f"P{platform.index}", "#ffb000"))
@@ -634,7 +628,7 @@ class EditorCanvasMixin:
         elif kind == "artifact" and slot is not None:
             part.set_artifact_slot(slot, room.index, self._clamp_byte(round(x / 2)), self._clamp_byte(y))
         elif kind == "known_pickup":
-            set_room_apple_marker(room, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y))
+            set_part_apple_marker(part, room.index, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y))
         elif kind == "platform" and slot is not None:
             platforms = [p for p in parse_platform_triplets(room) if p.index == slot]
             if platforms:
@@ -728,7 +722,7 @@ class EditorCanvasMixin:
             set_actor_record_placement(part, actor.index, room_index=room.index, x=self._clamp_actor_x(x), y=self._clamp_actor_y(y))
             self.actor_script_share_source_index = actor.index
         elif kind == "known_pickup":
-            set_room_apple_marker(room, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y))
+            set_part_apple_marker(part, room.index, x_raw=self._clamp_byte(round(x / 2)), y=self._clamp_byte(y))
         elif kind == "conveyor" and slot is not None:
             cv = self._cv_from_ref(room, self.editor_selected_ref)
             if cv is None:
@@ -1027,9 +1021,9 @@ class EditorCanvasMixin:
             y_raw = self._clamp_byte(y + 16)
             part.set_artifact_slot(slot, room.index, x_raw, y_raw)
         elif obj == "apple":
-            x_raw = self._clamp_byte(round(x / 2))
-            y_raw = self._clamp_byte(y)
-            set_room_apple_marker(room, x_raw=x_raw, y=y_raw)
+            x_raw = self._clamp_byte(round((x + 6) / 2))
+            y_raw = self._clamp_byte(y + 12)
+            set_part_apple_marker(part, room.index, x_raw=x_raw, y=y_raw)
             self.editor_selected_ref = ("known_pickup", 0)
             self.editor_drag_offset = None
             self.status.set(f"Placed apple at x={x_raw * 2} y={y_raw}. The game supports one red apple marker per room; placing it again moves/replaces it.")
@@ -1180,7 +1174,7 @@ class EditorCanvasMixin:
             self.scripting_selected_actor_index = None
         elif kind == "known_pickup":
             room = self.current_room()
-            clear_room_apple_marker(room)
+            clear_part_apple_marker(self.current_level().part(self.part_var.get()), room.index)
         else:
             self.status.set(DELETE_SELECTION_HINT)
             return "break"

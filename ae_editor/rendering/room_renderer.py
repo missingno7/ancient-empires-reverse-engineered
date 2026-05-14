@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import ClassVar
 from PIL import Image, ImageDraw
 
 from ..constants import (
@@ -137,22 +136,12 @@ from ..game_data.room_payload import (
     visual_compact3_table,
     animated_decor_table,
     laser_crystal_table,
-    room_tail_marker,
-    room_apple_marker,
+    part_apple_marker,
+    apple_marker_screen_xy,
     header_object_candidates,
     header_exit_door,
     header_player_start,
 )
-
-
-@dataclass(frozen=True)
-class KnownExtraPickup:
-    archive: str
-    resource_id: int
-    sprite_index: int
-    x: int
-    y: int
-
 
 @dataclass
 class RenderOptions:
@@ -199,16 +188,6 @@ class RoomRenderer:
     ROPE_X_BIAS = 4
     SOLID_INVISIBLE_CODE = 0x07
 
-    # Real red apple pickups are encoded by the room-tail marker checked by
-    # AEPROG at room+0x3E5..0x3E7.  Two stock rooms are kept as verified
-    # compatibility overrides because their shipped marker ids are level-global
-    # rather than the editor's local room index.  New placements still write the
-    # EXE marker, never a fake compact3 sprite.
-    KNOWN_LEGACY_APPLES: ClassVar[dict[tuple[int, int, int], KnownExtraPickup]] = {
-        (1, 0, 1): KnownExtraPickup("AE000", 45, 0, 196, 99),
-        (18, 0, 0): KnownExtraPickup("AE000", 45, 0, 83, 46),
-    }
-
     def render_room(self, level: Level, room_index: int, options: RenderOptions | None = None) -> Image.Image:
         options = options or RenderOptions()
         previous_display_mode = self.graphics.display_mode
@@ -253,7 +232,7 @@ class RoomRenderer:
                     self._draw_record12_puzzle_panels(image, room)
                 self._draw_header_objects(image, room, part.header)
                 self._draw_exit_door(image, room, part.header, part.theme)
-                self._draw_known_extra_pickups(image, room)
+                self._draw_apple_pickup(image, part, room)
                 if options.draw_actors:
                     self._draw_actors(image, part, room, include_hidden=False)
                 if options.draw_player_start:
@@ -270,10 +249,10 @@ class RoomRenderer:
                 self._draw_record12_puzzle_panels(image, room)
                 self._draw_header_objects(image, room, part.header)
                 self._draw_exit_door(image, room, part.header, part.theme)
-                self._draw_known_extra_pickups(image, room)
+                self._draw_apple_pickup(image, part, room)
                 self._draw_actors(image, part, room, include_hidden=True)
                 self._draw_player_start(image, room, part.header)
-                self._draw_actor_probes(image, room, part.header)
+                self._draw_actor_probes(image, part, room, part.header)
                 self._draw_payload_debug(image, room)
 
         if options.zoom != 1:
@@ -513,17 +492,11 @@ class RoomRenderer:
                 room_index=room.index,
                 part_index=room.part_index,
             )
-            # Editor-created apple markers use their compact3 x/y as a plain
-            # top-left preview coordinate.  This avoids the generic decor anchor
-            # offset, which made apples appear away from the clicked point.
-            if ref.archive == "AE000" and ref.resource_id == 45:
-                x, y = entry.x_raw * 2, entry.y
-            else:
-                # Large statue/sarcophagus artwork sits a little lower than the
-                # generic foreground decor anchor.
-                if ref.archive == "AE001" and ref.resource_id == 26 and ref.sprite_index in {24, 25}:
-                    delta = (delta[0], delta[1] + 2)
-                x, y = compact3_xy(entry, sprite, "screen_exe", delta=delta)
+            # Large statue/sarcophagus artwork sits a little lower than the
+            # generic foreground decor anchor.
+            if ref.archive == "AE001" and ref.resource_id == 26 and ref.sprite_index in {24, 25}:
+                delta = (delta[0], delta[1] + 2)
+            x, y = compact3_xy(entry, sprite, "screen_exe", delta=delta)
             self._blit(image, sprite, x, y)
 
     def _sprite_for_visual_entry(self, entry: ObjectTableEntry, room: Room) -> Image.Image | None:
@@ -539,19 +512,19 @@ class RoomRenderer:
             sprite = sprite.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
         return sprite
 
-    def _draw_actor_probes(self, image: Image.Image, room: Room, header: bytes) -> None:
-        """Debug-only overlay for actor/item storage that is not solved yet.
+    def _draw_actor_probes(self, image: Image.Image, part, room: Room, header: bytes) -> None:
+        """Debug-only overlay for raw actor/item storage.
 
         The six-slot diamond/artifact array is now rendered normally.  The
-        three-byte marker at the end of the room record is still exposed here
-        as a probe until its sprite/meaning is confirmed.
+        The runtime apple marker is physically split across the current room
+        tail and the next record preamble, so draw the decoded runtime anchor.
         """
         draw = ImageDraw.Draw(image)
-        tail = room_tail_marker(room)
-        if tail is not None:
-            x = tail.x_raw * 2
-            y = tail.y_raw
-            colour = (0, 255, 255, 255) if tail.room_plus_one == room.index + 1 else (80, 120, 120, 180)
+        apple = part_apple_marker(part, room.index)
+        if apple is not None:
+            x = apple.x_raw * 2
+            y = apple.y_raw
+            colour = (0, 255, 255, 255)
             draw.rectangle([x - 3, y - 3, x + 3, y + 3], outline=colour, width=1)
 
     def _draw_header_objects(self, image: Image.Image, room: Room, header: bytes) -> None:
@@ -574,24 +547,11 @@ class RoomRenderer:
         x, y = header_exit_door_xy(door.x_raw, door.y_raw, sprite)
         self._blit(image, sprite, x, y)
 
-    def _draw_known_extra_pickups(self, image: Image.Image, room: Room) -> None:
-        apple = room_apple_marker(room)
+    def _draw_apple_pickup(self, image: Image.Image, part, room: Room) -> None:
+        apple = part_apple_marker(part, room.index)
         sprite = self.graphics.sprite("AE000", 45, 0)
-        if sprite is None:
-            return
-        if apple is not None:
-            self._blit(image, sprite, apple.x_raw * 2, apple.y_raw)
-            return
-        # Compatibility override for original shipped apples whose marker id is
-        # not the local room index used by the editor.  If the marker was
-        # explicitly cleared, do not resurrect the override.
-        tail = room_tail_marker(room)
-        if tail is None:
-            return
-        key = (getattr(self, "_current_level_index", -1) + 1, room.part_index, room.index)
-        pickup = self.KNOWN_LEGACY_APPLES.get(key)
-        if pickup is not None:
-            self._blit(image, sprite, pickup.x, pickup.y)
+        if sprite is not None and apple is not None:
+            self._blit(image, sprite, *apple_marker_screen_xy(apple))
 
     def _draw_actors(self, image: Image.Image, part, room: Room, *, include_hidden: bool) -> None:
         for actor in actor_records_for_room(part, room.index):

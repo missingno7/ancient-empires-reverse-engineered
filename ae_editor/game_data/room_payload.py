@@ -38,7 +38,7 @@ from ..constants import (
     RUNTIME_TILE_VISIBLE_X_BIAS,
 )
 from .conveyors import BeltKind, ConveyorRecord, ConveyorVisualRecord, DEFAULT_CONVEYOR_FLAGS
-from .level_format import Room
+from .level_format import LevelPart, Room
 
 PAYLOAD_DIRECTORY_OFFSET = 0x1E
 PLATFORM_TRIPLET_COUNT = 10
@@ -1445,7 +1445,7 @@ def parse_animated_decor_table_at(room: Room, off: int, *, max_count: int = ANIM
 
     Empty rooms often just have zero padding at this offset, so count=0 is
     treated as no table.  Non-empty tables are conservative: every 12-byte
-    record must fit before the room-tail marker and end with a zero sequence
+    record must fit before the room-boundary runtime marker area and end with a zero sequence
     terminator.
     """
     data = room.trailing
@@ -1458,7 +1458,7 @@ def parse_animated_decor_table_at(room: Room, off: int, *, max_count: int = ANIM
         return None
     start = off + 1
     end = start + count * ANIMATED_DECOR_RECORD_SIZE
-    # Preserve the final three-byte room-tail pickup marker.
+    # Preserve the room-boundary runtime pickup area at the end of the record.
     if end > len(data) - 3:
         return None
     records: list[AnimatedDecorRecord] = []
@@ -1790,11 +1790,11 @@ def laser_crystal_table(room: Room) -> Compact3Table | None:
 
 @dataclass(frozen=True)
 class RoomTailMarker:
-    """Three-byte room-gated marker at the very end of the 1000-byte record.
+    """Three-byte runtime room-gated marker for the red apple pickup.
 
-    AEPROG around 0x2e89 checks record[0x3e7] against current_room+1 and,
-    when it matches, draws the red apple pickup (AE000:045) using record[0x3e5]
-    and record[0x3e6] as coordinates, and registers gameplay pickup id 7.
+    AEPROG around 0x2e89 checks runtime room[0x3e7] against current_room+1 and,
+    when it matches, draws AE000:045 using runtime room[0x3e5] and [0x3e6]
+    as coordinates, and registers gameplay pickup id 7.
     """
 
     x_raw: int
@@ -1807,43 +1807,65 @@ class RoomTailMarker:
 
     @property
     def label(self) -> str:
-        return f"tail_marker room+1={self.room_plus_one} x={self.x_raw:02X} y={self.y_raw:02X}"
+        return f"apple_marker gate={self.room_plus_one:02X} x={self.x_raw:02X} y={self.y_raw:02X}"
 
 
-def room_tail_marker(room: Room) -> RoomTailMarker | None:
-    if len(room.trailing) < 3:
-        return None
-    x_raw, y_raw, room_plus_one = room.trailing[-3], room.trailing[-2], room.trailing[-1]
-    marker = RoomTailMarker(x_raw, y_raw, room_plus_one)
-    return marker if marker.active else None
+def _part_apple_offsets(part: LevelPart, room_index: int) -> tuple[int, int, int]:
+    if not 0 <= room_index < ROOM_COUNT:
+        raise ValueError(f"room index out of range: {room_index}")
+    terrain_start = LEVEL_PART_HEADER_SIZE + room_index * ROOM_RECORD_SIZE + ROOM_TERRAIN_OFFSET
+    return terrain_start + 0x3E5, terrain_start + 0x3E6, terrain_start + 0x3E7
 
 
-def room_apple_marker(room: Room) -> RoomTailMarker | None:
-    """Return the real red apple pickup marker for this room, if present.
+def part_apple_marker(part: LevelPart, room_index: int) -> RoomTailMarker | None:
+    """Return the runtime red apple marker for a room, if present.
 
-    The EXE draws AE000:045 and registers pickup id 7 when the last byte of
-    the room record equals current_room + 1.  The preceding two bytes are the
-    x_raw/y coordinates.  Other non-zero room ids are markers for a different
-    room and should not be rendered/editable here.
+    The EXE's room pointer starts at the terrain bytes, two bytes after the
+    editor's 1000-byte room record begins.  Therefore the runtime marker at
+    ``room+0x3E5..0x3E7`` is physically split across record boundaries:
+    current record's final byte, then the first two bytes of the following
+    record.
     """
-    marker = room_tail_marker(room)
-    if marker is None or marker.room_plus_one != room.index + 1:
+    x_off, y_off, gate_off = _part_apple_offsets(part, room_index)
+    if gate_off >= len(part.raw):
+        return None
+    marker = RoomTailMarker(part.raw[x_off], part.raw[y_off], part.raw[gate_off])
+    if marker.room_plus_one != room_index + 1:
         return None
     return marker
 
 
-def set_room_apple_marker(room: Room, *, x_raw: int, y: int) -> None:
+def apple_marker_screen_xy(marker: RoomTailMarker) -> tuple[int, int]:
+    """Return the apple sprite top-left in screen pixels.
+
+    Runtime passes x_raw*2 and y_raw to the sprite routine.  The apple bitmap's
+    visible fruit is inset slightly from that draw anchor; this calibration
+    matches the shipped Level 01 Explorer room 01 marker 65/6F/02.
+    """
+    return marker.x_raw * 2 - 6, marker.y_raw - 12
+
+
+def apple_marker_raw_xy(marker: RoomTailMarker) -> tuple[int, int]:
+    """Return the marker's logical x_raw/y coordinate pair."""
+    return marker.x_raw, marker.y_raw
+
+
+def set_part_apple_marker(part: LevelPart, room_index: int, *, x_raw: int, y: int) -> None:
     """Create or move the one real red apple pickup in this room."""
-    if len(room.trailing) < 3:
-        raise ValueError("room trailing payload is too short for an apple marker")
-    room.set_trailing_bytes(len(room.trailing) - 3, [x_raw & 0xFF, y & 0xFF, (room.index + 1) & 0xFF])
+    x_off, y_off, gate_off = _part_apple_offsets(part, room_index)
+    if gate_off >= len(part.raw):
+        raise ValueError("level part is too short for an apple marker")
+    part.set_part_bytes(x_off, bytes([x_raw & 0xFF]))
+    part.set_part_bytes(y_off, bytes([y & 0xFF, (room_index + 1) & 0xFF]))
 
 
-def clear_room_apple_marker(room: Room) -> None:
-    """Remove the real red apple pickup from this room."""
-    if len(room.trailing) < 3:
-        raise ValueError("room trailing payload is too short for an apple marker")
-    room.set_trailing_bytes(len(room.trailing) - 3, [0, 0, 0])
+def clear_part_apple_marker(part: LevelPart, room_index: int) -> None:
+    """Remove the runtime red apple marker from this room."""
+    x_off, y_off, gate_off = _part_apple_offsets(part, room_index)
+    if gate_off >= len(part.raw):
+        raise ValueError("level part is too short for an apple marker")
+    part.set_part_bytes(x_off, b"\x00")
+    part.set_part_bytes(y_off, b"\x00\x00")
 
 
 @dataclass(frozen=True)

@@ -25,9 +25,11 @@ from .room_payload import (
     parse_conveyor_visual_records,
     parse_exe_payload_directory,
     parse_platform_triplets,
+    part_apple_marker,
     record12_green_block_records,
     room_cell_for_runtime_offset,
     runtime_offset_for_room_cell,
+    set_part_apple_marker,
 )
 
 SCREEN_HALF_RAW = ROOM_SCREEN_WIDTH_PX // 2
@@ -357,14 +359,18 @@ def _mirror_green_blocks(room: Room) -> int:
     return len(records)
 
 
-def _mirror_tail_marker(room: Room, graphics=None) -> None:
-    if len(room.trailing) >= 3 and room.trailing[-1]:
-        data = bytearray(room.trailing)
+def _mirror_tail_marker(part: LevelPart, room_index: int, graphics=None) -> None:
+    marker = part_apple_marker(part, room_index)
+    if marker is not None:
         # Red apples are stored/rendered as a 16px top-left pickup marker:
-        # left = x_raw*2.  Do not use decoded sprite width here; transparent
+        # left = x_raw*2 - 6.  Do not use decoded sprite width here; transparent
         # bitmap margins would move the gameplay marker away from its mirror.
-        data[-3] = mirror_x_raw_footprint(data[-3], origin_px=0, width_px=16)
-        room.trailing = bytes(data)
+        set_part_apple_marker(
+            part,
+            room_index,
+            x_raw=mirror_x_raw_footprint(marker.x_raw, origin_px=6, width_px=16),
+            y=marker.y_raw,
+        )
 
 
 def _mirror_room(room: Room, *, part_theme: int = 0, graphics=None) -> FlipReport:
@@ -374,7 +380,6 @@ def _mirror_room(room: Room, *, part_theme: int = 0, graphics=None) -> FlipRepor
     controls = _mirror_control_records(room, graphics=graphics)
     compact = _mirror_compact3_sections(room, part_theme=part_theme, graphics=graphics)
     green = _mirror_green_blocks(room)
-    _mirror_tail_marker(room, graphics=graphics)
     return FlipReport(
         rooms=1,
         controls=controls,
@@ -404,15 +409,15 @@ def _mirror_header(part: LevelPart, graphics=None) -> None:
 
 
 def _mirror_room_links(part: LevelPart) -> None:
-    data = bytearray(part.raw)
-    if len(data) < 0x2E:
+    header = bytearray(part.header)
+    if len(header) < 0x2E:
         return
     left_start, right_start = 0x1A, 0x24
     for i in range(ROOM_COUNT):
-        if right_start + i >= len(data) or left_start + i >= len(data):
+        if right_start + i >= len(header) or left_start + i >= len(header):
             break
-        data[left_start + i], data[right_start + i] = data[right_start + i], data[left_start + i]
-    part.set_part_bytes(0, data[:LEVEL_PART_HEADER_SIZE])
+        header[left_start + i], header[right_start + i] = header[right_start + i], header[left_start + i]
+    part.set_part_bytes(0, header)
 
 
 def _read_u16(data: bytes | bytearray, offset: int) -> int:
@@ -543,6 +548,7 @@ def flip_level_horizontally(level: Level, graphics=None) -> FlipReport:
         _mirror_room_links(part)
         for room in part.rooms:
             report += _mirror_room(room, part_theme=part.theme, graphics=graphics)
+            _mirror_tail_marker(part, room.index, graphics=graphics)
         actors, scripts = _mirror_actors(part, graphics=graphics)
         report += FlipReport(actors=actors, script_instructions=scripts)
     return report
