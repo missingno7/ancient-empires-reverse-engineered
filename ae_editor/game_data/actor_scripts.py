@@ -316,7 +316,10 @@ def _folded_move_segment(data: bytes, pc: int) -> tuple[ActorPathSegment, int] |
             timing_opcode = data[next_pc]
             timing_rel = rel
             timing_target = target
-            duration = max(1, _u16(data[next_pc + 3], data[next_pc + 4]))
+            # The runtime loop counter is decremented before it is initialized.
+            # From a stock zero counter, the first loop opcode stores `count`
+            # and jumps, so the paired movement runs count+1 times.
+            duration = max(1, _u16(data[next_pc + 3], data[next_pc + 4]) + 1)
             next_pc += 5
     return ActorPathSegment(pc, dx, dy, packed, duration, timing_opcode, timing_rel, timing_target), next_pc
 

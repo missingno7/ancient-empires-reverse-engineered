@@ -77,6 +77,11 @@ class SimActorState:
             saved_script_offset=record.saved_script_offset,
             restart_script_offset=record.restart_script_offset,
             pc=record.script_offset,
+            loop_counters={
+                0x04: record.loop_counter_a,
+                0x05: record.loop_counter_b,
+                0x06: record.loop_counter_c,
+            },
         )
 
     @property
@@ -502,14 +507,14 @@ class RoomSimulation:
 
     def _loop_next_pc(self, actor: SimActorState, pc: int, op: int, rel: int, count: int, next_pc: int) -> int:
         target = branch_target(pc, op, rel)
-        remaining = actor.loop_counters.get(pc)
-        if remaining is None:
-            remaining = max(1, count)
-        if remaining > 1:
-            actor.loop_counters[pc] = remaining - 1
+        remaining = actor.loop_counters.get(op, 0) - 1
+        actor.loop_counters[op] = remaining
+        if remaining == 0:
+            return next_pc
+        if remaining < 0:
+            actor.loop_counters[op] = count & 0xFFFF
             return target
-        actor.loop_counters.pop(pc, None)
-        return next_pc
+        return target
 
     def _after_timed_movement(self, actor: SimActorState, move_pc: int, next_pc: int) -> int:
         if next_pc >= len(self.actor_block):
