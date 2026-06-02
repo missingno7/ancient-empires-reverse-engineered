@@ -24,11 +24,11 @@ PIT_HZ = 1193180.0
 #   divisor or a note table entry.
 # * Normal note opcodes use the EXE music-style chromatic note mapping.
 # * Direct-effect opcodes (?E) use the CA9B PIT arithmetic with a live divisor
-#   base. The base value below is capture-calibrated from real-game recordings
-#   of play_sound(0x00) and play_sound(0x0C). Keep it isolated here so the
-#   known runtime-derived value is not mixed with resource offsets.
+#   base. CA9B reads the first word of the EXE's PIT divisor table at DS:17FC.
+#   Keep it isolated here so that executable state is not mixed with resource
+#   offsets.
 PC_SPEAKER_STREAM_START = 0x0096
-PC_SPEAKER_DIRECT_BASE_DIVISOR = 0x8F90
+PC_SPEAKER_DIRECT_BASE_DIVISOR = 0x8E88
 # The EXE advances audio from the same master timer/update cadence used by the
 # game loop.  Keep preview speed adjustable, but make 1.0x the measured clock.
 DEFAULT_PREVIEW_SPEED = 1.0
@@ -324,21 +324,37 @@ OPL_VOICE_OPERATOR_SLOTS = (
 OPL_MULTIPLIER_TABLE = (0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0,
                         8.0, 9.0, 10.0, 10.0, 12.0, 12.0, 15.0, 15.0)
 
-# Calibration from AE000:054 real-game capture: the generic sound-card
-# bytecode preview was lowered by one octave so raw channels matched MIDI
-# audition, but once the real AdLib path expands each stream into three OPL
-# voices with DAT header pitch offsets, the 9-voice render sits one octave too
-# high.  Keep the MIDI/PC-speaker path unchanged and apply this only to the
-# recovered AdLib/OPL trace and WAV preview.
+# DEFA builds the runtime pitch tables consumed by E48A. For the default table,
+# C5EA maps note index -> octave and C64A maps note index -> semitone. C6C3 holds
+# the standard YM3812 FNUM row below; E48A writes it directly to A0/B0.
+OPL_FNUM_TABLE = (0x157, 0x16B, 0x181, 0x198, 0x1B0, 0x1CA,
+                  0x1E5, 0x202, 0x220, 0x241, 0x263, 0x287)
+
+# The 9-voice AdLib render sits one octave above the raw bytecode pitch; the
+# MIDI/PC-speaker path is unchanged and this applies only to the approximate
+# AdLib WAV preview. The OPL trace/VGM path uses E48A's exact note-index mapping.
 ADLIB_OPL_GLOBAL_TRANSPOSE = -12
 
-# The DAT header deliberately stacks octave voices (for AE000:054: +24/+12).
-# A real YM3812 patch table contains operator levels and spectral behaviour that
-# our small preview synth only approximates.  Slightly damping stacked octave
-# voices keeps the atlas WAV spectrum close to the capture while the exported
-# VGM/trace still preserves all voices.
-ADLIB_PREVIEW_OCTAVE_STACK_GAIN = 0.60
+# Single master gain applied equally to every OPL voice before the WAV mix is
+# peak-normalized.  The AEPROG AdLib driver (DB60) routes every enabled voice
+# through the same OPL path; the relative loudness between voices comes entirely
+# from each instrument's carrier total-level and the header voice level (applied
+# via carrier_tl), NOT from per-channel weighting.  Earlier previews damped the
+# octave-stacked voices and nearly muted the third stream to match one capture,
+# which removed the deep, full character the stacked voices are meant to create.
+ADLIB_VOICE_MIX_GAIN = 0.11
 ADLIB_PREVIEW_SOFT_LOWPASS_HZ = 0.0
+
+# OPL operator self-feedback (register C0 bits 1..3, value 0..7).  Several music
+# instruments use maximum feedback (e.g. AE000:054 ids 0F/0E/17 use 6..7), which
+# turns the sine into a bright, gritty, noise-like timbre - this is what makes
+# those voices sound "sampled/percussive" in the original.  True OPL feedback is
+# a per-sample recursion (the operator modulates its own phase by the average of
+# its last two outputs).  We approximate the steady-state feedback waveform with
+# a few fixed-point iterations of y = wave(phase + beta*y), which is vectorizable
+# and captures the harmonic enrichment.  beta scales with the feedback register.
+OPL_FEEDBACK_BETA = 0.5
+OPL_FEEDBACK_ITERS = 4
 
 
 def _operator_init_registers(slot: int, op: OplOperatorParams, *, total_level_override: int | None = None) -> list[tuple[int, int]]:
@@ -449,6 +465,26 @@ def _opl_note_register_writes(voice: int, freq: float | None, *, key_on: bool) -
     ]
 
 
+def _opl_note_index_register_writes(voice: int, note_index: int, *, key_on: bool) -> list[tuple[int, int]]:
+    """Return the exact default-table A0/B0 writes used by ASM E48A."""
+    if not key_on:
+        return [(0xB0 + voice, 0x00), (0xA0 + voice, 0x00)]
+    note_index = max(0, min(0x5F, int(note_index)))
+    block, semitone = divmod(note_index, 12)
+    fnum = OPL_FNUM_TABLE[semitone]
+    return [
+        (0xA0 + voice, fnum & 0xFF),
+        (0xB0 + voice, 0x20 | ((block & 0x07) << 2) | ((fnum >> 8) & 0x03)),
+    ]
+
+
+def _soundcard_freq_to_note_index(freq: float) -> int:
+    """Undo the sound-card preview frequency mapping back to E48A's note index."""
+    midi = int(round(69.0 + 12.0 * math.log2(freq / 440.0)))
+    # _note_to_freq(..., pitch_mode="soundcard") maps raw index 0 to MIDI 24.
+    return midi - 24
+
+
 def soundcard_music_opl_full_writes(data: bytes, exe_path: Path | str, *, speed: float = DEFAULT_PREVIEW_SPEED) -> list[OplRegisterWrite]:
     """Return a pragmatic full-song OPL register trace for a sound-card song.
 
@@ -480,14 +516,6 @@ def soundcard_music_opl_full_writes(data: bytes, exe_path: Path | str, *, speed:
     )
     speed = max(0.10, min(8.0, float(speed)))
 
-    def transpose_freq(freq: float, semitones: int | None) -> float:
-        if semitones is None:
-            offset = ADLIB_OPL_GLOBAL_TRANSPOSE
-        else:
-            offset = semitones - 0x100 if semitones >= 0x80 else semitones
-            offset += ADLIB_OPL_GLOBAL_TRANSPOSE
-        return freq * (2.0 ** (offset / 12.0))
-
     for group, events in enumerate(parsed[:3]):
         pos_ticks = 0
         for freq, dur_seconds in events:
@@ -503,8 +531,9 @@ def soundcard_music_opl_full_writes(data: bytes, exe_path: Path | str, *, speed:
                     for reg, value in _opl_note_register_writes(voice, None, key_on=False):
                         writes.append(OplRegisterWrite(pos_ticks, voice, reg, value, f"voice {voice} retrigger off"))
                     cfg = header.configs[voice] if voice < len(header.configs) else 0
-                    note_freq = transpose_freq(freq, cfg)
-                    for reg, value in _opl_note_register_writes(voice, note_freq, key_on=True):
+                    pitch_offset = 0 if cfg is None else (cfg - 0x100 if cfg >= 0x80 else cfg)
+                    note_index = _soundcard_freq_to_note_index(freq) + pitch_offset
+                    for reg, value in _opl_note_index_register_writes(voice, note_index, key_on=True):
                         writes.append(OplRegisterWrite(pos_ticks, voice, reg, value, f"stream {group} note voice {voice}"))
             pos_ticks += event_ticks
     writes.sort(key=lambda w: w.time_ticks)
@@ -576,6 +605,77 @@ def write_opl_vgm(data: bytes, exe_path: Path | str, path: Path | str, *, speed:
     return path
 
 
+def synthesize_ym3812_wav(
+    data: bytes,
+    exe_path: Path | str,
+    path: Path | str,
+    *,
+    speed: float = DEFAULT_PREVIEW_SPEED,
+) -> Path:
+    """Render sound-card music through a real YM3812 emulator.
+
+    DOSBox Staging feeds AdLib register writes into an OPL emulator at the
+    chip's native rate. ymfm-py gives the atlas the same register-level shape:
+    the recovered AEPROG writes drive a YM3812 core instead of the lightweight
+    approximation used by synthesize_adlib_like_wav.
+    """
+    try:
+        import numpy as np  # type: ignore
+        import ymfm  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("Accurate YM3812 preview requires ymfm-py and numpy") from exc
+
+    path = Path(path)
+    writes = soundcard_music_opl_full_writes(data, exe_path, speed=speed)
+    if not writes:
+        return synthesize_wav(data, path, music=True, audio_kind="soundcard-music", speed=speed)
+
+    speed = max(0.10, min(8.0, float(speed)))
+    chip = ymfm.YM3812(clock=3579545)
+    chip.reset()
+    sample_rate = int(chip.sample_rate)
+    current_sample = 0
+    chunks = []
+
+    def emit(samples: int) -> None:
+        nonlocal current_sample
+        if samples <= 0:
+            return
+        chunks.append(np.asarray(chip.generate(samples), dtype=np.int32).reshape(-1))
+        current_sample += samples
+
+    for write in writes:
+        target_sample = int(round((write.time_ticks * TICK_SECONDS / speed) * sample_rate))
+        emit(target_sample - current_sample)
+        chip.write_address(write.register)
+        chip.write_data(write.value)
+
+    # Preserve the final release similarly to the VGM export.
+    emit(sample_rate)
+    pcm = np.concatenate(chunks) if chunks else np.zeros(1, dtype=np.int32)
+    frames_bytes = pcm.clip(-32768, 32767).astype("<i2").tobytes()
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(frames_bytes)
+    return path
+
+
+def synthesize_soundcard_music_wav(
+    data: bytes,
+    exe_path: Path | str,
+    path: Path | str,
+    *,
+    speed: float = DEFAULT_PREVIEW_SPEED,
+) -> Path:
+    """Prefer chip-emulated sound-card music and retain the quick fallback."""
+    try:
+        return synthesize_ym3812_wav(data, exe_path, path, speed=speed)
+    except RuntimeError:
+        return synthesize_adlib_like_wav(data, exe_path, path, speed=speed)
+
+
 def _opl_waveform(kind: int, phase: float) -> float:
     x = math.sin(phase)
     kind &= 0x03
@@ -588,6 +688,16 @@ def _opl_waveform(kind: int, phase: float) -> float:
     # OPL2 waveform 3 is a quarter-ish sine family; this is intentionally only
     # a preview approximation, not a cycle-accurate YM3812 emulator.
     return max(0.0, math.sin(phase)) * 2.0 - 1.0
+
+
+def _fb_waveform(kind: int, phase: float, beta: float) -> float:
+    """Operator output with OPL-style self-feedback (scalar)."""
+    if beta <= 0.0:
+        return _opl_waveform(kind, phase)
+    y = _opl_waveform(kind, phase)
+    for _ in range(OPL_FEEDBACK_ITERS):
+        y = _opl_waveform(kind, phase + beta * y)
+    return y
 
 
 def _opl_envelope(op: OplOperatorParams, t: float, dur: float) -> float:
@@ -624,6 +734,7 @@ def _fm_render_note(patch: OplInstrumentPatch, freq: float, dur: float, sample_r
     car_amp = _tl_to_amp(patch.carrier.total_level if carrier_tl is None else carrier_tl)
     # A rough FM index. High modulator TL means quieter modulator, lower index.
     fm_index = 0.4 + 6.0 * mod_amp
+    mod_beta = patch.feedback * OPL_FEEDBACK_BETA
     mod_phase = 0.0
     car_phase = 0.0
     mod_step = 2.0 * math.pi * freq * mod_mul / sample_rate
@@ -636,9 +747,10 @@ def _fm_render_note(patch: OplInstrumentPatch, freq: float, dur: float, sample_r
         # strength, which produced bright, clean high-frequency sidebands that
         # are not present in the in-game capture.
         mod_env = _opl_envelope(patch.modulator, t, dur)
-        m = _opl_waveform(patch.modulator.waveform, mod_phase) * mod_env
+        mod_wave = _fb_waveform(patch.modulator.waveform, mod_phase, mod_beta)
+        m = mod_wave * mod_env
         if patch.additive:
-            c = 0.45 * _opl_waveform(patch.modulator.waveform, mod_phase) * mod_amp * mod_env + _opl_waveform(patch.carrier.waveform, car_phase) * car_amp
+            c = 0.45 * mod_wave * mod_amp * mod_env + _opl_waveform(patch.carrier.waveform, car_phase) * car_amp
         else:
             c = _opl_waveform(patch.carrier.waveform, car_phase + fm_index * m)
             c *= car_amp
@@ -675,6 +787,14 @@ def _fm_render_note_numpy(patch: OplInstrumentPatch, freq: float, dur: float, sa
         if kind == 2:
             return np.abs(x) * 2.0 - 1.0
         return np.maximum(0.0, x) * 2.0 - 1.0
+
+    def fb_wave_np(kind: int, phase, beta: float):
+        if beta <= 0.0:
+            return wave_np(kind, phase)
+        y = wave_np(kind, phase)
+        for _ in range(OPL_FEEDBACK_ITERS):
+            y = wave_np(kind, phase + beta * y)
+        return y
 
     attack = 0.004 + (15 - patch.carrier.attack) * 0.010
     decay = 0.018 + (15 - patch.carrier.decay) * 0.018
@@ -719,9 +839,11 @@ def _fm_render_note_numpy(patch: OplInstrumentPatch, freq: float, dur: float, sa
         mod_rel_mask = t > dur - mod_release
         mod_env[mod_rel_mask] = mod_sustain_amp * np.maximum(0.0, (dur - t[mod_rel_mask]) / mod_release)
 
-    m = wave_np(patch.modulator.waveform, mod_phase) * mod_env
+    mod_beta = patch.feedback * OPL_FEEDBACK_BETA
+    mod_wave = fb_wave_np(patch.modulator.waveform, mod_phase, mod_beta)
+    m = mod_wave * mod_env
     if patch.additive:
-        out = 0.45 * wave_np(patch.modulator.waveform, mod_phase) * mod_amp * mod_env + wave_np(patch.carrier.waveform, car_phase) * car_amp
+        out = 0.45 * mod_wave * mod_amp * mod_env + wave_np(patch.carrier.waveform, car_phase) * car_amp
     else:
         out = wave_np(patch.carrier.waveform, car_phase + fm_index * m) * car_amp
     return out * env
@@ -790,14 +912,11 @@ def synthesize_adlib_like_wav(
             carrier_tl = _voice_adjusted_carrier_tl(header, voice, patch)
             pitch_offset = header.configs[voice] if voice < len(header.configs) else 0
             pos = 0
-            # AE000:054 capture matching: the third stream is a light rhythmic
-            # ostinato/noise layer, not a full-volume lead. Keep it lower so
-            # the organ/plucked voices dominate like the real recording.  Also
-            # damp octave-stacked header voices in the WAV-only preview; the
-            # exact OPL trace/VGM still emits the real voice events.
-            amp = (0.12, 0.12, 0.045)[group] if group < 3 else 0.08
-            if pitch_offset and abs(pitch_offset if pitch_offset < 0x80 else pitch_offset - 0x100) >= 12:
-                amp *= ADLIB_PREVIEW_OCTAVE_STACK_GAIN
+            # Every enabled voice sounds at its real OPL level (carrier_tl is
+            # already applied inside _fm_render_note), so all nine voices share
+            # one master gain.  No per-channel weighting and no octave damping -
+            # the full octave stack is what gives the music its depth.
+            amp = ADLIB_VOICE_MIX_GAIN
             for freq, dur in events:
                 n = max(1, int(round(dur * SAMPLE_RATE)))
                 if freq is None:
@@ -1346,10 +1465,13 @@ def _shared_initial_base_ticks(streams: list[bytes], *, music: bool) -> int:
 
 
 def _duration_ticks_from_game_code(code: int, base_ticks: int, bend_ticks: int = 0) -> int:
+    ticks = max(1, base_ticks + bend_ticks)
     if code & 0x80:
-        ticks = code & 0x7F
+        # ASM C9A4 masks bit 7 from AL, then jumps directly to the final store
+        # of BX. BX still contains the full base duration; the remaining bits
+        # are ignored for timing on this branch.
+        pass
     else:
-        ticks = max(1, base_ticks + bend_ticks)
         ticks >>= (code & 0x07)
         if code & 0x08:
             ticks += max(1, ticks // 2)

@@ -86,7 +86,9 @@ CACB: mov [1E90], ax         ; event duration comes from 3D/default state
 ```
 
 Therefore `0E 00` is not bad data.  It is an explicit silence/rest event for the
-direct-pitch path.
+direct-pitch path. `DS:17FC` is in the EXE data image; its first word is
+`0x8E88`, so the direct-pitch base can be taken exactly from the binary instead
+of approximated from captures.
 
 ### `CA03` — control opcode `?D`
 
@@ -105,6 +107,25 @@ Known controls from the SFX path:
 
 The previous parser mistake was treating too many values as simple timing.  In
 particular, `?E` duration is controlled by `3D`, not by the second byte of `?E`.
+
+### `C9A4` — normal note/rest duration
+
+For ordinary note and rest opcodes, the second byte is decoded by `C9A4`.
+Arguments with bit `0x80` set take a special full-base-duration branch:
+
+```asm
+C9B5: test ah, 80h
+C9B8: je   C9BE
+C9BA: and  al, 7Fh
+C9BC: jmp  C9FD
+...
+C9FD: mov  [1E90], bx       ; bx is still base duration + bend
+```
+
+The masked `al` is not stored as the duration. The branch deliberately skips
+the shift/dotted calculation and preserves the full `base + bend` value.
+Treating `arg & 0x7F` as a literal tick count made any stream using this form
+too quick.
 
 ## Looping / retriggering
 
@@ -180,6 +201,19 @@ Meaning:
 The capture-calibrated decoder now treats this as a valid long direct-pitch
 stream. The bytes are not unrelated padding; they are repeated `?E` events.
 
+### Sound `0x01`
+
+The very short atlas preview is consistent with the ASM. Its active stream is:
+
+```text
+4D 4B  3E 5A  3E 50  3E 46  3E 3C  3E 32  3E 28  3E 1E  3E 14  FF FF
+```
+
+There is no `3D` override, so `CAF1` keeps the initialized direct-pitch duration
+of one master tick per `?E` event. Eight events at about `236.69 Hz` produce a
+preview of about `34 ms`. This one is intentionally a quick descending chirp,
+not evidence that the atlas is playing the stream at the wrong rate.
+
 ### Sound `0x0E`
 
 The raw stream is short and has no explicit rests:
@@ -213,6 +247,152 @@ routine, so the current interpretation is:
 `0x0E` and `0x1A` belong to the separate laser/jello puzzle cell take/place
 logic rather than the main headlamp shot sound.
 
-## Practical next step
+## Sound-card music path (OPL FM / PSG) — no PCM
 
-The PC speaker SFX side is now stable enough for editor playback. The next audio work should focus on sound-card/MIDI music: the 27-byte named records are confirmed high-score/player tables, while the real AdLib/OPL instruments are embedded in AEPROG.EXE at DS:301A with a 0x38-byte stride.
+The sound-card music is register-based tone/FM synthesis. The binary has 62
+`out` instructions total; the sound ones only hit OPL/PSG register ports
+(`ds:0x1830`), the PIT (`0x42/0x43`) and the speaker gate (`0x61`). The dense
+`out dx,al` runs near startup are VGA register writes (`dx=0x3CE/0x3C4`). There
+are **no Sound Blaster DSP ports** (`0x226/0x22A/0x22C/0x22E`), **no DMA**
+(`0x00-0x0C`, page `0x83`), and the timer ISR (`0x6BCF`, ~237 Hz, reload
+`0x13B1`) only calls the sound tick `0xC1A0` — there is no sample-rate DAC loop.
+So a digitized/PCM channel does not exist.
+
+The deeper audit did not find a hidden Sound Blaster DSP branch behind device
+`2`: melodic note-on is `C678 -> DB60 -> E48A -> C898`, ending in YM3812
+register writes. Device `3` sets port `0x205` and then deliberately falls back
+to the PSG-style device-`1` branch; it is not a PCM mixer.
+
+### What sounds "sampled" is high-feedback FM
+
+OPL operator feedback (register `0xC0` bits 1..3, value 0..7) self-modulates the
+operator and, at high values, produces a bright, gritty, noise-like timbre that
+is easily mistaken for a digitized drum/percussion sample. AE000:054 uses
+feedback 6..7 on several voices (instruments `0F`=7, `0E`=6, `17`=7). The editor
+preview now models this (`OPL_FEEDBACK_*` in `audio/core.py`); ignoring it made
+those voices sound like clean tones and a "PCM channel" appear to be missing.
+
+### Device selection
+
+`0xC77A` switches on the configured device `ds:0x1778` and sets the active port
+`ds:0x1830`:
+
+```text
+1 -> ds:0x1830 = 0x00C0   Tandy/PCjr SN76489 PSG (single-port writes via 0xC8D4)
+2 -> AdLib/OPL2 FM         (calls 0xD99B to upload the FM patches)
+3 -> ds:0x1830 = 0x0205    third device
+```
+
+### OPL register writer `0xC898`
+
+```asm
+c89b: mov dx, ds:0x1830   ; OPL base port
+c89f: mov ax, [bp+4]
+c8a2: out dx, al          ; register number -> address port
+c8a3: in al,dx  (x6)      ; address settling delay (~3.3us)
+c8a9: inc dx
+c8aa: mov ax, [bp+6]
+c8ad: out dx, al          ; value -> data port
+c8af: in al,dx  (x35)     ; data settling delay (~23us)
+```
+
+The dual `out` plus the 6/35 `in` settling reads are the canonical OPL2
+programming pattern. `0xC8D4` is the single-port variant used for the SN76489.
+
+### FM patch table and per-resource instruments
+
+The FM patch ROM is embedded in `AEPROG.EXE` at `ds:0x301A`, `0x38` (56) bytes
+per patch (file offset `0x200 + 0x0FA30 + 0x301A = 0x12C4A`). Each sound-card
+music resource selects its own instruments in its header:
+
+```text
+0x08..0x10  nine OPL instrument ids (one per voice)
+0x11..0x19  nine voice config values
+0x1A..0x22  nine per-voice level/routing values
+```
+
+Instrument upload (`0xD935` loop, nine voices):
+
+```text
+for voice i in 0..8:
+    id    = header_ids[i]                 ; stop at 0xFF
+    level = header_levels[i]              ; resource byte 0x1A+i
+    patch = ds:0x301A + id*0x38           ; source FM patch
+    work  = ds:0x3044 + id*0x38           ; working copy
+    work[0x2A] = 0x3F - level*9           ; override total level
+    upload via 0xDA66 -> 0xE0C0 -> 0xC898
+```
+
+`0xE0C0` copies 13 register bytes per operator from the patch operator block
+(patch `+0x1A`, stride 2) plus a 2-bit feedback/connection value into the
+per-voice OPL register shadow at `ds:0xC91B` (14 bytes/voice), then `0xE1C4`
+flushes that shadow to the chip. The patch words at `+0x34/+0x36` are the two
+operators' OPL base-register offsets.
+
+### Voice stacking — why the music sounds full/deep
+
+`0xDB60` is the per-note trigger and it does NOT play one voice per stream. Each
+melodic channel is expanded into a stack of up to three OPL voices, each with
+its own pitch offset and enable flag:
+
+```text
+channel 0 -> voices 0,1,2   pitch offsets ds:0xCA62/63/64  enables ds:0xC6AB/AC/AD
+channel 1 -> voices 3,4,5   ...
+channel 2 -> voices 6,7,8   ...
+note_for_voice = stream_note + ds:0xCA62[voice]
+```
+
+The nine pitch offsets are the music header bytes `0x11..0x19` (copied to
+`ds:0xCA62..`); for `AE000:054` they are `24,12,24, 0,0,12, 0,0,12` semitones,
+so each channel is an octave/interval stack. The enable byte `ds:0xC6AB+voice`
+is set by the instrument loader only when the voice's id is not `0xFF`. Every
+enabled voice plays through the same OPL path at the level set by its
+instrument carrier total-level and the header voice level (`0x3F - level*9`);
+there is no per-channel weighting and no octave attenuation in the driver. The
+octave stack at full level is what gives the music its deep, "epic" character.
+
+### Dynamic volume
+
+`0xE1F2` (the `0x40`/total-level flush) scales the carrier total level by a
+per-voice runtime volume at `ds:[voice-0x35B0]`, so voices can swell/fade during
+a song independent of the static header level. The editor currently applies only
+the static header level; live expression is a remaining fidelity item.
+
+### Exact default pitch table
+
+`E48A` does not convert Hz to OPL FNUM values. `DEFA/DE7E/DDD9` prepares runtime
+tables, and the default table path is:
+
+```text
+C5EA[note] = note / 12       OPL block
+C64A[note] = note % 12       semitone index
+C6C3[...]  = 157 16B 181 198 1B0 1CA 1E5 202 220 241 263 287
+```
+
+`DB60` adds the header voice offset before calling `E48A`, which clamps the note
+index to `0..0x5F` and writes A0/B0 directly. The editor VGM/full-trace path now
+uses this ASM-shaped lookup instead of converting through Hz and applying a
+capture-tuned transpose. Normal atlas playback now renders this trace through
+`ymfm.YM3812`; the older approximate WAV path remains only as a fallback.
+
+### `5D` / `6D` controls are PSG envelope controls
+
+The music bytecode handlers `C5B3` and `C5C6` store per-channel PSG envelope
+state at `17C4` and `17DC`. The updater `C440` consumes that state and writes
+latched bytes through `C8D4`, but `C27D` calls `C440` only when
+`DS:1778 == 1` (Tandy/PCjr PSG). These controls are useful hints for MIDI
+audition, but they are not an AdLib PCM channel and do not replace the
+resource-header OPL instrument ids used by device `2`.
+
+This pipeline is already implemented and ASM-verified in
+`ae_editor/audio/core.py` (`load_opl_instrument_table`,
+`parse_opl_instrument_patch`, `soundcard_music_opl_full_writes`,
+`write_opl_vgm`): the `0x301A` table, the 28-word / two-13-word-operator patch
+layout, and the `0x3F - level*9` carrier override all match this trace.
+
+### Practical next step
+
+The data side is solved. The remaining work is fidelity: drive the recovered
+register trace through a real OPL2 emulator for exact preview, and build a
+closer FM-patch → GM mapping (or ship the VGM) for MIDI export. No PCM/sample
+work is needed because there is no sample path in the binary.

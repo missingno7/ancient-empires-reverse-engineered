@@ -274,18 +274,14 @@ class EditorCanvasMixin:
         for cmd in control_commands(room):
             if cmd.command is None or cmd.x_raw is None or cmd.y_raw is None:
                 continue
-            mode = "button"
             prefix = "C"
             if cmd.command == 0x00:
-                mode = "ceiling_button"
                 prefix = "B"
             elif cmd.command == 0x01:
-                mode = "floor_switch"
                 prefix = "S"
             elif cmd.command == 0x02:
-                mode = "laser_trigger"
                 prefix = "J"
-            cx, cy = control_xy(cmd, mode=mode)
+            cx, cy = control_xy(cmd)
             targets = control_targets(cmd)
             suffix = "" if not targets else "→" + ",".join(t.label for t in targets)
             handles.append(EditorHandle(("control", cmd.record.index), cx + 8, cy + 8, f"{prefix}{cmd.record.index}{suffix}", "#00e0ff"))
@@ -500,7 +496,7 @@ class EditorCanvasMixin:
         for actor in reversed(actor_records_for_room(part, room.index)):
             if actor.hidden and not self.overlay_hidden_var.get():
                 continue
-            ax, ay = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
+            ax, ay = actor_xy(actor.x, actor.y)
             # Most enemy sprites in this game fit in roughly a 24x24 box.  Use a
             # slightly forgiving box because some frames have transparent margins.
             if ax - 2 <= x <= ax + 26 and ay - 2 <= y <= ay + 26:

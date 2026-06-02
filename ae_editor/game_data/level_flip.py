@@ -180,11 +180,10 @@ def _actor_sprite_resource(frame: int) -> tuple[int, int, int] | None:
     return None
 
 
-def _actor_origin_for_frame_min(frame_min: int | None) -> tuple[int, int]:
-    # Actors share the uniform sprite anchor (8, 16) recovered from the AEPROG
-    # actor draw loop at 0x4ef8 (see coordinates.actor_xy).  The mirror must use
-    # the same anchor the renderer uses so a flipped actor lands pixel-correct.
-    return (8, 16)
+# Actors share the uniform sprite anchor X=8 recovered from the AEPROG actor
+# draw loop at 0x4ef8 (see coordinates.actor_xy).  The horizontal mirror must
+# use the same anchor the renderer uses so a flipped actor lands pixel-correct.
+_ACTOR_ANCHOR_X = 8
 
 
 def _toggle_packed_frame_variant(value: int) -> int:
@@ -525,10 +524,9 @@ def _mirror_actors(part: LevelPart, graphics=None) -> tuple[int, int]:
         if mapping is not None:
             frame_min, _count, resource_id = mapping
             width, _height = _sprite_size(graphics, "AE000", resource_id, frame - frame_min, default=(24, 24))
-            origin_x, _origin_y = _actor_origin_for_frame_min(frame_min)
         else:
-            width, origin_x = 24, 12
-        _write_u16(block, rec + 0x02, mirror_actor_x_footprint(x, origin_px=origin_x, width_px=width))
+            width = 24
+        _write_u16(block, rec + 0x02, mirror_actor_x_footprint(x, origin_px=_ACTOR_ANCHOR_X, width_px=width))
         block[rec + 0x07] = _toggle_packed_frame_variant(block[rec + 0x07])
     script_count = _mirror_actor_scripts(block)
     part.set_part_bytes(LEVEL_PART_ACTOR_BLOCK_OFFSET, block)

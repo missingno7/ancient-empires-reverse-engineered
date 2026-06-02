@@ -9,11 +9,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from ae_editor.game_data.dat_archive import DatArchive
-from ae_editor.audio import synthesize_adlib_like_wav, write_opl_register_trace_csv, write_midi
+from ae_editor.audio import synthesize_soundcard_music_wav, write_opl_register_trace_csv, write_midi
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Export an AdLib-like preview and OPL init trace for a sound-card music resource")
+    parser = argparse.ArgumentParser(description="Export a YM3812 preview and OPL init trace for a sound-card music resource")
     parser.add_argument("dat", nargs="?", default=str(ROOT / "AE000.DAT"))
     parser.add_argument("index", nargs="?", type=int, default=54)
     parser.add_argument("--exe", default=str(ROOT / "AEPROG.EXE"))
@@ -26,7 +26,7 @@ def main() -> None:
     if not res.ok:
         raise SystemExit(res.error)
     stem = f"{Path(args.dat).stem.lower()}_{args.index:03d}"
-    wav = synthesize_adlib_like_wav(res.decoded, args.exe, out / f"{stem}_adlib_like.wav")
+    wav = synthesize_soundcard_music_wav(res.decoded, args.exe, out / f"{stem}_ym3812.wav")
     midi = write_midi(res.decoded, out / f"{stem}_mapped.mid", audio_kind="soundcard-music")
     trace = write_opl_register_trace_csv(res.decoded, args.exe, out / f"{stem}_opl_init_trace.csv")
     print(wav)

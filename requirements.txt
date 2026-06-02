@@ -1,1 +1,3 @@
 Pillow>=10.0
+numpy>=1.24
+ymfm-py>=0.2

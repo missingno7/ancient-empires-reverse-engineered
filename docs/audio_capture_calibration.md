@@ -15,13 +15,13 @@ The important correction was separating two unrelated tables/values:
 
 ```text
 AE000:065 word 0 = 0x0096    # stream offset for sound 0x00
-CAF1 ?E base      ~= 0x8F90  # live PIT divisor base used by CA9B arithmetic
+CAF1 ?E base       = 0x8E88  # exact EXE table head at DS:17FC used by CA9B
 ```
 
 Using `0x0096` as the direct-pitch base was wrong. It made direct-pitch effects
 wrap around the 16-bit arithmetic in the wrong region and caused bad sweeps or
-pitch breaks. Fitting the captured jump sweep against the `3E 05, 3E 0A, ...`
-bytecode gives the runtime divisor base used by the current code.
+pitch breaks. Capture fitting first gave the close approximation `0x8F90`.
+Tracing `CA9B` back to the EXE table at `DS:17FC` gives the exact value `0x8E88`.
 
 With the capture-calibrated base:
 

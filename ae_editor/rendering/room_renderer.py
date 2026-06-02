@@ -12,14 +12,11 @@ from ..constants import (
     ROOM_SCREEN_WIDTH_PX,
 )
 from .coordinates import (
-    BACKGROUND_COMPACT3_DELTA,
-    FOREGROUND_COMPACT3_DELTA,
-    LASER_CRYSTAL_DELTA,
     actor_xy,
-    compact3_xy,
     header_exit_door_xy,
     control_xy,
     header_object_xy,
+    object_entry_xy,
     object_screen_xy,
     platform_xy,
     rope_tile_xy,
@@ -355,39 +352,24 @@ class RoomRenderer:
             if cmd.command is None or cmd.x_raw is None or cmd.y_raw is None:
                 continue
             command = cmd.command
-            arg_a = cmd.arg_a or 0
             arg_b = cmd.arg_b or 0
 
-            # Aha from the v31 cleanup: LengthPrefixedControlRecord.raw[0] is
-            # the byte length, not the command.  The real command is body[0].
-            # This removes several old false positives where length 0x06/0x07
-            # was treated as an object id.
+            # LengthPrefixedControlRecord.raw[0] is the byte length, not the
+            # command; the real command is body[0].  The command byte selects
+            # the switch family, and bit 0x40 of arg_b is the initial pressed
+            # state.  All three families share one draw anchor (control_xy).
             sprite = None
-            mode = "button"
             override = None if control_state_overrides is None else control_state_overrides.get(cmd.record.index)
             pressed = bool(override) if override is not None else bool(arg_b & 0x40)
             if command == 0x00:
-                # Command byte, not position, selects the switch family:
-                #   0 => ceiling button
-                #   1 => floor switch
-                # The remaining bytes are trigger/link/state metadata.  Bit 0x40
-                # in arg_b is the first confirmed initial-state bit: use the
-                # pressed artwork but do not reinterpret it as a different type.
                 sprite = ceiling_pressed if pressed and ceiling_pressed is not None else ceiling_button
-                mode = "ceiling_button"
             elif command == 0x01:
                 sprite = floor_pressed if pressed and floor_pressed is not None else floor_button
-                mode = "floor_switch"
             elif command == 0x02:
-                # Command 2 goes through the visible trigger renderer in
-                # AEPROG.  Its metadata links it to platforms/lasers; enemies
-                # are initialized later into the separate runtime actor table.
                 sprite = self.graphics.sprite("AE000", 41, 0)
-                mode = "laser_trigger"
 
             if sprite is not None:
-                x, y = control_xy(cmd, mode=mode)
-                self._blit(image, sprite, x, y)
+                self._blit(image, sprite, *control_xy(cmd))
 
 
     def _draw_puzzle_markers(self, image: Image.Image, room: Room) -> None:
@@ -462,8 +444,7 @@ class RoomRenderer:
             sprite = self.graphics.sprite("AE000", 19, sprite_index)
             if sprite is None:
                 continue
-            x, y = compact3_xy(entry, sprite, "screen_exe", delta=LASER_CRYSTAL_DELTA)
-            self._blit(image, sprite, x, y)
+            self._blit(image, sprite, *object_entry_xy(entry))
 
     def _draw_animated_decor(self, image: Image.Image, room: Room, theme: int) -> None:
         table = animated_decor_table(room)
@@ -478,8 +459,7 @@ class RoomRenderer:
             # Animated decals use the same compact3 coordinate family as theme
             # visuals: x is half-screen space, y is the EXE object anchor.
             entry = ObjectTableEntry(record.source_offset, record.index, record.x_raw, record.y, sprite_index, record.raw)
-            x, y = compact3_xy(entry, sprite, "screen_exe", delta=BACKGROUND_COMPACT3_DELTA)
-            self._blit(image, sprite, x, y)
+            self._blit(image, sprite, *object_entry_xy(entry))
 
     def _draw_visual_objects(self, image: Image.Image, room: Room, *, layer: str = "all") -> None:
         table = visual_compact3_table(room)
@@ -497,20 +477,10 @@ class RoomRenderer:
             sprite = self._sprite_for_visual_entry(entry, room)
             if sprite is None:
                 continue
-            delta = BACKGROUND_COMPACT3_DELTA if entry_layer == "background" else FOREGROUND_COMPACT3_DELTA
-            ref = visual_sprite_ref(
-                entry,
-                theme=getattr(self, "_current_theme", 0),
-                level_index=getattr(self, "_current_level_index", None),
-                room_index=room.index,
-                part_index=room.part_index,
-            )
             # AEPROG draws every compact3 entry through the same top-left blit
-            # (0x2bf7 / 0x2d3e -> 0x1a98) with no per-sprite vertical nudge, so
-            # the statue/sarcophagus art uses the shared anchor like everything
-            # else.
-            x, y = compact3_xy(entry, sprite, "screen_exe", delta=delta)
-            self._blit(image, sprite, x, y)
+            # (0x2bf7 / 0x2d3e -> 0x1a98) with no per-sprite nudge, so background
+            # and foreground decor share the one object anchor.
+            self._blit(image, sprite, *object_entry_xy(entry))
 
     def _sprite_for_visual_entry(self, entry: ObjectTableEntry, room: Room) -> Image.Image | None:
         ref = visual_sprite_ref(
@@ -557,8 +527,7 @@ class RoomRenderer:
         sprite = self.graphics.sprite("AE001", 21 + theme, 0)
         if sprite is None:
             return
-        x, y = header_exit_door_xy(door.x_raw, door.y_raw, sprite)
-        self._blit(image, sprite, x, y)
+        self._blit(image, sprite, *header_exit_door_xy(door.x_raw, door.y_raw))
 
     def _draw_apple_pickup(self, image: Image.Image, part, room: Room) -> None:
         apple = part_apple_marker(part, room.index)
@@ -568,7 +537,7 @@ class RoomRenderer:
 
     def _draw_actors(self, image: Image.Image, part, room: Room, *, include_hidden: bool) -> None:
         for actor in actor_records_for_room(part, room.index):
-            x, y = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
+            x, y = actor_xy(actor.x, actor.y)
             if actor.hidden and not include_hidden:
                 continue
             sprite = self._sprite_for_actor_record(actor)

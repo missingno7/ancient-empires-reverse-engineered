@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .coordinates import actor_origin, actor_xy, control_xy, header_object_xy, object_screen_xy, platform_xy, platform_motion_delta
+from .coordinates import actor_xy, control_xy, header_object_xy, object_screen_xy, platform_xy, platform_motion_delta
 from ..constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS, ROOM_SCREEN_HEIGHT_PX as ROOM_HEIGHT_PX, ROOM_SCREEN_WIDTH_PX as ROOM_WIDTH_PX
 from ..game_data.level_format import Room
 from ..game_data.actor_scripts import actor_script_bytes, decode_actor_script
@@ -318,18 +318,14 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
     for cmd in control_commands(room):
         if cmd.command is None or cmd.x_raw is None or cmd.y_raw is None:
             continue
-        mode = "button"
         kind = "C"
         if cmd.command == 0x00:
-            mode = "ceiling_button"
             kind = "B"
         elif cmd.command == 0x01:
-            mode = "floor_switch"
             kind = "S"
         elif cmd.command == 0x02:
-            mode = "laser_trigger"
             kind = "J"
-        x, y = control_xy(cmd, mode=mode)
+        x, y = control_xy(cmd)
         label = f"{kind}{cmd.record.index} cmd={cmd.command:02X}"
         targets = control_targets(cmd)
         if targets:
@@ -380,7 +376,7 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
         hidden = bool(actor.hidden)
         if hidden and not include_hidden:
             continue
-        x, y = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
+        x, y = actor_xy(actor.x, actor.y)
         _, script = actor_script_bytes(part, actor, limit=12)
         decoded = decode_actor_script(part, actor, max_bytes=96, max_segments=8)
         script_hex = " ".join(f"{value:02X}" for value in script[:8])

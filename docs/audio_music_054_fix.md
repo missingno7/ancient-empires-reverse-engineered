@@ -31,8 +31,8 @@ That byte shape matches PSG/Tandy/SN76489-style tone/noise/attenuation writes mu
 The music stream control handlers are:
 
 ```text
-5D xx  select sound-card timbre/envelope pointer through the game's table
-6D xx  store auxiliary live driver byte
+5D xx  select PSG timbre/envelope pointer through the game's table
+6D xx  store PSG auxiliary live driver byte
 ```
 
 So the MIDI exporter no longer treats them as meaningless control bytes or timing bytes.
@@ -74,8 +74,8 @@ This is intentionally a reverse-engineering aid rather than a claim that the gam
 
 - the original bytecode/timing/channel parsing is kept intact;
 - the dropdown only changes the preview/export mapping layer;
-- `5D xx` timbre selectors are shown next to each channel so manual choices can be compared with the in-game recording;
-- the `Follow in-stream 5D timbre changes` checkbox can be enabled when testing the current automatic `5D` mapping, or disabled when manually auditioning one chosen instrument per channel.
+- `5D xx` PSG timbre selectors are shown next to each channel so manual choices can be compared with the in-game recording;
+- the `Follow in-stream 5D timbre changes` checkbox can be enabled when testing the current PSG-inspired `5D` mapping, or disabled when manually auditioning one chosen instrument per channel.
 
 For `AE000:054`, useful starting points are:
 

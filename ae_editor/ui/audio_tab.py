@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from queue import Empty, Queue
+from threading import Thread
+
 from .common import (
     AudioItem,
     DEFAULT_PREVIEW_SPEED,
@@ -10,6 +13,7 @@ from .common import (
     messagebox,
     play_audio_file,
     stop_audio_playback,
+    synthesize_soundcard_music_wav,
     synthesize_wav,
     temp_preview_wav,
     tk,
@@ -237,6 +241,7 @@ class AudioTabMixin:
 
     def stop_audio_preview(self) -> None:
         try:
+            self._audio_preview_generation = getattr(self, "_audio_preview_generation", 0) + 1
             stop_audio_playback()
             self.status.set("Audio preview stopped")
         except Exception as exc:
@@ -261,16 +266,40 @@ class AudioTabMixin:
         item = self._selected_audio_item()
         if item is None:
             return
-        try:
-            # Keep the original stable Audio Atlas preview path for every audio kind.
-            # Sound-card music preview is intentionally NOT routed through MIDI export
-            # or an external MIDI player: the recovered internal WAV renderer is the
-            # reference preview used by double-click and by the top Play button.
-            wav_path = temp_preview_wav(item, speed=self._audio_preview_speed())
-            play_audio_file(wav_path)
-            self.status.set(f"Playing synthesized preview for {item.label}")
-        except Exception as exc:
-            messagebox.showerror("Audio playback failed", str(exc))
+        generation = getattr(self, "_audio_preview_generation", 0) + 1
+        self._audio_preview_generation = generation
+        speed = self._audio_preview_speed()
+        results: Queue[tuple[Path | None, Exception | None]] = Queue(maxsize=1)
+
+        def render() -> None:
+            try:
+                # Worker threads only synthesize files. Tk and audio-player calls
+                # remain on the UI thread inside poll().
+                wav_path = temp_preview_wav(item, speed=speed, exe_path=self.project.exe)
+                results.put((wav_path, None))
+            except Exception as exc:
+                results.put((None, exc))
+
+        def poll() -> None:
+            if generation != getattr(self, "_audio_preview_generation", 0):
+                return
+            try:
+                wav_path, error = results.get_nowait()
+            except Empty:
+                self.after(40, poll)
+                return
+            if error is not None:
+                messagebox.showerror("Audio playback failed", str(error))
+                return
+            try:
+                play_audio_file(wav_path)
+                self.status.set(f"Playing synthesized preview for {item.label}")
+            except Exception as exc:
+                messagebox.showerror("Audio playback failed", str(exc))
+
+        self.status.set(f"Preparing audio preview for {item.label}...")
+        Thread(target=render, name="audio-preview-render", daemon=True).start()
+        self.after(0, poll)
 
     def export_selected_audio_wav(self) -> None:
         item = self._selected_audio_item()
@@ -281,7 +310,10 @@ class AudioTabMixin:
         if not path:
             return
         try:
-            synthesize_wav(item.data, path, music=item.kind != "pc-speaker-sfx", speed=self._audio_preview_speed(), audio_kind=item.kind)
+            if item.kind == "soundcard-music":
+                synthesize_soundcard_music_wav(item.data, self.project.exe, path, speed=self._audio_preview_speed())
+            else:
+                synthesize_wav(item.data, path, music=item.kind != "pc-speaker-sfx", speed=self._audio_preview_speed(), audio_kind=item.kind)
             self.status.set(f"Exported WAV preview: {path}")
         except Exception as exc:
             messagebox.showerror("WAV export failed", str(exc))

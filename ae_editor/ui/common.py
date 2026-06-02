@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw, ImageTk
 from ..constants import ACTOR_TICK_HZ, CELL_SIZE, DEFAULT_SIMULATION_TICK_HZ, ROOM_COUNT, ROOM_COLUMNS, ROOM_ROWS
 from ..exporters import export_bank_sheets, export_probe_csv, export_room_previews
 from ..rendering.overlay import build_room_overlay, control_ref_values, control_targets, decode_control_target
-from ..rendering.coordinates import LASER_CRYSTAL_DELTA, compact3_xy, control_xy, actor_xy, object_screen_xy
+from ..rendering.coordinates import control_xy, actor_xy, object_entry_xy, object_screen_xy
 from ..game_data.actor_scripts import decode_actor_script
 from ..game_data.actor_dsl import (
     ActorScriptError,
@@ -32,7 +32,7 @@ from ..rendering.room_renderer import RenderOptions
 from ..rendering.object_mapping import visual_sprite_ref
 from ..simulation import RoomSimulation
 from ..rendering.tile_mapping import AUTO_SOLID_TILE_CODES, CONVEYOR_PHYSICS_TILE_CODES, ROPE_TILE_CODES
-from ..audio import AudioItem, DEFAULT_PREVIEW_SPEED, GM_PROGRAM_NAMES, build_audio_atlas, describe_music_channels, play_audio_file, stop_audio_playback, synthesize_wav, temp_preview_wav, write_midi
+from ..audio import AudioItem, DEFAULT_PREVIEW_SPEED, GM_PROGRAM_NAMES, build_audio_atlas, describe_music_channels, play_audio_file, stop_audio_playback, synthesize_soundcard_music_wav, synthesize_wav, temp_preview_wav, write_midi
 from ..game_data.room_payload import (
     actor_script_space,
     actor_script_space_reachable_addresses,

@@ -11,14 +11,12 @@ from .common import (
     ImageDraw,
     ImageTk,
     Instruction,
-    LASER_CRYSTAL_DELTA,
     RenderOptions,
     RoomSimulation,
     actor_script_space,
     actor_script_space_reachable_addresses,
     actor_xy,
     build_audio_atlas,
-    compact3_xy,
     compose_conveyor,
     control_commands,
     control_targets,
@@ -26,6 +24,7 @@ from .common import (
     decode_instruction,
     iter_conveyor_runs,
     laser_crystal_table,
+    object_entry_xy,
     object_screen_xy,
     parse_conveyor_visual_records,
     parse_platform_triplets,
@@ -483,18 +482,12 @@ class SimulationTabMixin:
         for cmd in reversed(control_commands(self.current_room())):
             if cmd.command is None or cmd.x_raw is None or cmd.y_raw is None:
                 continue
-            mode = "button"
             resource_id = 39
-            if cmd.command == 0x00:
-                mode = "ceiling_button"
-                resource_id = 39
-            elif cmd.command == 0x01:
-                mode = "floor_switch"
+            if cmd.command == 0x01:
                 resource_id = 40
             elif cmd.command == 0x02:
-                mode = "laser_trigger"
                 resource_id = 41
-            cx, cy = control_xy(cmd, mode=mode)
+            cx, cy = control_xy(cmd)
             sprite = self.project.graphics.sprite("AE000", resource_id, 0)
             width = 24 if sprite is None else sprite.width
             height = 24 if sprite is None else sprite.height
@@ -528,7 +521,7 @@ class SimulationTabMixin:
             sprite = self.project.renderer._sprite_for_actor_record(actor)
             if sprite is None:
                 continue
-            ax, ay = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
+            ax, ay = actor_xy(actor.x, actor.y)
             if ax - 4 <= x <= ax + sprite.width + 4 and ay - 4 <= y <= ay + sprite.height + 4:
                 return actor
         return None
@@ -583,8 +576,7 @@ class SimulationTabMixin:
                 sprite = self.project.graphics.sprite("AE000", 19, sprite_index) or self.project.graphics.sprite("AE000", 19, entry.code & 0x3F)
                 if sprite is None:
                     continue
-                x, y = compact3_xy(entry, sprite, "screen_exe", delta=LASER_CRYSTAL_DELTA)
-                image.alpha_composite(sprite, (x, y))
+                image.alpha_composite(sprite, object_entry_xy(entry))
                 if entry.code & 0x80:
                     draw.ellipse((entry.x_raw * 2 - 9, entry.y - 9, entry.x_raw * 2 + 9, entry.y + 9), outline=(90, 220, 255, 220), width=2)
                 elif entry.index in sim.reflector_events:
@@ -650,7 +642,7 @@ class SimulationTabMixin:
             sprite = self.project.renderer._sprite_for_actor_record(actor)
             if sprite is None:
                 continue
-            x, y = actor_xy(actor.x, actor.y, frame_min=actor.frame_min)
+            x, y = actor_xy(actor.x, actor.y)
             image.alpha_composite(sprite, (int(x), int(y)))
             if actor.index == self.sim_selected_actor_index:
                 draw.rectangle(
