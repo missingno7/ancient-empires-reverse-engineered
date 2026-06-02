@@ -1,7 +1,7 @@
 # Screenshot Tour
 
 These screenshots are generated from the live Tk editor with local game assets.
-Run `python tools/capture_docs_screenshots.py --exe AEPROG.EXE --dat AE000.DAT AE001.DAT`
+Run `python tools/capture_docs_screenshots.py --exe game_data/AEPROG.EXE --dat game_data/AE000.DAT game_data/AE001.DAT`
 to refresh them after visual UI changes.
 
 ## Level Viewer

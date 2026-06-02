@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .coordinates import actor_origin, actor_xy, control_xy, header_object_xy, platform_xy, platform_motion_delta
+from .coordinates import actor_origin, actor_xy, control_xy, header_object_xy, object_screen_xy, platform_xy, platform_motion_delta
 from ..constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS, ROOM_SCREEN_HEIGHT_PX as ROOM_HEIGHT_PX, ROOM_SCREEN_WIDTH_PX as ROOM_WIDTH_PX
 from ..game_data.level_format import Room
 from ..game_data.actor_scripts import actor_script_bytes, decode_actor_script
@@ -105,7 +105,8 @@ PLATFORM_SIZE = {
 def _conveyor_runs(room: Room) -> list[tuple[int, int, int, int]]:
     runs: list[tuple[int, int, int, int]] = []
     for cv in parse_conveyor_visual_records(room):
-        runs.append((cv.index, cv.x_raw * 2 - 8, cv.y - 18, max(8, (cv.length + 1) * CELL_SIZE)))
+        cx, cy = object_screen_xy(cv.x_raw, cv.y)
+        runs.append((cv.index, cx, cy, max(8, (cv.length + 1) * CELL_SIZE)))
     return runs
 
 def _invisible_clusters(room: Room) -> list[tuple[int, int, int, int]]:
@@ -529,8 +530,7 @@ def build_room_overlay(level, part, room: Room, *, include_hidden: bool = False)
     door = header_exit_door(part.header)
     if door is not None and door.room_index == room.index:
         width, height = 46, 33
-        x = door.x_raw * 2 - 12
-        y = door.y_raw - 16
+        x, y = object_screen_xy(door.x_raw, door.y_raw)
         exit_doors.append(OverlayRect("exit_door", "Exit", x, y, width, height, "Exit door", "#ffffff"))
 
     table = laser_crystal_table(room)

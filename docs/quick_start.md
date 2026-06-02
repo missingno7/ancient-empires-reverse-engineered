@@ -4,17 +4,18 @@ This guide gets the editor running and points you at the most useful tabs first.
 
 ## 1. Prepare The Game Files
 
-The repository does not include the original game assets. Put your own copies in
-the repository root, next to `run_editor.py`:
+The repository does not include the original game assets. Put your own copies
+inside the `game_data/` folder in the repository root:
 
 ```text
-AEPROG.EXE
-AE000.DAT
-AE001.DAT
+game_data/AEPROG.EXE
+game_data/AE000.DAT
+game_data/AE001.DAT
 ```
 
 `AEPROG.EXE` supplies the game palette and lookup data. `AE000.DAT` and
-`AE001.DAT` supply graphics, levels, actors and room payloads.
+`AE001.DAT` supply graphics, levels, actors and room payloads. The editor reads
+`game_data/` by default; you can also pass any other folder on the command line.
 
 ## 2. Install Dependencies
 
@@ -31,13 +32,17 @@ was installed into a different Python environment.
 ## 3. Launch The Editor
 
 ```bash
-python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT
+python run_editor.py
 ```
+
+This loads the game files from `game_data/`. To use a different folder, pass it
+as an argument (`python run_editor.py path/to/game_files`); `--exe PATH`
+overrides just the executable.
 
 After package installation, the console entry point is also available:
 
 ```bash
-ae-level-editor --exe AEPROG.EXE AE000.DAT AE001.DAT
+ae-level-editor
 ```
 
 ## First Five Minutes
@@ -55,25 +60,25 @@ ae-level-editor --exe AEPROG.EXE AE000.DAT AE001.DAT
 Export every rendered room preview:
 
 ```bash
-python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-previews previews
+python run_editor.py --export-previews previews
 ```
 
 Export decoded graphics-bank contact sheets:
 
 ```bash
-python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-bank-sheets sheets
+python run_editor.py --export-bank-sheets sheets
 ```
 
 Export room, tile and payload probe data:
 
 ```bash
-python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-csv ae_room_probe.csv
+python run_editor.py --export-csv ae_room_probe.csv
 ```
 
 Regenerate the README/documentation screenshots:
 
 ```bash
-python tools/capture_docs_screenshots.py --exe AEPROG.EXE --dat AE000.DAT AE001.DAT
+python tools/capture_docs_screenshots.py --exe game_data/AEPROG.EXE --dat game_data/AE000.DAT game_data/AE001.DAT
 ```
 
 Screenshot capture opens the Tk editor window and grabs the visible window, so
@@ -89,8 +94,9 @@ run it on a desktop session rather than a headless terminal.
 
 ## Troubleshooting
 
-- **Missing file errors:** check that `AEPROG.EXE`, `AE000.DAT` and `AE001.DAT`
-  are in the paths passed on the command line.
+- **`No DAT files found` errors:** check that `AEPROG.EXE`, `AE000.DAT` and
+  `AE001.DAT` are inside `game_data/` (or the folder you passed on the command
+  line).
 - **Wrong colors:** make sure the editor is using `AEPROG.EXE`; the game palette
   is not the standard VGA palette.
 - **Edits feel risky:** use **Save as...** and keep the original `AE001.DAT`

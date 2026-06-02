@@ -1836,13 +1836,15 @@ def part_apple_marker(part: LevelPart, room_index: int) -> RoomTailMarker | None
 
 
 def apple_marker_screen_xy(marker: RoomTailMarker) -> tuple[int, int]:
-    """Return the apple sprite top-left in screen pixels.
+    """Return the apple sprite top-left in editor pixels.
 
-    Runtime passes x_raw*2 and y_raw to the sprite routine.  The apple bitmap's
-    visible fruit is inset slightly from that draw anchor; this calibration
-    matches the shipped Level 01 Explorer room 01 marker 65/6F/02.
+    AEPROG 0x2e89 blits the apple via 0x3cc with x_arg = room[0x3e5]*2 and
+    y_arg = room[0x3e6] + 0xb8 - the shared object anchor used by every other
+    payload object.  Cropping at the view origin (8, 200) gives the universal
+    (x_raw*2 - 8, y_raw - 16).  (This mirrors coordinates.object_screen_xy, which
+    cannot be imported here without a cycle.)
     """
-    return marker.x_raw * 2 - 6, marker.y_raw - 12
+    return marker.x_raw * 2 - 8, marker.y_raw - 16
 
 
 def apple_marker_raw_xy(marker: RoomTailMarker) -> tuple[int, int]:

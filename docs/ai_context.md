@@ -62,16 +62,17 @@ Compile after code changes:
 python -m compileall ae_editor tools run_editor.py
 ```
 
-Export room previews after parser or renderer changes:
+Export room previews after parser or renderer changes (reads `game_data/` by
+default; pass a folder to use another location):
 
 ```bash
-python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-previews previews
+python run_editor.py --export-previews previews
 ```
 
 Regenerate public docs screenshots after visual UI changes:
 
 ```bash
-python tools/capture_docs_screenshots.py --exe AEPROG.EXE --dat AE000.DAT AE001.DAT
+python tools/capture_docs_screenshots.py --exe game_data/AEPROG.EXE --dat game_data/AE000.DAT game_data/AE001.DAT
 ```
 
 ## Deeper Docs

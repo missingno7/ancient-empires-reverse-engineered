@@ -3,6 +3,9 @@ AE000.DAT*
 AE001.DAT*
 AEPROG.EXE
 Decompile notes
+game_data
+.claude
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

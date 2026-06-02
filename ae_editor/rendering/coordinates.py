@@ -23,43 +23,100 @@ from ..game_data.room_payload import ControlCommand, ObjectTableEntry, PlatformT
 AnchorMode = Literal[
     "terrain",
     "screen_exe",
-    "top_half",
-    "bottom_center",
 ]
 
 
-# Compact visual objects do not all share the exact same top-left anchor.
-# Keep the defaults close to the older renderer, but allow small family-level
-# nudges so screenshots can be matched without scattering magic numbers across
-# renderer.py.
-DEFAULT_COMPACT3_ORIGIN = (12, 20)
-BACKGROUND_COMPACT3_DELTA = (3, 2)
-FOREGROUND_COMPACT3_DELTA = (0, 2)
-LASER_CRYSTAL_DELTA = (0, 2)
+# ───────────────────────────────────────────────────────────────────────────
+# AEPROG room buffer geometry — the ONE shared model behind every position.
+#
+# The EXE renders a room into an offscreen buffer and scrolls a window of it to
+# the screen.  EVERY sprite goes through the same top-left blitter
+# (0x3cc -> 0x1a98): a pure top-left blit with no width/2, no height
+# subtraction, and no per-sprite hotspot (the 0x47 graphics header is
+# marker + ctrl + 16 EGA + 16 VGA + row_bytes + height = 36 bytes, no origin
+# field).  The only thing that varies per object family is the BUFFER POSITION
+# passed to that blitter:
+#
+#   background backdrop    (8, 200)                    AEPROG 0x2bc0
+#   terrain tile (col,row) (col*8 + 4, row*8 + 196)    AEPROG 0x2c97  (0xc4=196)
+#   rope tile (col,row)    (col*8 + 8, row*8 + 200)    AEPROG 0x2ccf  (0xc8=200)
+#   payload object         (raw_x*2,  raw_y + 184)     AEPROG 0x2d8a  (0xb8=184)
+#
+# The editor renders the room flat and crops the buffer at the backdrop origin,
+# so the background lands at editor (0,0).  Hence every editor position is just
+# `buffer_pos - ROOM_VIEW_ORIGIN`.  Nothing below is screenshot-tuned: the
+# -4/-8/-16 offsets are all consequences of these four ASM buffer origins.
+ROOM_VIEW_ORIGIN = (8, 200)        # = background backdrop blit (AEPROG 0x2bc0)
+_TERRAIN_TILE_BUFFER = (4, 196)    # AEPROG 0x2c97
+_ROPE_TILE_BUFFER = (8, 200)       # AEPROG 0x2ccf
+_OBJECT_BUFFER_Y_BIAS = 184        # 0xb8; object buffer x is raw_x * 2
+
+
+def buffer_to_view(bx: int, by: int) -> tuple[int, int]:
+    """Map an AEPROG room-buffer position to an editor-view top-left pixel."""
+    return bx - ROOM_VIEW_ORIGIN[0], by - ROOM_VIEW_ORIGIN[1]
+
+
+def object_screen_xy(raw_x: int, raw_y: int) -> tuple[int, int]:
+    """Top-left editor pixel for any payload object the EXE draws.
+
+    Buffer position is (raw_x*2, raw_y + 184); cropping at the view origin gives
+    (raw_x*2 - 8, raw_y - 16).  Shared by compact3 visuals (0x2bf7 / 0x2d3e),
+    header diamonds (0x2e32), the exit/apple marker (0x2e89), puzzle symbols
+    (0x3085), control buttons/switches/triggers (0x2f10) and platforms (0x338a).
+    """
+    return buffer_to_view(raw_x * 2, raw_y + _OBJECT_BUFFER_Y_BIAS)
+
+
+def terrain_tile_xy(col: int, row: int) -> tuple[int, int]:
+    """Top-left editor pixel for a terrain tile sprite (AEPROG 0x2c97)."""
+    bx, by = _TERRAIN_TILE_BUFFER
+    return buffer_to_view(col * CELL_SIZE + bx, row * CELL_SIZE + by)
+
+
+def rope_tile_xy(col: int, row: int) -> tuple[int, int]:
+    """Top-left editor pixel for a rope tile sprite (AEPROG 0x2ccf)."""
+    bx, by = _ROPE_TILE_BUFFER
+    return buffer_to_view(col * CELL_SIZE + bx, row * CELL_SIZE + by)
+
+
+# Derived aliases (no hand-tuned values).  object_screen_xy is preferred.
+OBJECT_ORIGIN = (ROOM_VIEW_ORIGIN[0], ROOM_VIEW_ORIGIN[1] - _OBJECT_BUFFER_Y_BIAS)  # (8, 16)
+DEFAULT_COMPACT3_ORIGIN = OBJECT_ORIGIN
+BACKGROUND_COMPACT3_DELTA = (0, 0)
+FOREGROUND_COMPACT3_DELTA = (0, 0)
+LASER_CRYSTAL_DELTA = (0, 0)
 
 
 @dataclass(frozen=True)
 class TerrainAnchor:
-    """Top-left offset for terrain sprites relative to their 8×8 cell."""
+    """Top-left offset of a terrain sprite from its logical 8x8 cell.
 
-    x: int = -4
-    y: int = -4
+    Derived, not tuned: terrain buffer origin minus view origin,
+    (4, 196) - (8, 200) = (-4, -4).
+    """
+
+    x: int = _TERRAIN_TILE_BUFFER[0] - ROOM_VIEW_ORIGIN[0]
+    y: int = _TERRAIN_TILE_BUFFER[1] - ROOM_VIEW_ORIGIN[1]
 
 
 TERRAIN_ANCHOR = TerrainAnchor()
 
 
 def platform_xy(p: PlatformTriplet) -> tuple[int, int]:
-    """EXE-derived moving platform/control coordinate conversion.
+    """Resting platform top-left, from the static platform draw at AEPROG 0x28ac.
 
-    The first payload area stores visible platform/control records. The x byte
-    uses the same doubled screen-space coordinate family as other room payload
-    objects, while y is already a screen-space pixel coordinate. The stored
-    point is an object anchor, not bitmap top-left; orientation and sprite
-    choice are *not* inferred from collision tile 0x07.
+    0x28ac walks the room+0x2AC triplets (flags, x_raw, y), writes the 0x07
+    collision footprint, and blits the platform sprite at a buffer position that
+    is NOT the universal object anchor - platforms are nudged (-4, -4) from it:
+
+        x_buf = x_raw*2 - 4   (0x28ac: si = x_raw*2; sub si,4)
+        y_buf = y + 0xb4      (0x28ac: add di,0xb4 = 180, not the usual 0xb8)
+
+    Cropping at the view origin (8, 200) gives editor (x_raw*2 - 12, y - 20).
+    (The 0x338a path is the per-frame *moving* redraw and uses the shared anchor;
+    the editor previews the resting position, so it matches 0x28ac.)
     """
-    # Screenshot calibration: the previous global anchor placed every visible
-    # platform 8 px too low.
     return p.x_raw * 2 - 12, p.y - 20
 
 
@@ -101,79 +158,55 @@ def compact3_xy(
     origin: tuple[int, int] | None = None,
     delta: tuple[int, int] = (0, 0),
 ) -> tuple[int, int]:
-    """Convert a compact3 payload entry to sprite top-left coordinates."""
-    if mode == "top_half":
-        return entry.x_raw * 2, entry.y
-    if mode == "bottom_center":
-        return entry.x_raw * 2 - sprite.width // 2, entry.y - sprite.height
-    # Compact3 visual records store x in half-screen units. The EXE then
-    # passes x*2 to the blitter. The stored point is near a logical object
-    # anchor rather than the bitmap top-left, so we keep a configurable origin
-    # and apply small family-specific deltas from the renderer.
-    ox, oy = origin or DEFAULT_COMPACT3_ORIGIN
-    dx, dy = delta
-    return entry.x_raw * 2 - ox + dx, entry.y - oy + dy
+    """Sprite top-left for a compact3 payload entry.
+
+    Compact3 visuals use the shared object anchor like everything else; the
+    `mode`/`origin`/`delta` parameters are retained only for call-site
+    compatibility and no longer change the result.
+    """
+    return object_screen_xy(entry.x_raw, entry.y)
 
 
 def control_xy(cmd: ControlCommand, *, mode: str = "button") -> tuple[int, int]:
-    """Convert a length-prefixed control command body to screen coordinates.
+    """Top-left for a control record, from the AEPROG control loop at 0x2f10.
 
-    Important: cmd.x_raw/cmd.y_raw are body bytes, not the length prefix.
-    Control commands are not one coordinate family:
-    * ceiling buttons are anchored by the hanging cord/trigger point;
-    * floor switches are anchored close to their base on the floor;
-    * runtime actors are stored in the part actor table and use direct x/y words.
+    The loop reads X=record[2], Y=record[3] and blits ceiling buttons, floor
+    switches and laser triggers all through the SAME shared anchor
+    (x = record[2]*2, y = record[3] + 0xb8); only the sprite and the collision
+    box differ per command, not the draw position.  `mode` is kept for the call
+    sites but no longer changes the result.
     """
-    x_raw = cmd.x_raw or 0
-    y_raw = cmd.y_raw or 0
-    if mode == "laser_trigger":
-        # Trigger pads were consistently a little too low in captured rooms.
-        return x_raw * 2 - 8, y_raw - 18
-    if mode == "ceiling_button":
-        return x_raw * 2 - 12, y_raw - 14
-    if mode == "floor_switch":
-        return x_raw * 2 - 12, y_raw - 16
-    return x_raw * 2 - 12, y_raw - 16
-
-
-# Actor-table coordinates are logical anchors, not necessarily bitmap top-lefts.
-# The values below intentionally preserve the old default (-12, -12), but make
-# it data-driven so individual enemy families can be calibrated against real
-# screenshots without adding one-off renderer hacks.  Keys are actor frame_min
-# values, i.e. the stable start of the enemy animation range.
-ACTOR_ORIGIN_BY_FRAME_MIN: dict[int, tuple[int, int]] = {
-    0x00: (12, 12),  # ant
-    0x08: (12, 12),  # bat
-    0x0F: (12, 12),  # green spitter
-    0x2B: (12, 14),  # ladybug - slightly too low with the generic anchor
-    0x32: (12, 12),  # scorpion shooter
-    0x37: (12, 12),  # spider
-    0x3F: (12, 20),  # snake
-}
+    return object_screen_xy(cmd.x_raw or 0, cmd.y_raw or 0)
 
 
 def actor_xy(x: int, y: int, *, frame_min: int | None = None, origin: tuple[int, int] | None = None) -> tuple[int, int]:
-    """Convert actor-table anchor coordinates to sprite top-left coordinates.
+    """Actor sprite top-left, from the AEPROG actor draw loop at 0x4ef8.
 
-    `origin` is the pixel inside the sprite that sits on the actor-table x/y.
-    When unknown, use the historically best global anchor.  This is separate
-    from player_start because the player preview already aligns well and comes
-    from the level header, not from the runtime actor table.
+    The draw loop reads x at rec+0x02 (a full-resolution 16-bit X, NOT halved
+    like the raw payload x) and y at rec+0x04, then blits via 0x3cc with
+    x_arg = x and y_arg = vertical_base + y.  The steady-state room draw passes
+    vertical_base = 0xb8 (AEPROG 0x399a/0x399e), so the actor buffer position is
+    (x, y + 0xb8) - the same family as every other object, just with X already
+    at full resolution.  Cropping at the view origin gives (x - 8, y - 16),
+    uniform for every enemy; the old per-frame_min origins were screenshot
+    fudges.  `frame_min`/`origin` are kept only for call-site compatibility.
     """
-    ox, oy = origin or ACTOR_ORIGIN_BY_FRAME_MIN.get(frame_min if frame_min is not None else -1, (12, 12))
-    return x - ox, y - oy
+    if origin is not None:
+        ox, oy = origin
+        return x - ox, y - oy
+    return buffer_to_view(x, y + _OBJECT_BUFFER_Y_BIAS)
 
 
 def actor_origin(frame_min: int | None = None) -> tuple[int, int]:
-    return ACTOR_ORIGIN_BY_FRAME_MIN.get(frame_min if frame_min is not None else -1, (12, 12))
+    """Actor anchor inside the sprite; uniform (8, 16) per AEPROG 0x4ef8."""
+    return OBJECT_ORIGIN
 
 
 def header_object_xy(x_raw: int, y_raw: int) -> tuple[int, int]:
-    """Convert six-slot header object coordinates to sprite top-left coordinates."""
-    # Collectibles sat a touch low compared with real screenshots.
-    return x_raw * 2 - 8, y_raw - 16
+    """Six-slot header diamond top-left, from the AEPROG draw at 0x2e32."""
+    return object_screen_xy(x_raw, y_raw)
 
 
 def header_exit_door_xy(x_raw: int, y_raw: int, sprite: Image.Image) -> tuple[int, int]:
-    """Convert the header exit-door anchor to sprite top-left coordinates."""
-    return x_raw * 2 - 12, y_raw - 16
+    """Exit-door top-left.  Same shared object anchor as everything else."""
+    return object_screen_xy(x_raw, y_raw)

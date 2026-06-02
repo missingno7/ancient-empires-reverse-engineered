@@ -181,15 +181,10 @@ def _actor_sprite_resource(frame: int) -> tuple[int, int, int] | None:
 
 
 def _actor_origin_for_frame_min(frame_min: int | None) -> tuple[int, int]:
-    return {
-        0x00: (12, 12),
-        0x08: (12, 12),
-        0x0F: (12, 12),
-        0x2B: (12, 14),
-        0x32: (12, 12),
-        0x37: (12, 12),
-        0x3F: (12, 20),
-    }.get(frame_min if frame_min is not None else -1, (12, 12))
+    # Actors share the uniform sprite anchor (8, 16) recovered from the AEPROG
+    # actor draw loop at 0x4ef8 (see coordinates.actor_xy).  The mirror must use
+    # the same anchor the renderer uses so a flipped actor lands pixel-correct.
+    return (8, 16)
 
 
 def _toggle_packed_frame_variant(value: int) -> int:

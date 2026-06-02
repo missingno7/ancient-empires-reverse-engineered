@@ -11,12 +11,15 @@ rooms with overlays, edit known room structures, inspect actor bytecode and run 
 room-local Simulation tab where actors, switches, platforms, green blocks and
 room links can be tested before writing anything back.
 
-The repository does not ship original game assets. To run the editor, provide
-your own copies of:
+The repository does not ship original game assets. To run the editor, drop your
+own copies into the `game_data/` folder in the repository root:
 
 - `AEPROG.EXE`
 - `AE000.DAT`
 - `AE001.DAT`
+
+The editor looks in `game_data/` by default. You can also point it at any other
+folder, or override individual paths (see [Quick Launch](#quick-launch)).
 
 ## Start Here
 
@@ -35,17 +38,26 @@ your own copies of:
 
 ```bash
 python -m pip install -r requirements.txt
-python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT
+python run_editor.py
 ```
 
-Use the same Python executable for installation and for `run_editor.py`. If you
-see `ModuleNotFoundError: No module named 'PIL'`, Pillow was installed into a
+With no arguments the editor loads the game files from `game_data/`. To use a
+different location, pass the folder:
+
+```bash
+python run_editor.py path/to/game_files
+```
+
+`--exe PATH` overrides just the executable if it lives somewhere else. Use the
+same Python executable for installation and for `run_editor.py`. If you see
+`ModuleNotFoundError: No module named 'PIL'`, Pillow was installed into a
 different Python environment.
 
 The package entry point is also available after installation:
 
 ```bash
-ae-level-editor --exe AEPROG.EXE AE000.DAT AE001.DAT
+ae-level-editor              # uses ./game_data
+ae-level-editor path/to/game_files
 ```
 
 ## What You Can Do
@@ -54,7 +66,9 @@ ae-level-editor --exe AEPROG.EXE AE000.DAT AE001.DAT
 
 - Browse all 20 levels across Explorer and Expert difficulty parts.
 - Render pixel-art room previews at multiple zoom levels using the palette from
-  `AEPROG.EXE`.
+  `AEPROG.EXE`. Terrain, objects, actors and pickups are placed with the same
+  sprite-blitter math recovered from the EXE, so previews match the game's
+  layering and pixel positions rather than screenshot guesses.
 - Toggle overlays for terrain, controls, actors, hidden objects, room exits,
   moving platforms, puzzle data and relationship lines.
 - Use the Editor tab to paint terrain, place known objects, drag supported
@@ -94,34 +108,35 @@ visible and repeatable without hiding the raw model.
 
 ## Useful Commands
 
-Export all room previews:
+Export all room previews (reads `game_data/`; add a folder argument to use a
+different location):
 
 ```bash
-python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-previews previews
+python run_editor.py --export-previews previews
 ```
 
 Export decoded graphics-bank contact sheets:
 
 ```bash
-python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-bank-sheets sheets
+python run_editor.py --export-bank-sheets sheets
 ```
 
 Export room, tile and payload probe data:
 
 ```bash
-python run_editor.py --exe AEPROG.EXE AE000.DAT AE001.DAT --export-csv ae_room_probe.csv
+python run_editor.py --export-csv ae_room_probe.csv
 ```
 
 Regenerate documentation screenshots:
 
 ```bash
-python tools/capture_docs_screenshots.py --exe AEPROG.EXE --dat AE000.DAT AE001.DAT
+python tools/capture_docs_screenshots.py --exe game_data/AEPROG.EXE --dat game_data/AE000.DAT game_data/AE001.DAT
 ```
 
 Probe one room payload:
 
 ```bash
-python tools/probe_exe_payload.py --exe AEPROG.EXE --level 6 --difficulty Explorer --room 5 AE000.DAT AE001.DAT
+python tools/probe_exe_payload.py --exe game_data/AEPROG.EXE --level 6 --difficulty Explorer --room 5 game_data/AE000.DAT game_data/AE001.DAT
 ```
 
 ## Technical References
@@ -174,21 +189,34 @@ format notes.
 
 ```text
 ae_editor/
-  cli.py             command-line entry point
-  compression.py     DAT decompression
-  dat_archive.py     DAT archive reader
-  palette.py         AEPROG.EXE VGA palette extraction
-  type47.py          type 0x47 image decoder
-  level_format.py    level / difficulty / room parser
-  room_payload.py    room payload and actor-table parser
-  tile_mapping.py    current terrain code mapping
-  coordinates.py     coordinate transforms
-  object_mapping.py  compact3 visual code mapping
-  renderer.py        static room renderer
-  simulation.py      in-memory simulation runtime
-  overlay.py         editor overlay model
-  gui.py             Tkinter editor UI
-  exporters.py       PNG/CSV export helpers
+  project.py                  loaded game-data bundle (archives, graphics, renderer)
+  constants.py                room/grid dimensions and shared constants
+  app/
+    cli.py                    command-line entry point and argument parsing
+    main_window.py            Tkinter editor window and tab wiring
+  game_data/
+    dat_archive.py            DAT archive reader
+    compression.py            DAT decompression
+    palette.py                AEPROG.EXE VGA palette extraction
+    game_graphics_records.py  type 0x47 image decoder
+    graphics.py               decoded graphics banks
+    level_format.py           level / difficulty / room parser
+    room_payload.py           room payload and actor-table parser
+    level_flip.py             horizontal level mirroring
+    conveyors.py              conveyor-belt sprite composition
+    actor_scripts.py          actor bytecode decoder
+    actor_dsl.py              editable actor-script DSL
+  rendering/
+    coordinates.py            ASM-derived coordinate transforms
+    object_mapping.py         compact3 visual code mapping
+    tile_mapping.py           terrain code mapping
+    room_renderer.py          static room renderer
+    overlay.py                editor overlay model
+  simulation/
+    room_simulation.py        in-memory simulation runtime
+  ui/                         Tkinter tabs (editor, simulation, script, audio)
+  audio/                      OPL/MIDI decode and preview playback
+  exporters/                  PNG/CSV export helpers
 
 docs/
   assets/            README and documentation screenshots

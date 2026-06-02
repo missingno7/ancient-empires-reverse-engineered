@@ -12,7 +12,6 @@ from ..constants import (
     ROOM_SCREEN_WIDTH_PX,
 )
 from .coordinates import (
-    TERRAIN_ANCHOR,
     BACKGROUND_COMPACT3_DELTA,
     FOREGROUND_COMPACT3_DELTA,
     LASER_CRYSTAL_DELTA,
@@ -21,7 +20,10 @@ from .coordinates import (
     header_exit_door_xy,
     control_xy,
     header_object_xy,
+    object_screen_xy,
     platform_xy,
+    rope_tile_xy,
+    terrain_tile_xy,
 )
 from ..game_data.conveyors import ConveyorSpec, compose_conveyor, iter_conveyor_runs
 from ..game_data.graphics import GraphicsSet
@@ -183,9 +185,6 @@ class RoomRenderer:
         (0x17, 0x14, 0x15),
         (0x2B, 0x29, 0x16),
     ]
-    # Rope markers sit on the left edge of the 8×8 grid cell, but the visible
-    # rope art is slightly right of that logical column in the captured game.
-    ROPE_X_BIAS = 4
     SOLID_INVISIBLE_CODE = 0x07
 
     def render_room(self, level: Level, room_index: int, options: RenderOptions | None = None) -> Image.Image:
@@ -210,10 +209,18 @@ class RoomRenderer:
         elif options.mode == "trailing_hex":
             self._render_trailing_probe(image, draw, room)
         else:
-            # EXE render order recovered from AEPROG around 0x2CE2:
-            # compact3 visuals with code >= 0x80 are drawn before terrain,
-            # terrain and rope markers are walked together in row-major order,
-            # then compact3 visuals with code < 0x80 are drawn as foreground.
+            # Render order recovered from the AEPROG room draw routine.  The EXE
+            # lays the room down in this exact sequence, so gameplay objects
+            # stack on top of decor rather than the other way around:
+            #   backdrop (0x2bc0)
+            #   compact3 background, code >= 0x80 (0x2bf7)   -- before terrain
+            #   terrain + rope tiles (0x2c71)
+            #   compact3 foreground, code < 0x80 (0x2d3e)    -- decor, under objects
+            #   laser crystals (0xd61c) / platforms (0x28ac)
+            #   header diamonds (0x2e32), apple (0x2e89)
+            #   control buttons/switches/triggers (0x2f10)
+            #   puzzle symbols (0x3085), green blocks (0x3132)
+            #   actors last, drawn each frame on top (0x4ef8, base 0xb8)
             self._draw_background(image, part.theme)
             if options.mode == "game":
                 self._draw_animated_decor(image, room, part.theme)
@@ -221,18 +228,18 @@ class RoomRenderer:
             self._draw_terrain_tiles(image, room, part.theme)
 
             if options.mode == "game":
+                self._draw_visual_objects(image, room, layer="foreground")
                 self._draw_conveyor_tiles(image, room)
+                self._draw_laser_crystals(image, room)
                 if options.draw_platforms:
                     self._draw_platforms(image, room)
-                self._draw_control_records(image, room, control_state_overrides=options.control_state_overrides)
-                self._draw_puzzle_markers(image, room)
-                self._draw_laser_crystals(image, room)
-                self._draw_visual_objects(image, room, layer="foreground")
-                if options.draw_puzzle_panels:
-                    self._draw_record12_puzzle_panels(image, room)
                 self._draw_header_objects(image, room, part.header)
                 self._draw_exit_door(image, room, part.header, part.theme)
                 self._draw_apple_pickup(image, part, room)
+                self._draw_control_records(image, room, control_state_overrides=options.control_state_overrides)
+                self._draw_puzzle_markers(image, room)
+                if options.draw_puzzle_panels:
+                    self._draw_record12_puzzle_panels(image, room)
                 if options.draw_actors:
                     self._draw_actors(image, part, room, include_hidden=False)
                 if options.draw_player_start:
@@ -280,14 +287,14 @@ class RoomRenderer:
                     continue
                 rope = self._rope_sprite_for_code(code)
                 if rope is not None:
-                    self._blit(image, rope, x * CELL_SIZE + self.ROPE_X_BIAS, y * CELL_SIZE)
+                    self._blit(image, rope, *rope_tile_xy(x, y))
                     continue
                 sprite_index = self.code_to_sprite.get(code)
                 if sprite_index is None:
                     continue
                 sprite = self.graphics.terrain_sprite(theme, sprite_index)
                 if sprite is not None:
-                    self._blit(image, sprite, x * CELL_SIZE + TERRAIN_ANCHOR.x, y * CELL_SIZE + TERRAIN_ANCHOR.y)
+                    self._blit(image, sprite, *terrain_tile_xy(x, y))
 
     def _rope_sprite_for_code(self, code: int) -> Image.Image | None:
         resource_id = self.ROPE_SPRITE_RESOURCES.get(code)
@@ -316,7 +323,10 @@ class RoomRenderer:
             width = max(8, (cv.length + 1) * CELL_SIZE)
             strip = compose_conveyor(parts, ConveyorSpec(kind=kind, x=0, y=0, width=width, frame=0))
             if strip is not None:
-                self._blit(image, strip, cv.x_raw * 2 - 8, cv.y - 18)
+                # CV records use the same (raw_x*2, raw_y+0xb8) object family as
+                # every other payload object, so the belt sits at the shared
+                # object anchor.
+                self._blit(image, strip, *object_screen_xy(cv.x_raw, cv.y))
 
     def _draw_platforms(self, image: Image.Image, room: Room) -> None:
         horizontal = self.graphics.sprite("AE000", 47, 0)
@@ -395,12 +405,15 @@ class RoomRenderer:
         if base is None:
             return
         for entry in directory.sections.section_a.entries:
-            x = entry.x_raw * 2 - base.width // 2
-            y = entry.y - base.height // 2
+            # AEPROG 0x3085: the medallion (sprite 0x6e88) is blitted at the
+            # shared object anchor, and the symbol overlay (selected by
+            # record[2]) at exactly +4 px in X (0x30d2: di+4) with the same Y.
+            # The old code centred both sprites on the anchor, which is wrong.
+            x, y = object_screen_xy(entry.x_raw, entry.y)
             self._blit(image, base, x, y)
             symbol = self.graphics.sprite("AE000", 10 + (entry.code & 0x07), 0)
             if symbol is not None:
-                self._blit(image, symbol, x + (base.width - symbol.width) // 2, y)
+                self._blit(image, symbol, x + 4, y)
 
     def _draw_record12_puzzle_panels(self, image: Image.Image, room: Room) -> None:
         """Draw the puzzle progress block from the 12-byte section when present.
@@ -492,10 +505,10 @@ class RoomRenderer:
                 room_index=room.index,
                 part_index=room.part_index,
             )
-            # Large statue/sarcophagus artwork sits a little lower than the
-            # generic foreground decor anchor.
-            if ref.archive == "AE001" and ref.resource_id == 26 and ref.sprite_index in {24, 25}:
-                delta = (delta[0], delta[1] + 2)
+            # AEPROG draws every compact3 entry through the same top-left blit
+            # (0x2bf7 / 0x2d3e -> 0x1a98) with no per-sprite vertical nudge, so
+            # the statue/sarcophagus art uses the shared anchor like everything
+            # else.
             x, y = compact3_xy(entry, sprite, "screen_exe", delta=delta)
             self._blit(image, sprite, x, y)
 

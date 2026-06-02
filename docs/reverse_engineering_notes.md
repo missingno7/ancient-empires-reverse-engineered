@@ -84,21 +84,58 @@ one-based symbol sequence. Simulation models the observed behavior: correct
 symbols consume the visible sequence, wrong symbols reset it, and completing
 the sequence toggles the block position and restores the sequence.
 
-### Render Layering
+### Render Layering And The Shared Object Anchor
 
-Static disassembly of the room draw path around `0x2CE2` shows that the main
-visual compact3 table is rendered in two passes: entries with `code >= 0x80`
-are drawn before terrain, while entries with `code < 0x80` are drawn after
-terrain as foreground decor. Rope-family terrain markers are drawn inside the
-terrain tile loop, not as a later overlay, which lets wall/terrain art cover
-rope artwork according to the same row-major tile order.
+The room draw path has been disassembled in full. The EXE composes a room into
+an offscreen buffer and scrolls a window of it to the screen. Every sprite goes
+through one of two blitters: `0x3CC -> 0x1A98` (transparent, colour 0 keyed) for
+objects and `0x3C9 -> 0x1930` (opaque block copy) for backgrounds. Both are pure
+top-left blits — no width/2, no height subtraction, and the 36-byte `0x47`
+graphics header carries no per-sprite hotspot.
 
-Animated decor has two mechanisms in the EXE. Four-byte records at the front of
-the payload directory are handled by routines around `0xD81C/0xD99C`; the
-12-byte table after the visual compact3 table is refreshed by a later animation
-routine around `0xD586`. The static renderer keeps animated decal previews
-behind the normal compact3 foreground pass, but exact per-frame redraw order
-still deserves more capture-based verification.
+Almost every payload object is placed with one shared anchor. The buffer
+position is `(raw_x*2, raw_y + 0xB8)` and the editor crops the buffer at the
+background backdrop origin `(8, 200)`, so the editor top-left is:
+
+```text
+object   buffer (raw_x*2,   raw_y + 0xB8=184)  -> editor (raw_x*2 - 8,  raw_y - 16)
+terrain  buffer (col*8 + 4, row*8  + 0xC4=196) -> editor (col*8 - 4,    row*8 - 4)
+rope     buffer (col*8 + 8, row*8  + 0xC8=200) -> editor (col*8,        row*8)
+```
+
+The shared object anchor covers compact3 background (`0x2BF7`, `code >= 0x80`,
+before terrain) and foreground (`0x2D3E`, `code < 0x80`, after terrain), header
+diamonds (`0x2E32`), the room-gated apple (`0x2E89`, runtime `room[0x3E5..0x3E7]`),
+control buttons/switches/triggers (`0x2F10`), and puzzle symbols (`0x3085`, with
+the symbol overlay nudged `+4` px in X). Rope tiles are drawn inside the terrain
+loop (`0x2CCF`).
+
+Moving platforms are the one exception. The static platform draw (`0x28AC`,
+which also writes the `0x07` collision footprint from the room+0x2AC triplets)
+uses `(x_raw*2 - 4, y + 0xB4=180)` -> editor `(x_raw*2 - 12, y - 20)`. The
+per-frame moving redraw (`0x338A`) uses the shared anchor instead; the editor
+previews the resting position, so it follows `0x28AC`.
+
+Recovered static draw order (gameplay objects stack on top of decor):
+
+```text
+backdrop (0x2BC0)
+compact3 background, code >= 0x80 (0x2BF7)
+terrain + rope tiles (0x2C71)
+compact3 foreground, code < 0x80 (0x2D3E)
+laser crystals (0xD61C) / platforms (0x28AC)
+header diamonds (0x2E32) / apple (0x2E89)
+control buttons, switches, triggers (0x2F10)
+puzzle symbols (0x3085) / green blocks (0x3132)
+actors, drawn each frame on top (0x4EF8)
+```
+
+Animated decor still has two mechanisms in the EXE. Four-byte records at the
+front of the payload directory are handled by routines around `0xD81C/0xD99C`;
+the 12-byte table after the visual compact3 table is refreshed by a later
+animation routine around `0xD586`. The static renderer keeps animated decal
+previews behind the compact3 foreground pass, but the exact per-frame redraw
+order of the animated mechanisms still deserves more capture-based verification.
 
 ### Actor Records
 
@@ -106,6 +143,13 @@ The actor table starts at part offset `0x2754`. Records are 0x20 bytes. The
 editor maps the currently recognized frame ranges to actor names and renders
 visible actors in normal previews while keeping hidden/start-state actors
 available in debug overlays.
+
+The actor draw loop (`0x4EF8`) reads a full-resolution 16-bit X at `rec+0x02`
+(not the halved raw-x used by payload objects), Y at `rec+0x04`, frame at
+`rec+0x06` and the facing/flip bit at `rec+0x07`. It blits via `0x3CC` with
+`x_arg = x` and `y_arg = vertical_base + y`; the steady-state room draw passes
+`vertical_base = 0xB8` (`0x399A/0x399E`). So actors share the universal anchor —
+buffer `(x, y + 0xB8)`, editor `(x - 8, y - 16)` — uniformly for every enemy.
 
 Record byte `0x00` behaves like the actor mode for runtime stepping. Stock
 secondary actors and projectiles commonly start as mode `1`, hidden and asleep.
@@ -148,7 +192,9 @@ notes. This produces a noisier/raspier PC-speaker effect when previewed.
 - Full trigger graph behavior beyond current `P`/`CV`/`R` target classes.
 - Complete actor script instruction set and cycle-exact runtime timing.
 - Full collectible/item storage schema.
-- EXE-derived anchor/origin tables for all rendered object families.
+- `player_start` preview anchor (currently `x*2 - 4`) and the exact per-frame
+  draw of laser crystals, conveyor belts and animated decals (`0xD61C/0xD818`)
+  are not yet traced; every other object family's anchor is now EXE-derived.
 - Safe write-back rules for non-terrain payload edits.
 
 ## Suggested Continuation

@@ -26,6 +26,7 @@ from .common import (
     decode_instruction,
     iter_conveyor_runs,
     laser_crystal_table,
+    object_screen_xy,
     parse_conveyor_visual_records,
     parse_platform_triplets,
     platform_motion_delta,
@@ -510,8 +511,8 @@ class SimulationTabMixin:
         width = 24 if base is None else base.width
         height = 24 if base is None else base.height
         for entry in reversed(table.entries):
-            sx = entry.x_raw * 2 - width // 2
-            sy = entry.y - height // 2
+            # Match the medallion's top-left draw anchor (object_screen_xy).
+            sx, sy = object_screen_xy(entry.x_raw, entry.y)
             if sx - 4 <= x <= sx + width + 4 and sy - 4 <= y <= sy + height + 4:
                 return (entry.code & 0x07) + 1
         return None
@@ -570,8 +571,7 @@ class SimulationTabMixin:
             strip = compose_conveyor(parts, ConveyorSpec(kind=kind, x=0, y=0, width=width, frame=frame))
             if strip is None:
                 continue
-            x = cv.x_raw * 2 - 8
-            y = cv.y - 18
+            x, y = object_screen_xy(cv.x_raw, cv.y)
             image.alpha_composite(strip, (x, y))
             if toggled:
                 draw.rectangle((x, y, x + strip.width - 1, y + strip.height - 1), outline=(80, 245, 255, 210), width=1)

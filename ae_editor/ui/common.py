@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw, ImageTk
 from ..constants import ACTOR_TICK_HZ, CELL_SIZE, DEFAULT_SIMULATION_TICK_HZ, ROOM_COUNT, ROOM_COLUMNS, ROOM_ROWS
 from ..exporters import export_bank_sheets, export_probe_csv, export_room_previews
 from ..rendering.overlay import build_room_overlay, control_ref_values, control_targets, decode_control_target
-from ..rendering.coordinates import LASER_CRYSTAL_DELTA, compact3_xy, control_xy, actor_xy
+from ..rendering.coordinates import LASER_CRYSTAL_DELTA, compact3_xy, control_xy, actor_xy, object_screen_xy
 from ..game_data.actor_scripts import decode_actor_script
 from ..game_data.actor_dsl import (
     ActorScriptError,

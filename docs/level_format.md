@@ -74,11 +74,11 @@ theme 2 -> AE001:023:0
 theme 3 -> AE001:024:0
 ```
 
-Door coordinates currently use the same screen-space family as several payload
-objects, but with an exit-specific origin:
+Door coordinates use the one shared object anchor that AEPROG applies to every
+payload object (blit `x = x_raw*2`, `y = y_raw + 0xb8`), which in editor space is:
 
 ```text
-x = x_raw * 2 - 12
+x = x_raw * 2 - 8
 y = y_raw - 16
 ```
 
