@@ -384,6 +384,11 @@ latched bytes through `C8D4`, but `C27D` calls `C440` only when
 audition, but they are not an AdLib PCM channel and do not replace the
 resource-header OPL instrument ids used by device `2`.
 
+The shared note gate is not PC-speaker-only. For non-PSG devices, `C27D`
+decrements the live duration and calls `C6B9` at the configured cutoff
+threshold. Keeping the short off interval in the AdLib register trace therefore
+matches the DOS driver rather than truncating FM notes accidentally.
+
 This pipeline is already implemented and ASM-verified in
 `ae_editor/audio/core.py` (`load_opl_instrument_table`,
 `parse_opl_instrument_patch`, `soundcard_music_opl_full_writes`,

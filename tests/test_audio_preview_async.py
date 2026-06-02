@@ -1,7 +1,11 @@
 from pathlib import Path
+from threading import Event
+import time
 from unittest.mock import patch
 
 from ae_editor.audio.core import AudioItem
+from ae_editor.audio import playback
+from ae_editor.audio.playback import AudioPreviewResult
 from ae_editor.ui.audio_tab import AudioTabMixin
 
 
@@ -45,19 +49,22 @@ class _Harness(AudioTabMixin):
         self.callbacks.append(callback)
 
 
-class _ImmediateThread:
-    def __init__(self, *, target, **_kwargs) -> None:
-        self.target = target
+class _Task:
+    def __init__(self, result) -> None:
+        self.result = result
+        self.cancelled = False
 
-    def start(self) -> None:
-        self.target()
+    def poll(self):
+        return self.result
+
+    def cancel(self):
+        self.cancelled = True
 
 
 def test_audio_preview_plays_from_ui_poll_after_worker_finishes():
     harness = _Harness()
     with (
-        patch("ae_editor.ui.audio_tab.Thread", _ImmediateThread),
-        patch("ae_editor.ui.audio_tab.temp_preview_wav", return_value=Path("preview.wav")),
+        patch("ae_editor.ui.audio_tab.start_audio_preview_async", return_value=_Task((AudioPreviewResult("wav", Path("preview.wav")), None))),
         patch("ae_editor.ui.audio_tab.play_audio_file") as play,
     ):
         harness.play_selected_audio()
@@ -72,8 +79,7 @@ def test_audio_preview_plays_from_ui_poll_after_worker_finishes():
 def test_audio_preview_stop_discards_late_worker_result():
     harness = _Harness()
     with (
-        patch("ae_editor.ui.audio_tab.Thread", _ImmediateThread),
-        patch("ae_editor.ui.audio_tab.temp_preview_wav", return_value=Path("preview.wav")),
+        patch("ae_editor.ui.audio_tab.start_audio_preview_async", return_value=_Task((AudioPreviewResult("wav", Path("preview.wav")), None))),
         patch("ae_editor.ui.audio_tab.play_audio_file") as play,
         patch("ae_editor.ui.audio_tab.stop_audio_playback"),
     ):
@@ -83,3 +89,60 @@ def test_audio_preview_stop_discards_late_worker_result():
 
     assert not play.called
     assert harness.status.value == "Audio preview stopped"
+
+
+def test_audio_preview_reports_realtime_after_async_start_finishes():
+    harness = _Harness()
+    with patch(
+        "ae_editor.ui.audio_tab.start_audio_preview_async",
+        return_value=_Task((AudioPreviewResult("realtime"), None)),
+    ):
+        harness.play_selected_audio()
+        assert harness.status.value == "Preparing audio preview for AE000:054..."
+        harness.callbacks.pop(0)()
+
+    assert harness.status.value == "Playing realtime preview for AE000:054"
+
+
+def test_new_preview_and_stop_cancel_obsolete_cache_render():
+    item = _Harness().item
+    started = Event()
+    cancelled = []
+
+    def render(_item, **kwargs):
+        started.set()
+        while True:
+            try:
+                kwargs["cancel_check"]()
+            except playback.PreviewCancelled:
+                cancelled.append(True)
+                raise
+            time.sleep(0.005)
+
+    with patch("ae_editor.audio.playback.temp_preview_wav", side_effect=render):
+        playback.render_preview_async(item)
+        assert started.wait(1.0)
+        playback.render_preview_async(item)
+        deadline = time.monotonic() + 1.0
+        while len(cancelled) < 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        playback.stop_audio_playback()
+        deadline = time.monotonic() + 1.0
+        while len(cancelled) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+    assert len(cancelled) == 2
+
+
+def test_async_preview_realtime_start_does_not_cancel_its_own_task():
+    item = _Harness().item
+    with patch("ae_editor.audio.playback.play_audio_item_realtime", return_value=True):
+        task = playback.start_audio_preview_async(item, exe_path=Path("game.exe"))
+        deadline = time.monotonic() + 1.0
+        result = None
+        while time.monotonic() < deadline:
+            result = task.poll()
+            if result is not None:
+                break
+            time.sleep(0.005)
+    assert result == (AudioPreviewResult("realtime"), None)

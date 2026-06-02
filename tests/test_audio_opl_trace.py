@@ -1,7 +1,10 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+
 from ae_editor.audio.core import (
+    _apply_dosbox_opl_filter,
     _opl_note_index_register_writes,
     _soundcard_freq_to_note_index,
     synthesize_soundcard_music_wav,
@@ -19,15 +22,30 @@ def test_soundcard_preview_frequency_round_trips_to_e48a_note_index():
     assert _soundcard_freq_to_note_index(329.6275569128699) == 40
 
 
-def test_soundcard_wav_prefers_chip_emulator_and_retains_fallback():
+def test_soundcard_wav_uses_chip_emulator_only_with_no_fallback():
+    # One correct path: the real YM3812 chip renderer.  There is no Python-FM or
+    # square-wave fallback - a missing backend is a loud, explicit error, not a
+    # quietly different sound.
+    from ae_editor.audio.core import Ym3812Unavailable
+
     expected = Path("chip.wav")
     with patch("ae_editor.audio.core.synthesize_ym3812_wav", return_value=expected) as chip:
         assert synthesize_soundcard_music_wav(b"x", "game.exe", "out.wav") == expected
         chip.assert_called_once()
 
-    with (
-        patch("ae_editor.audio.core.synthesize_ym3812_wav", side_effect=RuntimeError("unavailable")),
-        patch("ae_editor.audio.core.synthesize_adlib_like_wav", return_value=expected) as fallback,
-    ):
-        assert synthesize_soundcard_music_wav(b"x", "game.exe", "out.wav") == expected
-        fallback.assert_called_once()
+    with patch("ae_editor.audio.core.synthesize_ym3812_wav", side_effect=Ym3812Unavailable("no backend")):
+        try:
+            synthesize_soundcard_music_wav(b"x", "game.exe", "out.wav")
+            assert False, "expected Ym3812Unavailable to propagate (no fallback)"
+        except Ym3812Unavailable:
+            pass
+
+
+def test_dosbox_opl_filter_profiles_are_opt_in():
+    pcm = np.array([0, 1000, -1000, 1000], dtype=np.int32)
+    with patch.dict("os.environ", {"AE_OPL_FILTER_PROFILE": "off"}):
+        assert np.array_equal(_apply_dosbox_opl_filter(pcm, 49716), pcm)
+    with patch.dict("os.environ", {"AE_OPL_FILTER_PROFILE": "sbpro2"}):
+        filtered = _apply_dosbox_opl_filter(pcm, 49716)
+    assert filtered.tolist() != pcm.tolist()
+    assert abs(filtered[1]) < abs(pcm[1])

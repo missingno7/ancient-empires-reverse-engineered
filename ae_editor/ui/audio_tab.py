@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from queue import Empty, Queue
-from threading import Thread
+import os
 
 from .common import (
     AudioItem,
@@ -12,10 +11,10 @@ from .common import (
     filedialog,
     messagebox,
     play_audio_file,
+    start_audio_preview_async,
     stop_audio_playback,
     synthesize_soundcard_music_wav,
     synthesize_wav,
-    temp_preview_wav,
     tk,
     ttk,
     write_midi,
@@ -30,6 +29,17 @@ class AudioTabMixin:
         ttk.Button(top, text="Refresh", command=self.refresh_audio_atlas).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Label(top, text="Preview speed ×").pack(side=tk.LEFT, padx=(12, 0))
         ttk.Spinbox(top, from_=0.25, to=6.0, increment=0.25, width=5, textvariable=self.audio_speed_var).pack(side=tk.LEFT, padx=(2, 0))
+        ttk.Label(top, text="OPL filter").pack(side=tk.LEFT, padx=(12, 0))
+        self.audio_opl_filter_var = tk.StringVar(value=os.environ.get("AE_OPL_FILTER_PROFILE", "off"))
+        opl_filter = ttk.Combobox(
+            top,
+            values=("off", "sb1", "sb2", "sbpro1", "sbpro2", "sb16"),
+            textvariable=self.audio_opl_filter_var,
+            width=7,
+            state="readonly",
+        )
+        opl_filter.pack(side=tk.LEFT, padx=(2, 0))
+        opl_filter.bind("<<ComboboxSelected>>", self.on_audio_opl_filter_changed)
         ttk.Button(top, text="Play preview", command=self.play_selected_audio).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(top, text="Stop", command=self.stop_audio_preview).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Button(top, text="Export WAV", command=self.export_selected_audio_wav).pack(side=tk.LEFT, padx=(8, 0))
@@ -96,6 +106,11 @@ class AudioTabMixin:
         self.audio_hex_text.pack(fill=tk.BOTH, expand=True)
 
         self.refresh_audio_atlas()
+
+    def on_audio_opl_filter_changed(self, _event=None) -> None:
+        profile = self.audio_opl_filter_var.get().strip().lower()
+        os.environ["AE_OPL_FILTER_PROFILE"] = profile
+        self.status.set(f"OPL preview filter: {profile}")
 
     def refresh_audio_atlas(self) -> None:
         if not hasattr(self, "audio_tree"):
@@ -269,36 +284,36 @@ class AudioTabMixin:
         generation = getattr(self, "_audio_preview_generation", 0) + 1
         self._audio_preview_generation = generation
         speed = self._audio_preview_speed()
-        results: Queue[tuple[Path | None, Exception | None]] = Queue(maxsize=1)
-
-        def render() -> None:
-            try:
-                # Worker threads only synthesize files. Tk and audio-player calls
-                # remain on the UI thread inside poll().
-                wav_path = temp_preview_wav(item, speed=speed, exe_path=self.project.exe)
-                results.put((wav_path, None))
-            except Exception as exc:
-                results.put((None, exc))
+        task = start_audio_preview_async(item, speed=speed, exe_path=self.project.exe)
 
         def poll() -> None:
             if generation != getattr(self, "_audio_preview_generation", 0):
+                task.cancel()
                 return
-            try:
-                wav_path, error = results.get_nowait()
-            except Empty:
+            result = task.poll()
+            if result is None:
                 self.after(40, poll)
                 return
+            preview, error = result
             if error is not None:
                 messagebox.showerror("Audio playback failed", str(error))
                 return
+            if preview is None:
+                messagebox.showerror("Audio playback failed", "Preview worker returned no result")
+                return
+            if preview.mode == "realtime":
+                self.status.set(f"Playing realtime preview for {item.label}")
+                return
+            if preview.path is None:
+                messagebox.showerror("Audio playback failed", "Preview worker did not return a WAV path")
+                return
             try:
-                play_audio_file(wav_path)
+                play_audio_file(preview.path)
                 self.status.set(f"Playing synthesized preview for {item.label}")
             except Exception as exc:
                 messagebox.showerror("Audio playback failed", str(exc))
 
         self.status.set(f"Preparing audio preview for {item.label}...")
-        Thread(target=render, name="audio-preview-render", daemon=True).start()
         self.after(0, poll)
 
     def export_selected_audio_wav(self) -> None:

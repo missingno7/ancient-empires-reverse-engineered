@@ -32,7 +32,7 @@ from ..rendering.room_renderer import RenderOptions
 from ..rendering.object_mapping import visual_sprite_ref
 from ..simulation import RoomSimulation
 from ..rendering.tile_mapping import AUTO_SOLID_TILE_CODES, CONVEYOR_PHYSICS_TILE_CODES, ROPE_TILE_CODES
-from ..audio import AudioItem, DEFAULT_PREVIEW_SPEED, GM_PROGRAM_NAMES, build_audio_atlas, describe_music_channels, play_audio_file, stop_audio_playback, synthesize_soundcard_music_wav, synthesize_wav, temp_preview_wav, write_midi
+from ..audio import AudioItem, DEFAULT_PREVIEW_SPEED, GM_PROGRAM_NAMES, build_audio_atlas, describe_music_channels, pc_speaker_preview_duration_seconds, play_audio_file, render_preview_async, start_audio_preview_async, stop_audio_playback, synthesize_soundcard_music_wav, synthesize_wav, temp_preview_wav, write_midi
 from ..game_data.room_payload import (
     actor_script_space,
     actor_script_space_reachable_addresses,

@@ -23,7 +23,7 @@ def _item() -> AudioItem:
 
 def test_temp_preview_wav_reuses_content_addressed_cache():
     with TemporaryDirectory() as temp_dir:
-        def render(_data, _exe, path, *, speed):
+        def render(_data, _exe, path, *, speed, cancel_check=None):
             Path(path).write_bytes(b"RIFF" + b"\0" * 64)
             return Path(path)
 

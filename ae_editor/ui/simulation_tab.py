@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from .common import (
     ACTOR_TICK_HZ,
     ActorScriptError,
@@ -28,11 +30,12 @@ from .common import (
     object_screen_xy,
     parse_conveyor_visual_records,
     parse_platform_triplets,
+    pc_speaker_preview_duration_seconds,
     platform_motion_delta,
     platform_xy,
     play_audio_file,
+    render_preview_async,
     section_a_symbol_table,
-    temp_preview_wav,
     tk,
     ttk,
 )
@@ -185,31 +188,73 @@ class SimulationTabMixin:
             }
         return self.sim_sound_items_by_id
 
+    def _simulation_sound_duration(self, item: AudioItem) -> float:
+        try:
+            duration = pc_speaker_preview_duration_seconds(
+                item.data,
+                music=False,
+                audio_kind=item.kind,
+            )
+        except Exception:
+            duration = 0.15
+        return max(0.05, min(8.0, duration / DEFAULT_PREVIEW_SPEED))
+
+    def _simulation_sound_is_blocked(self, sound_id: int) -> bool:
+        active_id = getattr(self, "_simulation_active_sound_id", None)
+        busy_until = getattr(self, "_simulation_active_sound_until", 0.0)
+        if active_id is None or time.monotonic() >= busy_until:
+            return False
+        # CAF1 is a single PC-speaker output.  Lower ids have higher priority;
+        # do not let repeated actor VM play_sound calls restart the same or a
+        # lower-priority effect every simulation tick.
+        return sound_id >= int(active_id)
+
     def _play_simulation_sound(self, sound_id: int) -> None:
         item = self._simulation_sound_items().get(sound_id)
         if item is None:
             self.sim_last_sound_status = f"play_sound 0x{sound_id:02X}: no CAF1 SFX stream found"
             return
-        try:
-            # Simulation must use the same CAF1/PC-speaker SFX item shown in
-            # the audio atlas.  Do not treat actor VM play_sound ids as music
-            # resources; the atlas item already contains the exact split stream
-            # for the requested id from AE000:065.
-            wav_path = temp_preview_wav(item, speed=DEFAULT_PREVIEW_SPEED)
-            play_audio_file(wav_path)
-            self.sim_last_sound_status = f"play_sound 0x{sound_id:02X} -> {item.label}"
-        except Exception as exc:
-            self.sim_last_sound_status = f"play_sound 0x{sound_id:02X} failed: {exc}"
+        if self._simulation_sound_is_blocked(sound_id):
+            self.sim_last_sound_status = f"play_sound 0x{sound_id:02X}: ignored while 0x{getattr(self, '_simulation_active_sound_id', 0):02X} is active"
+            return
+        duration = self._simulation_sound_duration(item)
+        self._simulation_active_sound_id = sound_id
+        self._simulation_active_sound_until = time.monotonic() + duration
+        generation = getattr(self, "_simulation_audio_generation", 0) + 1
+        self._simulation_audio_generation = generation
+        # Use the canonical cached WAV path for CAF1 SFX in the editor UI.
+        # The sounddevice PC-speaker callback remains available for experiments,
+        # but WAV preview is the timing reference and avoids device-rate drift.
+        task = render_preview_async(item, speed=DEFAULT_PREVIEW_SPEED)
+
+        def poll() -> None:
+            if generation != getattr(self, "_simulation_audio_generation", 0):
+                return
+            result = task.poll()
+            if result is None:
+                self.after(20, poll)
+                return
+            wav_path, error = result
+            if error is not None:
+                self.sim_last_sound_status = f"play_sound 0x{sound_id:02X} failed: {error}"
+                return
+            try:
+                play_audio_file(wav_path)
+                self.sim_last_sound_status = f"play_sound 0x{sound_id:02X} -> {item.label}"
+            except Exception as exc:
+                self.sim_last_sound_status = f"play_sound 0x{sound_id:02X} failed: {exc}"
+
+        self.sim_last_sound_status = f"play_sound 0x{sound_id:02X}: preparing"
+        self.after(0, poll)
 
     def _play_pending_simulation_sounds(self, sim: RoomSimulation) -> None:
         sound_ids = sim.drain_pending_sound_ids()
         if not sound_ids:
             return
-        # Real PC speaker is effectively a single output.  When several script
-        # instructions fire during one simulated actor tick, the last command is
-        # the audible state after the VM burst.  This avoids spawning a stack of
-        # overlapping preview processes from one tick.
-        self._play_simulation_sound(sound_ids[-1])
+        # Real PC speaker is effectively a single output with CAF1 priority:
+        # lower sound ids override higher ids.  Pick the highest-priority id
+        # emitted by this VM burst instead of replaying every request.
+        self._play_simulation_sound(min(sound_ids))
 
     def step_simulation_once(self) -> None:
         sim = self.ensure_simulation()

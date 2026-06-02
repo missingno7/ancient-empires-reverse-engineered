@@ -57,7 +57,8 @@ app
 ## audio
 
 - `core.py` — audio atlas, stream parsing, MIDI/WAV/VGM export.
-- `playback.py` — preview temp WAV and subprocess playback lifecycle.
+- `playback.py` — realtime PC-speaker/YM3812 callback playback, shared preview
+  workers, cached WAV fallback and subprocess playback lifecycle.
 - `gm.py` — General MIDI names/default mapping.
 
 ## simulation

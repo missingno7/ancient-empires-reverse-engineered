@@ -87,9 +87,42 @@ bit `0x80` set as a full-base-duration form: it skips the subdivision/dotted
 calculation and stores the unchanged `base + bend` value. It does **not** use
 `arg & 0x7F` as a literal tick count.
 
+The CAF1 SFX engine has a per-event read-tick that the music player does not.
+`C8E2`/`C914` only fetch the next event on a later tick that observes the
+duration counter at zero, so each SFX event actually occupies `duration + 1`
+timer ticks. For ordinary notes the extra tick is negligible, but the `?E`
+direct-pitch sweeps used by most SFX run at `effect_ticks = 1`, so the missing
+tick made them about twice too fast in preview. The fix adds this read tick on
+the SFX path only (`parse_game_audio_stream(music=False)`); the music player
+`C1F7` is a separate routine without it, so music timing is unchanged.
+
 Music streams have shared global tempo/bend state across channels. The MIDI/WAV
 export therefore parses multi-channel music with synchronized stream cursors,
 not by decoding each channel in isolation.
+
+## Preview implementation notes
+
+PC-speaker SFX/music decoding is centralized in `parse_pc_speaker_preview_tracks`,
+and sound-card music in the YM3812 register trace. Playback and WAV export share
+that exact decode, so there is no second independent decoder.
+
+There is one playback path and one set of dependencies. numpy, ymfm-py and
+sounddevice are all hard requirements (`requirements.txt`); the code does not
+silently degrade to a different renderer when one is missing - that raises a
+clear error. Two cleanly separated concerns:
+
+- **Interactive playback** (Audio Atlas double-click / Play preview) =
+  `play_audio_item_realtime`, a low-latency sounddevice callback. pc-speaker uses
+  the square/noise source, sound-card music uses the real `ymfm.YM3812` chip.
+  Setup runs in a worker thread so Tk stays responsive; there is no full-song WAV
+  render and no WAV cache on this path.
+- **WAV generation** (Export WAV button, Simulation tab) = `synthesize_wav`
+  (pc-speaker) and `synthesize_ym3812_wav` (sound-card music). File output only;
+  never used for the normal preview.
+
+The old Python-FM approximation (`synthesize_adlib_like_wav`) and the
+numpy/ymfm fallback chain were removed - they were a second, lower-fidelity
+sound-card renderer that could be reached silently.
 
 ## Resource classes
 
@@ -157,31 +190,39 @@ connection value, into the per-voice OPL register shadow.
 
 ## Playback routing
 
-`temp_preview_wav` (Audio Atlas double-click / Play) and the WAV export now route
-by kind:
+Interactive preview (Audio Atlas double-click / Play) is realtime for every
+playable kind, through `start_audio_preview_async` -> `play_audio_item_realtime`:
 
-- `pc-speaker-sfx` / `pc-speaker-music` -> `synthesize_wav` (square-wave synth).
-  The PC speaker really is a 1-bit square-wave device, so this is correct and is
-  left unchanged.
-- `soundcard-music` -> `synthesize_soundcard_music_wav`, which feeds the
-  recovered register trace to a real `ymfm.YM3812` emulator at its native
-  sample rate. If `ymfm-py` is unavailable, it falls back to the older
-  `synthesize_adlib_like_wav` approximation.
+- `pc-speaker-sfx` / `pc-speaker-music` -> `PcSpeakerRealtimeSource` (square/noise).
+- `soundcard-music` -> `Ym3812RealtimeSource` (the real `ymfm.YM3812` chip fed the
+  recovered register trace).
 
-`temp_preview_wav` stores content-addressed WAV previews in the temporary atlas
-directory. Replaying the same item and speed does not synthesize the complete
-song again. The cache key includes resource bytes, renderer version, preview
-speed and `AEPROG.EXE` metadata so driver discoveries invalidate old previews.
+`start_audio_preview_async` runs the setup (register trace, device open) in a
+worker thread so the Tk callback never imports backends, builds an OPL trace, or
+opens a device synchronously. Results return to the UI thread through
+`after(...)`; a generation token prevents a late result from playing after Stop
+or a newer request, and a cancellation token aborts obsolete setup. There is no
+WAV render or WAV cache on the playback path.
 
-The Audio Atlas renders cache misses on a background worker thread. Tk remains
-responsive while a complete song is synthesized. Playback and status updates
-return to the UI thread through `after(...)`; a generation token prevents a
-late result from playing after Stop or after a newer preview request.
+numpy, ymfm-py and sounddevice are hard dependencies. If one is missing the
+realtime path raises a clear error - it never silently switches to a different
+renderer. Set `AE_DISABLE_REALTIME_AUDIO=1` only to turn realtime off in
+headless/CI contexts.
 
-This cache is for atlas responsiveness, not the final gameplay architecture.
-Realtime gameplay music should keep one YM3812 instance alive and feed register
-writes incrementally as game ticks advance. PC-speaker effects likewise should
-update a persistent output voice instead of launching a new WAV player.
+WAV generation is a separate concern (Export WAV button, Simulation tab):
+`synthesize_wav` for pc-speaker (1-bit square-wave device) and
+`synthesize_ym3812_wav` for sound-card music (chunked: register writes are fed
+to the OPL core in chronological order and PCM blocks are written straight to the
+WAV file). `temp_preview_wav` content-addresses these files so Simulation/export
+do not re-render the same item. This branch is never used for the normal preview.
+
+The same `render_preview_async` helper is used by Simulation PC-speaker effects,
+so CAF1 sound events do not synthesize WAV files inside the simulation tick and
+do not go through the experimental sounddevice PC-speaker callback.
+
+The preview cache version was bumped again in this cleanup so stale WAVs rendered
+by broken PC-speaker timing or by the all-WAV routing experiment cannot be
+reused.
 
 ## Current state and limitation
 
@@ -192,15 +233,16 @@ The OPL path is decoded, not guessed: `ae_editor/audio/core.py` extracts the
 `0x200 + 0x0FA30 + 0x301A = 0x12C4A`), parses each 56-byte patch as two 13-word
 operator blocks plus two waveform words (`parse_opl_instrument_patch`), applies
 the `0x3F - level*9` carrier-level override, expands each channel to its octave
-voice stack (`DB60`), models operator feedback, and can emit an OPL register
-trace, a VGM file and a chip-emulated WAV preview. Verified against the
-disassembly (`D8F0/DA66/E0C0/C898/DB60`).
+voice stack (`DB60`), and emits an OPL register trace driven into `ymfm.YM3812`
+(plus a VGM file for external players). Verified against the disassembly
+(`D8F0/DA66/E0C0/C898/DB60`).
 
-The VGM/full-register trace also follows `E48A`'s default pitch lookup directly:
-the runtime maps note index to `block = note // 12`, `semitone = note % 12`,
-then writes the YM3812 FNUM row from `C6C3`. This removes the earlier trace-only
-Hz conversion and manual transpose. The atlas routes those writes through
-`ymfm.YM3812`; the old approximate synth remains only as a fallback.
+The VGM/full-register trace follows `E48A`'s default pitch lookup directly: the
+runtime maps note index to `block = note // 12`, `semitone = note % 12`, then
+writes the YM3812 FNUM row from `C6C3`. All playback and WAV export route those
+writes through the real `ymfm.YM3812` chip - there is no approximate FM synth and
+no fallback. Operator feedback, envelopes and waveforms are whatever the chip
+does; the editor does not model them itself.
 
 DOSBox Staging uses `Nuked-OPL3-fast` for this register layer and renders the OPL
 channel at `49716 Hz`. It may then apply a Sound Blaster model-specific
@@ -209,6 +251,13 @@ for SB16/modern output. The atlas uses YMFM rather than Nuked, so a direct
 DOSBox capture comparison is still useful, but it no longer guesses FM
 waveforms or envelopes.
 
+For A/B comparison, choose the Audio Atlas `OPL filter` profile or set
+`AE_OPL_FILTER_PROFILE` before launching the editor. Supported values are `off`
+(default), `sb1`, `sb2`, `sbpro1`, `sbpro2`, `sb16` and `modern`. The
+`sb1`/`sb2` profiles apply a first-order `12000 Hz` low-pass; the
+`sbpro1`/`sbpro2` profiles use `8000 Hz`, matching DOSBox Staging's model
+choices. The cache key includes this profile.
+
 The register trace sent to YMFM renders all nine stacked OPL voices at their real
 OPL-relative levels (carrier total-level + header voice level), with no
 per-channel weighting and no octave-stack damping. Earlier previews damped the
@@ -216,14 +265,11 @@ octave voices to ~60% and nearly muted the third stream to match one capture,
 which is why the sound-card music sounded thin compared with the original's
 deeper, fuller stack — `0xDB60` plays every enabled voice at full level.
 
-The fallback FM synth also models OPL operator **feedback** (`0xC0` bits 1..3). Several
-music instruments use maximum feedback (AE000:054 ids `0F`/`17` = 7, `0E` = 6),
-which turns the operator into a bright, gritty, noise-like timbre. With feedback
-ignored, those voices rendered as clean tones; that mismatch is what made a
-feedback-heavy voice sound like a missing "PCM/sample" channel. True feedback is
-a per-sample recursion; YMFM handles that in normal playback, while the fallback
-approximates the steady-state waveform with a few fixed-point iterations of
-`y = wave(phase + beta*y)` (vectorized).
+OPL operator **feedback** (`0xC0` bits 1..3) matters here: several instruments
+use maximum feedback (AE000:054 ids `0F`/`17` = 7, `0E` = 6), which turns the
+operator into a bright, gritty, noise-like timbre - the thing that can sound like
+a missing "PCM/sample" channel. The register trace carries the real `0xC0` value,
+so `ymfm.YM3812` reproduces feedback exactly.
 
 Remaining weaknesses:
 

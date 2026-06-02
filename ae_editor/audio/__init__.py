@@ -16,9 +16,10 @@ from .core import (
     load_opl_instrument_table,
     parse_game_audio_stream,
     parse_note_pairs,
+    parse_pc_speaker_preview_tracks,
+    pc_speaker_preview_duration_seconds,
     soundcard_music_header,
     soundcard_music_offsets,
-    synthesize_adlib_like_wav,
     synthesize_soundcard_music_wav,
     synthesize_wav,
     synthesize_ym3812_wav,
@@ -27,7 +28,7 @@ from .core import (
     write_opl_register_trace_csv,
     write_opl_vgm,
 )
-from .playback import play_audio_file, stop_audio_playback, temp_preview_wav
+from .playback import play_audio_file, play_audio_item_realtime, render_preview_async, start_audio_preview_async, stop_audio_playback, temp_preview_wav
 
 __all__ = [
     "AudioItem",
@@ -45,11 +46,15 @@ __all__ = [
     "load_opl_instrument_table",
     "parse_game_audio_stream",
     "parse_note_pairs",
+    "parse_pc_speaker_preview_tracks",
+    "pc_speaker_preview_duration_seconds",
     "play_audio_file",
+    "play_audio_item_realtime",
+    "render_preview_async",
+    "start_audio_preview_async",
     "soundcard_music_header",
     "soundcard_music_offsets",
     "stop_audio_playback",
-    "synthesize_adlib_like_wav",
     "synthesize_soundcard_music_wav",
     "synthesize_wav",
     "synthesize_ym3812_wav",
