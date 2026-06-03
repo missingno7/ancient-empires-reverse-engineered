@@ -19,10 +19,11 @@ PIT_HZ = 1193180.0
 
 
 class Ym3812Unavailable(RuntimeError):
-    """Raised when the ymfm/numpy YM3812 backend is not importable.
+    """Raised when the OPL (Nuked-OPL3 cffi) sound-card backend is unavailable.
 
     Distinct from PreviewCancelled (also a RuntimeError) so that cancelling a
-    render is never mistaken for a missing-backend fallback.
+    render is never mistaken for a missing-backend fallback.  (Name kept for
+    backwards compatibility with existing call sites and tests.)
     """
 
 # PC speaker / CAF1 SFX facts that are now considered stable:
@@ -638,75 +639,6 @@ def _stream_dosbox_opl_filter_block(pcm, sample_rate: int, previous: float | Non
     return out, state
 
 
-def synthesize_ym3812_wav(
-    data: bytes,
-    exe_path: Path | str,
-    path: Path | str,
-    *,
-    speed: float = DEFAULT_PREVIEW_SPEED,
-    cancel_check: Callable[[], None] | None = None,
-) -> Path:
-    """Render sound-card music through a real YM3812 emulator.
-
-    The renderer is deliberately chunked: it feeds register writes to the OPL
-    core in chronological order and writes each generated PCM block directly to
-    the WAV file.  This restores the old responsive/cache-friendly behaviour:
-    first playback can run in PreviewRenderTask's worker thread without building
-    a whole song-sized numpy array, and cancellation can stop between blocks.
-    """
-    try:
-        import numpy as np  # type: ignore
-        import ymfm  # type: ignore
-    except Exception as exc:
-        raise Ym3812Unavailable("Accurate YM3812 preview requires ymfm-py and numpy") from exc
-
-    path = Path(path)
-    writes = soundcard_music_opl_full_writes(data, exe_path, speed=speed)
-    if not writes:
-        return synthesize_wav(data, path, music=True, audio_kind="soundcard-music", speed=speed, cancel_check=cancel_check)
-
-    speed = max(0.10, min(8.0, float(speed)))
-    chip = ymfm.YM3812(clock=3579545)
-    chip.reset()
-    sample_rate = int(chip.sample_rate)
-    current_sample = 0
-    filter_state: float | None = None
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-
-        def emit(samples: int) -> None:
-            nonlocal current_sample, filter_state
-            samples = max(0, int(samples))
-            # Keep callback/cancel granularity small enough that changing songs
-            # does not leave the user waiting for one huge chip.generate() call.
-            while samples > 0:
-                if cancel_check is not None:
-                    cancel_check()
-                count = min(samples, sample_rate // 4)
-                pcm = np.asarray(chip.generate(count), dtype=np.int32).reshape(-1)
-                pcm, filter_state = _stream_dosbox_opl_filter_block(
-                    pcm, sample_rate, filter_state, cancel_check=cancel_check
-                )
-                wf.writeframes(pcm.clip(-32768, 32767).astype("<i2").tobytes())
-                current_sample += count
-                samples -= count
-
-        for write in writes:
-            if cancel_check is not None:
-                cancel_check()
-            target_sample = int(round((write.time_ticks * TICK_SECONDS / speed) * sample_rate))
-            emit(target_sample - current_sample)
-            chip.write_address(write.register)
-            chip.write_data(write.value)
-
-        emit(sample_rate)
-    return path
-
-
 def _apply_dosbox_opl_filter(pcm, sample_rate: int, *, cancel_check: Callable[[], None] | None = None):
     """Apply an optional DOSBox-style Sound Blaster OPL low-pass profile."""
     profile = os.environ.get("AE_OPL_FILTER_PROFILE", "off").strip().lower()
@@ -740,6 +672,75 @@ def _apply_dosbox_opl_filter(pcm, sample_rate: int, *, cancel_check: Callable[[]
     return out
 
 
+def synthesize_nuked_opl_wav(
+    data: bytes,
+    exe_path: Path | str,
+    path: Path | str,
+    *,
+    speed: float = DEFAULT_PREVIEW_SPEED,
+    cancel_check: Callable[[], None] | None = None,
+) -> Path:
+    """Render sound-card music through the Nuked-OPL3 emulator (cffi backend).
+
+    Nuked-OPL3 is the cycle-accurate OPL core used by DOSBox-X and VGMPlay, so
+    this reproduces those players sample-for-sample - unlike approximate cores
+    that mis-weight individual FM voices.  Chunked like the streaming path: feed
+    timed register writes to the chip and write each PCM block straight to the
+    WAV file (responsive first playback, cancellable between blocks).
+    """
+    try:
+        import numpy as np  # type: ignore
+        from nuked_opl3 import OPL3, OPL_NATIVE_RATE  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        raise Ym3812Unavailable(
+            "Accurate sound-card rendering requires the nuked_opl3 cffi "
+            "extension. Build it once with `python -m nuked_opl3._ffi_build` "
+            "(needs a C compiler: MSVC Build Tools on Windows)."
+        ) from exc
+
+    path = Path(path)
+    writes = soundcard_music_opl_full_writes(data, exe_path, speed=speed)
+    if not writes:
+        return synthesize_wav(data, path, music=True, audio_kind="soundcard-music", speed=speed, cancel_check=cancel_check)
+
+    speed = max(0.10, min(8.0, float(speed)))
+    chip = OPL3(sample_rate=OPL_NATIVE_RATE)
+    sample_rate = int(chip.sample_rate)
+    current_sample = 0
+    filter_state: float | None = None
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+
+        def emit(samples: int) -> None:
+            nonlocal current_sample, filter_state
+            samples = max(0, int(samples))
+            while samples > 0:
+                if cancel_check is not None:
+                    cancel_check()
+                count = min(samples, sample_rate // 4)
+                pcm = np.frombuffer(chip.generate_mono(count), dtype="<i2").astype(np.int32)
+                pcm, filter_state = _stream_dosbox_opl_filter_block(
+                    pcm, sample_rate, filter_state, cancel_check=cancel_check
+                )
+                wf.writeframes(pcm.clip(-32768, 32767).astype("<i2").tobytes())
+                current_sample += count
+                samples -= count
+
+        for write in writes:
+            if cancel_check is not None:
+                cancel_check()
+            target_sample = int(round((write.time_ticks * TICK_SECONDS / speed) * sample_rate))
+            emit(target_sample - current_sample)
+            chip.write(write.register, write.value)
+
+        emit(sample_rate)
+    return path
+
+
 def synthesize_soundcard_music_wav(
     data: bytes,
     exe_path: Path | str,
@@ -748,15 +749,15 @@ def synthesize_soundcard_music_wav(
     speed: float = DEFAULT_PREVIEW_SPEED,
     cancel_check: Callable[[], None] | None = None,
 ) -> Path:
-    """Render a sound-card music resource to a WAV file via the YM3812 chip.
+    """Render a sound-card music resource to a WAV file.
 
-    There is one correct path: the real ymfm YM3812 emulator (a hard dependency
-    in requirements.txt).  No silent square-wave/Python-FM fallback - if the
-    backend is missing that is a clear, loud error, not a quietly different
-    sound.  This is used by the Export WAV button only; interactive playback
-    uses the realtime callback path in playback.py.
+    There is one correct path: the Nuked-OPL3 cffi backend (the same core
+    DOSBox-X and VGMPlay use).  No silent square-wave/Python-FM fallback - if
+    the backend is missing that is a clear, loud error, not a quietly different
+    sound.  Used by the Export WAV button; interactive playback uses the
+    realtime callback path in playback.py.
     """
-    return synthesize_ym3812_wav(data, exe_path, path, speed=speed, cancel_check=cancel_check)
+    return synthesize_nuked_opl_wav(data, exe_path, path, speed=speed, cancel_check=cancel_check)
 
 
 def _exe_file_offset_for_ds(ds_offset: int) -> int:

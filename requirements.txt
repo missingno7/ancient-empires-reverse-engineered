@@ -1,4 +1,11 @@
 Pillow>=10.0
 numpy>=1.24
-ymfm-py>=0.2
 sounddevice>=0.5
+cffi>=1.15
+
+# Sound-card (OPL) music is rendered through the bundled Nuked-OPL3 cffi
+# backend in ./nuked_opl3 (the same cycle-accurate core DOSBox-X and VGMPlay
+# use).  It is NOT a pip package: build its C extension once with
+#     python -m nuked_opl3._ffi_build
+# which needs a C compiler (Microsoft C++ Build Tools on Windows; gcc/clang
+# elsewhere).  See nuked_opl3/README.md.

@@ -227,3 +227,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Nuked-OPL3 cffi build artifacts (compiled per-machine)
+nuked_opl3/_opl3_cffi*
+nuked_opl3/*.c
+!nuked_opl3/vendor/opl3.c

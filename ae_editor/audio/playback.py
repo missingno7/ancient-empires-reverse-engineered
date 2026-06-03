@@ -113,13 +113,17 @@ class AudioPreviewStartTask:
 
 
 class Ym3812RealtimeSource:
-    """Incremental YM3812 renderer for realtime callback playback."""
+    """Incremental Nuked-OPL3 renderer for realtime callback playback.
+
+    Named for backwards compatibility with existing call sites; the underlying
+    engine is the cycle-accurate Nuked-OPL3 core (cffi), the same one DOSBox-X
+    and VGMPlay use, so the live preview matches those players.
+    """
 
     def __init__(self, data: bytes, exe_path: Path | str, *, speed: float) -> None:
-        import ymfm  # type: ignore
+        from nuked_opl3 import OPL3, OPL_NATIVE_RATE  # type: ignore
 
-        self._chip = ymfm.YM3812(clock=3579545)
-        self._chip.reset()
+        self._chip = OPL3(sample_rate=OPL_NATIVE_RATE)
         self.sample_rate = int(self._chip.sample_rate)
         self._writes = soundcard_music_opl_full_writes(data, exe_path, speed=speed)
         self._speed = max(0.10, min(8.0, float(speed)))
@@ -141,8 +145,7 @@ class Ym3812RealtimeSource:
         while remaining:
             while self._write_index < len(self._writes) and self._write_sample(self._write_index) <= self._sample:
                 write = self._writes[self._write_index]
-                self._chip.write_address(write.register)
-                self._chip.write_data(write.value)
+                self._chip.write(write.register, write.value)
                 self._write_index += 1
             if self._write_index < len(self._writes):
                 count = min(remaining, max(1, self._write_sample(self._write_index) - self._sample))
@@ -151,7 +154,7 @@ class Ym3812RealtimeSource:
                 self._tail_samples -= count
             else:
                 break
-            chunks.append(np.asarray(self._chip.generate(count), dtype=np.int32).reshape(-1))
+            chunks.append(np.frombuffer(self._chip.generate_mono(count), dtype="<i2").astype(np.int32))
             self._sample += count
             remaining -= count
         pcm = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.int32)
@@ -269,8 +272,9 @@ def play_audio_item_realtime(
     both consume the same canonical parser/register-trace code as WAV export, so
     there is no second independent decoder.
 
-    numpy/sounddevice/ymfm are hard dependencies (requirements.txt); a missing
-    one raises loudly rather than silently degrading to a different sound.
+    numpy/sounddevice are hard dependencies (requirements.txt) and sound-card
+    music needs the nuked_opl3 cffi backend built; a missing one raises loudly
+    rather than silently degrading to a different sound.
     Returns False only for items that are not playable (e.g. raw resources).
     """
     if os.environ.get("AE_DISABLE_REALTIME_AUDIO") == "1":
