@@ -6,26 +6,26 @@ below.
 
 ## What This Project Is
 
-This is a Python/Tk research editor for *Super Solvers: Challenge of the Ancient
-Empires*. It loads user-supplied game files, decodes resources, renders rooms,
-edits understood structures and simulates selected runtime behavior. It is not a
-complete game engine or a fully proven level writer.
+This repository contains a shared reverse-engineered implementation, a Python/Tk
+research editor, and a player-facing source-port application for *Super Solvers:
+Challenge of the Ancient Empires*. It is not yet a playable game or a fully
+proven level writer.
 
 ## Highest Value Files
 
-- `ae_editor/project.py`: project loader joining EXE palette data, DAT archives,
+- `ancient_empires/project.py`: project loader joining EXE palette data, DAT archives,
   graphics banks, levels and renderer.
-- `ae_editor/level_format.py`: level, difficulty part and room parsing.
-- `ae_editor/room_payload.py`: room payload tables, controls, actors, compact
+- `ancient_empires/game_data/level_format.py`: level, difficulty part and room parsing.
+- `ancient_empires/game_data/room_payload.py`: room payload tables, controls, actors, compact
   sections and write helpers.
-- `ae_editor/renderer.py`: conservative static room renderer.
-- `ae_editor/simulation.py`: room-local actor/control/green-block runtime model,
+- `ancient_empires/rendering/room_renderer.py`: conservative static room renderer.
+- `ancient_empires/engine/room_simulation.py`: room-local actor/control/green-block runtime model,
   including actor mode activation for sleeping projectile/secondary actors.
-- `ae_editor/gui.py`: Tk tabs, editing surfaces, simulation canvas and property
+- `ae_editor/app/main_window.py` and `ae_editor/ui/`: Tk tabs, editing surfaces, simulation canvas and property
   panels.
-- `ae_editor/actor_dsl.py` and `ae_editor/actor_scripts.py`: actor bytecode
+- `ancient_empires/game_data/actor_dsl.py` and `ancient_empires/game_data/actor_scripts.py`: actor bytecode
   decoding and editable DSL/instruction views.
-- `ae_editor/audio.py`: audio atlas, PC-speaker/Sound Blaster stream parsing,
+- `ancient_empires/audio/`: audio atlas, PC-speaker/Sound Blaster stream parsing,
   WAV preview and MIDI export.
 
 ## Behavioral Invariants To Preserve
@@ -59,7 +59,7 @@ complete game engine or a fully proven level writer.
 Compile after code changes:
 
 ```bash
-python -m compileall ae_editor tools run_editor.py
+python -m compileall ancient_empires ae_editor ae_game tools run_editor.py run_game.py
 ```
 
 Export room previews after parser or renderer changes (reads `game_data/` by

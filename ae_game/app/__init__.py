@@ -1,0 +1,1 @@
+"""Game application entry points."""

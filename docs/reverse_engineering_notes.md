@@ -48,7 +48,7 @@ as several payload objects.
 
 ### Terrain Mapping
 
-The current terrain mapping lives in `ae_editor/tile_mapping.py`. It is a small,
+The current terrain mapping lives in `ancient_empires/rendering/tile_mapping.py`. It is a small,
 confirmed mapping from logical tile codes to sprite indexes in the active theme
 terrain bank. It is intentionally incomplete until the EXE lookup table is
 recovered.

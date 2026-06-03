@@ -1,4 +1,4 @@
-from ae_editor.audio.core import PC_SPEAKER_DIRECT_BASE_DIVISOR, _duration_ticks_from_game_code
+from ancient_empires.audio.core import PC_SPEAKER_DIRECT_BASE_DIVISOR, _duration_ticks_from_game_code
 
 
 def test_direct_pitch_base_matches_exe_ds_17fc_table_head():
@@ -20,8 +20,8 @@ def test_regular_duration_code_still_uses_subdivision_and_dotted_flag():
 def test_caf1_sound_00_duration_matches_capture_note():
     from pathlib import Path
 
-    from ae_editor.audio.core import build_audio_atlas, pc_speaker_preview_duration_seconds
-    from ae_editor.project import AncientEmpiresProject
+    from ancient_empires.audio.core import build_audio_atlas, pc_speaker_preview_duration_seconds
+    from ancient_empires.project import AncientEmpiresProject
 
     root = Path(__file__).resolve().parents[1]
     project = AncientEmpiresProject(

@@ -3,9 +3,9 @@ from threading import Event
 import time
 from unittest.mock import patch
 
-from ae_editor.audio.core import AudioItem
-from ae_editor.audio import playback
-from ae_editor.audio.playback import AudioPreviewResult
+from ancient_empires.audio.core import AudioItem
+from ancient_empires.audio import playback
+from ancient_empires.audio.playback import AudioPreviewResult
 from ae_editor.ui.audio_tab import AudioTabMixin
 
 
@@ -119,7 +119,7 @@ def test_new_preview_and_stop_cancel_obsolete_cache_render():
                 raise
             time.sleep(0.005)
 
-    with patch("ae_editor.audio.playback.temp_preview_wav", side_effect=render):
+    with patch("ancient_empires.audio.playback.temp_preview_wav", side_effect=render):
         playback.render_preview_async(item)
         assert started.wait(1.0)
         playback.render_preview_async(item)
@@ -136,7 +136,7 @@ def test_new_preview_and_stop_cancel_obsolete_cache_render():
 
 def test_async_preview_realtime_start_does_not_cancel_its_own_task():
     item = _Harness().item
-    with patch("ae_editor.audio.playback.play_audio_item_realtime", return_value=True):
+    with patch("ancient_empires.audio.playback.play_audio_item_realtime", return_value=True):
         task = playback.start_audio_preview_async(item, exe_path=Path("game.exe"))
         deadline = time.monotonic() + 1.0
         result = None

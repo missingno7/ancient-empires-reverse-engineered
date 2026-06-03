@@ -1,15 +1,15 @@
-# Ancient Empires Research Editor
+# Ancient Empires Reverse Engineered
 
-A visual level editor, renderer and simulation workbench for *Super Solvers:
+A reverse-engineered source port and visual research editor for *Super Solvers:
 Challenge of the Ancient Empires*.
 
 ![Simulation mode showing a live room preview](docs/assets/editor-simulation.png)
 
-This project is for people who want to inspect, understand and safely experiment
-with the original DOS game's level data. It can decode the game archives, render
-rooms with overlays, edit known room structures, inspect actor bytecode and run a
-room-local Simulation tab where actors, switches, platforms, green blocks and
-room links can be tested before writing anything back.
+The shared `ancient_empires` package decodes the original assets and contains the
+runtime rules recovered so far. `ae_editor` is the Tk research/editor
+application. `ae_game` is the player-facing source-port application; it renders
+the first recovered gameplay screen, while playable gameplay still needs to be
+reconstructed from the disassembly in `Decompile notes/`.
 
 The repository does not ship original game assets. To run the editor, drop your
 own copies into the `game_data/` folder in the repository root:
@@ -31,12 +31,14 @@ folder, or override individual paths (see [Quick Launch](#quick-launch)).
   controls, actors, platforms, room links and green blocks.
 - [Shared Engine Architecture](docs/engine_architecture.md): planned boundary
   between the editor, shared gameplay rules and the future real game.
+- [Gameplay Reverse Engineering](docs/gameplay_reverse_engineering.md): missing
+  systems that must be recovered before the source port is playable.
 - [AI Maintainer Context](docs/ai_context.md): compact technical map for future
   coding agents and maintainers.
 - [Handoff Notes](docs/handoff.md): current state, smoke rooms and good next
   tasks.
 
-## Quick Launch
+## Editor Launch
 
 ```bash
 python -m pip install -r requirements.txt
@@ -61,6 +63,17 @@ The package entry point is also available after installation:
 ae-level-editor              # uses ./game_data
 ae-level-editor path/to/game_files
 ```
+
+## Game Launch
+
+```bash
+python run_game.py
+```
+
+`run_game.py` displays level 1, Explorer, room 0 with the recovered HUD and
+player movement. Use the arrow keys to walk and jump. This is the first
+room-local gameplay slice; ladders, conveyors, hazards, pickups and room
+transitions are still being reconstructed from the original executable.
 
 ## What You Can Do
 
@@ -186,35 +199,26 @@ format notes.
 ## Project Layout
 
 ```text
+ancient_empires/
+  project.py                  shared loaded asset bundle
+  constants.py                shared recovered constants
+  game_data/                  DAT/EXE decoders and editable binary models
+  engine/                     shared deterministic runtime rules
+  rendering/                  shared visual interpretation and room rendering
+  audio/                      shared audio decode, playback and export
+  exporters/                  shared PNG/CSV export helpers
+
 ae_editor/
-  project.py                  loaded game-data bundle (archives, graphics, renderer)
-  constants.py                room/grid dimensions and shared constants
   app/
     cli.py                    command-line entry point and argument parsing
     main_window.py            Tkinter editor window and tab wiring
-  game_data/
-    dat_archive.py            DAT archive reader
-    compression.py            DAT decompression
-    palette.py                AEPROG.EXE VGA palette extraction
-    game_graphics_records.py  type 0x47 image decoder
-    graphics.py               decoded graphics banks
-    level_format.py           level / difficulty / room parser
-    room_payload.py           room payload and actor-table parser
-    level_flip.py             horizontal level mirroring
-    conveyors.py              conveyor-belt sprite composition
-    actor_scripts.py          actor bytecode decoder
-    actor_dsl.py              editable actor-script DSL
-  rendering/
-    coordinates.py            ASM-derived coordinate transforms
-    object_mapping.py         compact3 visual code mapping
-    tile_mapping.py           terrain code mapping
-    room_renderer.py          static room renderer
-    overlay.py                editor overlay model
-  simulation/
-    room_simulation.py        current runtime prototype; migration source for shared engine
   ui/                         Tkinter tabs (editor, simulation, script, audio)
-  audio/                      OPL/MIDI decode and preview playback
-  exporters/                  PNG/CSV export helpers
+
+ae_game/
+  app/cli.py                  player-facing source-port entry point
+
+run_editor.py
+run_game.py
 
 docs/
   assets/            README and documentation screenshots

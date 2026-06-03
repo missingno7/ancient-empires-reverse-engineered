@@ -2,8 +2,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from ae_editor.audio.core import AudioItem
-from ae_editor.audio.playback import temp_preview_wav
+from ancient_empires.audio.core import AudioItem
+from ancient_empires.audio.playback import temp_preview_wav
 
 
 def _item() -> AudioItem:
@@ -28,8 +28,8 @@ def test_temp_preview_wav_reuses_content_addressed_cache():
             return Path(path)
 
         with (
-            patch("ae_editor.audio.playback.tempfile.gettempdir", return_value=temp_dir),
-            patch("ae_editor.audio.playback.synthesize_soundcard_music_wav", side_effect=render) as synth,
+            patch("ancient_empires.audio.playback.tempfile.gettempdir", return_value=temp_dir),
+            patch("ancient_empires.audio.playback.synthesize_soundcard_music_wav", side_effect=render) as synth,
         ):
             first = temp_preview_wav(_item(), speed=1.0, exe_path="missing.exe")
             second = temp_preview_wav(_item(), speed=1.0, exe_path="missing.exe")

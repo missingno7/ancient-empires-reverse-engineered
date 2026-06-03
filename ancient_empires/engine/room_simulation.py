@@ -5,7 +5,15 @@ import random
 
 from ..game_data.actor_dsl import ActorScriptError, branch_target, decode_instruction, opcode_size
 from ..constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS
-from ..engine import control_targets, platform_motion_delta, platform_xy
+from .runtime import (
+    PLATFORM_TRAVEL_DISTANCE,
+    control_targets,
+    platform_motion_delta,
+    platform_xy,
+)
+
+# Platform slide speed in pixels per tick (AEPROG 0x25b3 moves 8 px/step).
+PLATFORM_STEP = 8
 from ..game_data.room_payload import (
     ACTOR_TABLE_OFFSET,
     ACTOR_TABLE_SIZE,
@@ -202,6 +210,11 @@ class RoomSimulation:
         self.reflector_frames: dict[int, int] = {}
         self.reflector_events: dict[int, str] = {}
         self.runtime_tiles_cache: list[int] | None = None
+        self._last_object_code: int | None = None
+        # Per-platform travel progress in pixels (0..PLATFORM_TRAVEL_DISTANCE).
+        # Platforms slide gradually toward/away from their target (8 px/tick,
+        # AEPROG 0x25b3) rather than snapping.
+        self.platform_offsets: dict[int, int] = {}
         self._load_initial_controls()
         self._load_green_blocks()
         self._load_reflectors()
@@ -258,6 +271,17 @@ class RoomSimulation:
         self._invalidate_runtime_tiles()
         return self.control_states[index]
 
+    def set_control(self, index: int, state: bool) -> bool | None:
+        """Force a control to a specific state (used by momentary buttons)."""
+        if index not in self.control_states:
+            return None
+        if self.control_states[index] == state:
+            return state
+        self.control_states[index] = state
+        self._trigger_reflector_targets(index)
+        self._invalidate_runtime_tiles()
+        return state
+
     def _trigger_reflector_targets(self, control_index: int) -> None:
         cmd = next((cmd for cmd in self.controls() if cmd.record.index == control_index), None)
         if cmd is None:
@@ -313,6 +337,58 @@ class RoomSimulation:
         self.player_x = max(0, min(ROOM_COLUMNS * CELL_SIZE - 1, int(x)))
         self.player_y = max(0, min(ROOM_ROWS * CELL_SIZE - 1, int(y)))
 
+    def apply_player_object_interaction(self) -> None:
+        """Walk-onto-control activation, recovered from AEPROG 0x3b05/0x3c50.
+
+        Every frame the player loop probes the object box list at the player's
+        body box via 0x1d89a and, when the probed object *code* changes, acts on
+        it.  Control records sit in that list with code ``index + 8``; stepping
+        onto a button (command 0/1) calls 0x338a, which toggles it.  Activation
+        is debounced on the code change so holding still does not retrigger.
+        Levers (command 2) are excluded from the walk path in the EXE
+        (0x3c67) - they are driven by the actor VM (opcode 0x08) instead.
+        """
+        code = self._object_code_at_player()
+        if code == self._last_object_code:
+            return
+        self._last_object_code = code
+        if code is None or code < 8:
+            return
+        index = code - 8
+        cmd = next((c for c in self.controls() if c.record.index == index), None)
+        if cmd is not None and cmd.command != 2:
+            self.toggle_control(index)
+
+    # Per-command control interaction boxes (left/top offsets and size) as
+    # registered into the object list by the control draw at 0x2f10 via 0xd825,
+    # all in raw-x / full-y space:
+    #   command 0 ceiling button -> (x+6, y+3, 2, 6)   (0x2f98..0x2fb2)
+    #   command 1 floor button   -> (x+3, y,   7, 7)   (0x3001..0x3017)
+    #   command 2 lever          -> (x,   y,  16, 8)   (0x3039..0x304a)
+    #   command 3+ trigger       -> (x,   y,   8, 4)   (0x2f38..0x2f49)
+    _CONTROL_BOX = {
+        0: (6, 3, 2, 6),
+        1: (3, 0, 7, 7),
+        2: (0, 0, 16, 8),
+    }
+
+    def _object_code_at_player(self) -> int | None:
+        # Player probe box in raw-x space (AEPROG 0x3b05: x = X/2+1, y = Y+1,
+        # w = 14, h = 39).  The query is the inclusive AABB test from 0xd89a.
+        qx = self.player_x // 2 + 1
+        qy = self.player_y + 1
+        q_right = qx + 14 - 1
+        q_bottom = qy + 39 - 1
+        for cmd in self.controls():
+            if cmd.command is None or cmd.x_raw is None or cmd.y_raw is None:
+                continue
+            ox, oy, ow, oh = self._CONTROL_BOX.get(cmd.command, (0, 0, 8, 4))
+            left = cmd.x_raw + ox
+            top = cmd.y_raw + oy
+            if q_right >= left and left + ow > qx and q_bottom >= top and top + oh > qy:
+                return cmd.record.index + 8
+        return None
+
     def active_target_indices(self, kind: str) -> set[int]:
         active: dict[int, bool] = {}
         for cmd in self.controls():
@@ -354,10 +430,38 @@ class RoomSimulation:
     def step(self, ticks: int = 1) -> None:
         for _ in range(max(1, ticks)):
             self.tick_count += 1
+            self._advance_platforms()
             self._step_auto_reflectors()
             for actor in list(self.actors.values()):
                 if actor.room_index == self.room_index and actor.active:
                     self._step_actor(actor)
+
+    def _advance_platforms(self) -> None:
+        """Slide each platform toward/away from its target by 8 px (0x25b3)."""
+        active = self.active_target_indices("platform")
+        changed = False
+        for platform in parse_platform_triplets(self.room):
+            if not platform.visible:
+                continue
+            target = PLATFORM_TRAVEL_DISTANCE if platform.index in active else 0
+            current = self.platform_offsets.get(platform.index, 0)
+            if current == target:
+                continue
+            step = PLATFORM_STEP if target > current else -PLATFORM_STEP
+            current = max(0, min(PLATFORM_TRAVEL_DISTANCE, current + step))
+            self.platform_offsets[platform.index] = current
+            changed = True
+        if changed:
+            self._invalidate_runtime_tiles()
+
+    def platform_render_offset(self, platform) -> tuple[int, int]:
+        """Current pixel offset of a platform along its travel vector."""
+        magnitude = self.platform_offsets.get(platform.index, 0)
+        if magnitude <= 0:
+            return (0, 0)
+        dx, dy = platform_motion_delta(platform)
+        scale = magnitude / PLATFORM_TRAVEL_DISTANCE
+        return (round(dx * scale), round(dy * scale))
 
     def _step_auto_reflectors(self) -> None:
         if self.tick_count % REFLECTOR_AUTO_TICKS != 0:
@@ -582,6 +686,10 @@ class RoomSimulation:
             self.runtime_tiles_cache = self._build_runtime_tiles()
         return self.runtime_tiles_cache
 
+    def runtime_tiles(self) -> list[int]:
+        """Return a copy of the current room collision tiles."""
+        return list(self._runtime_tiles())
+
     def _build_runtime_tiles(self) -> list[int]:
         tiles = list(self.room.tiles)
 
@@ -598,15 +706,15 @@ class RoomSimulation:
             for x, y in cells:
                 set_cell(x, y, COLLISION_TILE_CODE)
 
-        active_platforms = self.active_target_indices("platform")
         for platform in parse_platform_triplets(self.room):
             if not platform.visible:
                 continue
-            start_cells = self._platform_footprint_cells(platform, offset=(0, 0))
-            if platform.index not in active_platforms:
-                continue
-            clear_cells(start_cells)
-            write_cells(self._platform_footprint_cells(platform, offset=platform_motion_delta(platform)))
+            offset = self.platform_render_offset(platform)
+            if offset == (0, 0):
+                continue  # at rest: base tiles already hold it
+            # Collision follows the platform's current (gradually moving) cells.
+            clear_cells(self._platform_footprint_cells(platform, offset=(0, 0)))
+            write_cells(self._platform_footprint_cells(platform, offset=offset))
 
         active_conveyors = self.active_target_indices("conveyor")
         if active_conveyors:

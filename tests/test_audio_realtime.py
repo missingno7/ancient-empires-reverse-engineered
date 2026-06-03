@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from ae_editor.audio.playback import PcSpeakerRealtimeSource, play_audio_item_realtime
+from ancient_empires.audio.playback import PcSpeakerRealtimeSource, play_audio_item_realtime
 from tests.test_audio_playback_cache import _item
 
 
@@ -48,7 +48,7 @@ def test_soundcard_music_uses_realtime_when_backend_exists():
     fake_sd = _fake_sounddevice()
     with (
         patch.dict("sys.modules", {"sounddevice": fake_sd}),
-        patch("ae_editor.audio.playback.OplRealtimeSource", return_value=_Source()) as source,
+        patch("ancient_empires.audio.playback.OplRealtimeSource", return_value=_Source()) as source,
     ):
         assert play_audio_item_realtime(item, exe_path="game.exe")
     source.assert_called_once()

@@ -17,10 +17,10 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ae_editor.game_data.dat_archive import DatArchive
-from ae_editor.game_data.level_format import load_levels
-from ae_editor.game_data.room_payload import parse_actor_table
-from ae_editor.game_data.actor_scripts import actor_script_bytes, _command_size
+from ancient_empires.game_data.dat_archive import DatArchive
+from ancient_empires.game_data.level_format import load_levels
+from ancient_empires.game_data.room_payload import parse_actor_table
+from ancient_empires.game_data.actor_scripts import actor_script_bytes, _command_size
 
 
 def scan_hardcoded_calls(asm_path: Path) -> list[dict[str, str]]:

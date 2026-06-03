@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from ae_editor.game_data.dat_archive import DatArchive
-from ae_editor.game_data.level_format import Level, load_levels
-from ae_editor.game_data.level_flip import flip_level_horizontally
+from ancient_empires.game_data.dat_archive import DatArchive
+from ancient_empires.game_data.level_format import Level, load_levels
+from ancient_empires.game_data.level_flip import flip_level_horizontally
 
 _AE001 = Path(__file__).resolve().parents[1] / "game_data" / "AE001.DAT"
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ae_editor.audio.core import (
+from ancient_empires.audio.core import (
     _hz_to_fractional_midi,
     _opl_carrier_tl_to_velocity,
     _opl_fnum_block_to_hz,
@@ -14,7 +14,7 @@ from ae_editor.audio.core import (
     build_audio_atlas,
     write_opl_trace_midi,
 )
-from ae_editor.project import AncientEmpiresProject
+from ancient_empires.project import AncientEmpiresProject
 
 EXE = Path("game_data/AEPROG.EXE")
 DATS = [Path("game_data/AE000.DAT"), Path("game_data/AE001.DAT")]

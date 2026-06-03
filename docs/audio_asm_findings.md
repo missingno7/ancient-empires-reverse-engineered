@@ -389,7 +389,7 @@ threshold. Keeping the short off interval in the AdLib register trace therefore
 matches the DOS driver rather than truncating FM notes accidentally.
 
 This pipeline is already implemented and ASM-verified in
-`ae_editor/audio/core.py` (`load_opl_instrument_table`,
+`ancient_empires/audio/core.py` (`load_opl_instrument_table`,
 `parse_opl_instrument_patch`, `soundcard_music_opl_full_writes`,
 `write_opl_vgm`): the `0x301A` table, the 28-word / two-13-word-operator patch
 layout, and the `0x3F - level*9` carrier override all match this trace.

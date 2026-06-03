@@ -9,13 +9,13 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageDraw, ImageTk
 
-from ..constants import ACTOR_TICK_HZ, CELL_SIZE, DEFAULT_SIMULATION_TICK_HZ, ROOM_COUNT, ROOM_COLUMNS, ROOM_ROWS
-from ..exporters import export_bank_sheets, export_probe_csv, export_room_previews
-from ..engine import control_targets, decode_control_target, platform_motion_delta, platform_xy
-from ..rendering.overlay import build_room_overlay
-from ..rendering.coordinates import control_xy, actor_xy, object_entry_xy, object_screen_xy
-from ..game_data.actor_scripts import decode_actor_script
-from ..game_data.actor_dsl import (
+from ancient_empires.constants import ACTOR_TICK_HZ, CELL_SIZE, DEFAULT_SIMULATION_TICK_HZ, ROOM_COUNT, ROOM_COLUMNS, ROOM_ROWS
+from ancient_empires.exporters import export_bank_sheets, export_probe_csv, export_room_previews
+from ancient_empires.engine import control_targets, decode_control_target, platform_motion_delta, platform_xy
+from ancient_empires.rendering.overlay import build_room_overlay
+from ancient_empires.rendering.coordinates import control_xy, actor_xy, object_entry_xy, object_screen_xy
+from ancient_empires.game_data.actor_scripts import decode_actor_script
+from ancient_empires.game_data.actor_dsl import (
     ActorScriptError,
     Instruction,
     OPCODE_NAMES,
@@ -26,14 +26,14 @@ from ..game_data.actor_dsl import (
     parse_actor_ref,
     parse_int,
 )
-from ..game_data.conveyors import ConveyorSpec, compose_conveyor, iter_conveyor_runs
-from ..project import AncientEmpiresProject
-from ..rendering.room_renderer import RenderOptions
-from ..rendering.object_mapping import visual_sprite_ref
-from ..simulation import RoomSimulation
-from ..rendering.tile_mapping import AUTO_SOLID_TILE_CODES, CONVEYOR_PHYSICS_TILE_CODES, ROPE_TILE_CODES
-from ..audio import AudioItem, DEFAULT_PREVIEW_SPEED, GM_PROGRAM_NAMES, build_audio_atlas, describe_music_channels, pc_speaker_preview_duration_seconds, play_audio_file, render_preview_async, start_audio_preview_async, stop_audio_playback, synthesize_soundcard_music_wav, synthesize_wav, temp_preview_wav, write_midi, write_opl_vgm
-from ..game_data.room_payload import (
+from ancient_empires.game_data.conveyors import ConveyorSpec, compose_conveyor, iter_conveyor_runs
+from ancient_empires.project import AncientEmpiresProject
+from ancient_empires.rendering.room_renderer import RenderOptions
+from ancient_empires.rendering.object_mapping import visual_sprite_ref
+from ancient_empires.engine import RoomSimulation
+from ancient_empires.rendering.tile_mapping import AUTO_SOLID_TILE_CODES, CONVEYOR_PHYSICS_TILE_CODES, ROPE_TILE_CODES
+from ancient_empires.audio import AudioItem, DEFAULT_PREVIEW_SPEED, GM_PROGRAM_NAMES, build_audio_atlas, describe_music_channels, pc_speaker_preview_duration_seconds, play_audio_file, render_preview_async, start_audio_preview_async, stop_audio_playback, synthesize_soundcard_music_wav, synthesize_wav, temp_preview_wav, write_midi, write_opl_vgm
+from ancient_empires.game_data.room_payload import (
     actor_script_space,
     actor_script_space_reachable_addresses,
     actor_records_for_room,

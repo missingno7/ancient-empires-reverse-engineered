@@ -1,58 +1,37 @@
 # Shared engine architecture
 
-The next stage is a real playable game alongside the research editor. The editor
-and game should share recovered gameplay rules, but they should not share UI
-code or depend on each other's application lifecycle.
-
-## Target packages
-
-```text
-ae_editor/
-  game_data/     Binary archive, resource and level decoding/editing.
-  engine/        Shared deterministic runtime state and gameplay rules.
-  rendering/     Shared visual interpretation and room rendering helpers.
-  audio/         Shared audio resource decoding and playback/export services.
-  ui/            Tkinter editor tabs and widgets.
-  app/           Editor process startup and window wiring.
-
-ae_game/         Future playable game application, input loop and presentation.
-```
-
-The package name `ae_editor` can remain during the migration. The important
-boundary is that `engine/` does not import from `ui/`, `app/`, or Tkinter. A
-later package rename can be mechanical once the shared API is stable.
+`ancient_empires` is the shared reverse-engineered implementation. `ae_editor`
+and `ae_game` are separate applications that consume it.
 
 ## Ownership rules
 
-- `game_data/` owns bytes: archive access, decompression, parsed records and
-  guarded write-back helpers.
-- `engine/` owns time and rules: world state, room transitions, collision,
-  actors, controls, platforms, puzzle state and emitted gameplay events.
-- `rendering/` owns visual interpretation. It may read engine snapshots, but it
-  must not advance gameplay state.
-- `audio/` owns audio decoding and playback services. Engine code emits sound
-  events such as a sound id; it does not open devices or create Tk workers.
-- `ui/` and `app/` own editor interaction, selection, dialogs, background work
-  and presentation-specific state.
-- `ae_game/` will own real-time input, the main loop, camera/presentation and
-  player-facing menus.
+- `game_data/` owns original bytes: archives, decompression, executable tables,
+  parsed records and guarded write-back.
+- `engine/` owns deterministic gameplay state and rules: player state, actors,
+  controls, platforms, collision, puzzles, room transitions and gameplay events.
+- `rendering/` owns visual interpretation. It may read engine snapshots but must
+  not advance gameplay state.
+- `audio/` owns audio resource decoding and playback/export services. Engine code
+  emits sound events; it does not open devices or create UI workers.
+- `ae_editor/` owns Tkinter interaction, diagnostics, editing and editor state.
+- `ae_game/` owns player input, the real-time loop, camera/presentation and menus.
 
-## Migration path
+The shared package must not import either application package.
 
-1. Treat `ae_editor/simulation/room_simulation.py` as the main migration source,
-   not as an editor feature to extend indefinitely.
-2. Define small input and output contracts around it: immutable room/level
-   inputs, explicit tick/input commands, snapshots, and gameplay events.
-3. Move deterministic rules into `ae_editor/engine/` in tested slices. Keep the
-   Simulation tab as the first consumer of each extracted slice.
-4. Add the future game as a second consumer only after the shared rule has
-   fixtures or regression tests.
-5. Keep research-only diagnostics available through snapshots and events rather
-   than exposing editor widgets or callbacks inside the engine.
+## Current state
 
-## Engine API shape
+`engine/runtime.py` contains small shared rules. `engine/room_simulation.py`
+contains the recovered room-local actor/control/puzzle behavior used by the
+editor Simulation tab. It is not yet a complete game engine.
 
-The exact API should follow recovered behavior, but a useful direction is:
+The player-facing game renders the first level screen through shared
+`rendering/game_screen.py` and drives the room-local player slice in
+`engine/player.py`. Room transitions and the remaining gameplay systems are
+still being reconstructed from `Decompile notes/AEPROG_full_disasm.asm`.
+
+## Engine API direction
+
+The final API should be deterministic for a given initial state and input stream:
 
 ```python
 engine = GameEngine(level, difficulty=0)
@@ -61,16 +40,15 @@ events = engine.tick()
 snapshot = engine.snapshot()
 ```
 
-`tick()` should be deterministic for a given initial state and command stream.
-Events can report sounds, room changes, puzzle changes and other side effects.
-The editor may inspect every detail; the game may present only what players
-need.
+Events should report sounds, room changes, puzzle changes and other side
+effects. The editor may inspect every detail; the game may present only what
+players need.
 
-## Avoid during cleanup
+## Constraints
 
-- Do not move parsers into the engine merely because gameplay uses them.
-- Do not let the engine call Tkinter, `sounddevice`, file dialogs or subprocess
-  playback.
-- Do not create separate editor and game implementations of the same rule.
-- Do not hide uncertain reverse-engineered behavior behind a confident gameplay
-  abstraction; preserve raw values and diagnostics until the rule is proven.
+- Do not put Tkinter, dialogs, `sounddevice`, subprocess playback or application
+  lifecycle code in `ancient_empires.engine`.
+- Do not duplicate gameplay rules in editor and game code.
+- Do not invent behavior to make `run_game.py` appear playable.
+- Keep uncertain reverse-engineered values visible until their semantics are
+  supported by executable evidence or repeatable observations.

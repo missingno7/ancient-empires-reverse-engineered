@@ -1,4 +1,4 @@
-from ae_editor.game_data.level_flip import (
+from ancient_empires.game_data.level_flip import (
     _mirror_visual_code,
     _rewrite_script_instruction,
     _toggle_packed_frame_variant,

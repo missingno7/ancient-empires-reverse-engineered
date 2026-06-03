@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from ae_editor.game_data.dat_archive import DatArchive
+from ancient_empires.game_data.dat_archive import DatArchive
 
 
 def main() -> None:

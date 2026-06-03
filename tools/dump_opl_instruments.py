@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ae_editor.audio import load_opl_instrument_table, describe_opl_patch
+from ancient_empires.audio import load_opl_instrument_table, describe_opl_patch
 
 
 def main() -> None:

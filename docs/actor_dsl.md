@@ -1,6 +1,6 @@
 # Actor DSL / actor VM round-trip format
 
-`ae_editor.game_data.actor_dsl` is a lossless assembler/disassembler for the Ancient Empires actor VM.
+`ancient_empires.game_data.actor_dsl` is a lossless assembler/disassembler for the Ancient Empires actor VM.
 
 It is intentionally close to the original bytecode.  Human summaries such as “walk left 148 px” are useful UI hints, but this DSL is the source-of-truth format for writing actor script bytes back.
 
@@ -15,7 +15,7 @@ used by sleeping secondary actors and projectiles; stock scripts wake them with
 For a known contiguous script region:
 
 ```python
-from ae_editor.game_data.actor_dsl import decode_script_region, parse_dsl
+from ancient_empires.game_data.actor_dsl import decode_script_region, parse_dsl
 
 script = decode_script_region(raw_region)
 dsl = script.to_dsl()
@@ -25,7 +25,7 @@ assert parse_dsl(dsl).to_bytes() == raw_region
 For an actor table record:
 
 ```python
-from ae_editor.game_data.actor_dsl import ActorRecordIR, parse_actor_record_dsl
+from ancient_empires.game_data.actor_dsl import ActorRecordIR, parse_actor_record_dsl
 
 ir = ActorRecordIR.from_record(actor_record)
 dsl = ir.to_dsl(actor_record.confirmed_name)

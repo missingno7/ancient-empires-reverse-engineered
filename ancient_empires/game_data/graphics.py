@@ -118,6 +118,17 @@ class GraphicsSet:
             return bank[sprite_index]
         return None
 
+    def room_backdrop(self, region: int) -> Image.Image | None:
+        """Return the full play-field backdrop image (AEPROG 0x2bc0).
+
+        The room draw blits resource ``0x101e + region`` (AE001 resource
+        ``30 + region``) at the view origin before terrain and objects.  Its
+        palette index 1 areas are transparent and show the blue clear colour;
+        opaque black pixels form the borders.
+        """
+        bank = self.banks.get(f"AE001:{30 + region:03d}", [])
+        return bank[0] if bank else None
+
     def terrain_background(self, theme: int) -> Image.Image | None:
         bank = self.terrain_banks[theme % len(self.terrain_banks)] if self.terrain_banks else []
         # Empirically: the large background/wall image sits at index 11 in the

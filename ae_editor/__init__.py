@@ -1,1 +1,1 @@
-"""Ancient Empires reverse-engineering level editor package."""
+"""Tkinter research editor application for Ancient Empires."""

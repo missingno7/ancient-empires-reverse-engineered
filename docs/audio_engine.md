@@ -211,7 +211,7 @@ so CAF1 sound events do not synthesize WAV files inside the simulation tick.
 
 PC speaker SFX are capture-accurate enough for editor playback.
 
-The OPL path is decoded, not guessed: `ae_editor/audio/core.py` extracts the
+The OPL path is decoded, not guessed: `ancient_empires/audio/core.py` extracts the
 `ds:0x301A` patch table (`load_opl_instrument_table`, file offset
 `0x200 + 0x0FA30 + 0x301A = 0x12C4A`), parses each 56-byte patch as two 13-word
 operator blocks plus two waveform words (`parse_opl_instrument_patch`), applies

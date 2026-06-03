@@ -8,10 +8,10 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ae_editor.game_data.actor_dsl import ActorRecordIR, decode_entry_until_stop, parse_dsl, ActorScriptError
-from ae_editor.game_data.actor_scripts import actor_script_bytes
-from ae_editor.project import AncientEmpiresProject
-from ae_editor.game_data.room_payload import actor_records_for_room, parse_actor_table
+from ancient_empires.game_data.actor_dsl import ActorRecordIR, decode_entry_until_stop, parse_dsl, ActorScriptError
+from ancient_empires.game_data.actor_scripts import actor_script_bytes
+from ancient_empires.project import AncientEmpiresProject
+from ancient_empires.game_data.room_payload import actor_records_for_room, parse_actor_table
 
 
 def main() -> None:

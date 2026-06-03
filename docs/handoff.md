@@ -2,11 +2,10 @@
 
 ## Current State
 
-The project is now a focused research editor rather than a pile of rendering
-experiments. It can load the game files, decode graphics banks, parse the 20
-level resources, render recognizable static rooms, show native overlay labels
-for understood gameplay objects, and run a room-local Simulation tab for actor,
-control and puzzle behavior.
+The project now has a shared `ancient_empires` package, a focused research
+editor, and a player-facing game application. It can load the game files, decode
+graphics banks, parse the 20 level resources, render rooms, show overlays and
+run a room-local Simulation tab for actor, control and puzzle behavior.
 
 The editor is not yet a safe full level writer. Treat rendering and overlays as
 the canonical read path. The Editor tab now writes terrain, known header object
@@ -17,22 +16,26 @@ are stored back into `AE001.DAT` as plain uncompressed resources.
 
 ## Start Here
 
-- `ae_editor/game_data/level_format.py` parses levels, difficulty parts and room records.
-- `ae_editor/game_data/room_payload.py` parses platform triplets, controls, compact3
+- `ancient_empires/game_data/level_format.py` parses levels, difficulty parts and room records.
+- `ancient_empires/game_data/room_payload.py` parses platform triplets, controls, compact3
   tables, actor records, room links, header pickups, exit door and player start
   data.
-- `ae_editor/rendering/room_renderer.py` is the static room renderer.
-- `ae_editor/simulation/room_simulation.py` is the in-memory simulation runtime for actor VM
+- `ancient_empires/rendering/room_renderer.py` is the static room renderer.
+- `ancient_empires/engine/room_simulation.py` is the in-memory simulation runtime for actor VM
   stepping, actor mode activation, controls, green blocks and runtime
   collision.
-- `ae_editor/rendering/overlay.py` builds editor overlay geometry and relationship lines.
+- `ancient_empires/engine/player.py` contains the recovered room-local player
+  walking, gravity, normal jump and animation slice used by `run_game.py`.
+- `ancient_empires/rendering/overlay.py` builds editor overlay geometry and relationship lines.
 - `ae_editor/app/main_window.py` and `ae_editor/ui/` wire the Tk UI, tabs, object atlas and overlay presets.
   The `Editor` tab is the active editing surface; `Simulation` is the active
   runtime preview; the level viewer stays mostly read-only/diagnostic.
-- `ae_editor/audio/` handles the Audio atlas, synchronized music parsing,
+- `ancient_empires/audio/` handles the Audio atlas, synchronized music parsing,
   PC-speaker SFX previews and MIDI/WAV export.
 - `docs/engine_architecture.md` defines the planned shared engine boundary for
   the editor Simulation tab and the future real game.
+- `docs/gameplay_reverse_engineering.md` records the player loop findings and
+  lists the remaining systems to recover from the disassembly.
 - `docs/level_format.md` is the canonical current format note.
 - `docs/simulation_mode.md` describes the runtime preview model and known gaps.
 - `docs/quick_start.md` and `docs/screenshots.md` are the human-facing entry
@@ -45,7 +48,7 @@ are stored back into `AE001.DAT` as plain uncompressed resources.
 Compile all Python modules:
 
 ```bash
-python -m compileall ae_editor tools run_editor.py
+python -m compileall ancient_empires ae_editor ae_game tools run_editor.py run_game.py
 ```
 
 Export previews after parser or renderer changes (reads `game_data/` by default):
@@ -106,8 +109,8 @@ python tools/capture_docs_screenshots.py --exe game_data/AEPROG.EXE --dat game_d
 
 ## Good Next Tasks
 
-- Extract runtime state and gameplay rules from `ae_editor/simulation/` into the
-  shared engine boundary described in `docs/engine_architecture.md`.
+- Continue recovering player gameplay and the main game loop into
+  `ancient_empires/engine/`, following `docs/gameplay_reverse_engineering.md`.
 - Add binary fixture tests around parser invariants.
 - Add behavioral fixtures for Simulation: control XOR, platform `0x07`
   footprint movement, green-block sequence progress/reset/toggle, and

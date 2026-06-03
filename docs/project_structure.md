@@ -1,89 +1,62 @@
 # Project structure
 
-The project is split into small packages with one-way dependencies.
+The repository contains one shared reverse-engineered implementation and two
+applications.
 
 ```text
+ancient_empires/
+  game_data/    DAT/EXE decoding, parsed binary models and guarded write-back.
+  engine/       Shared deterministic gameplay rules and runtime state.
+  rendering/    Shared visual interpretation, overlays and room rendering.
+  audio/        Shared audio decoding, playback and export.
+  exporters/    Shared PNG/CSV export helpers.
+  constants.py  Shared recovered constants.
+  project.py    Loaded original asset bundle.
+
 ae_editor/
-  app/          CLI entry point and Tk main window shell.
-  game_data/    Low-level decoders/parsers for original game data.
-  engine/       Shared deterministic gameplay runtime.
-  rendering/    Room rendering, visual mapping, overlays, coordinates.
-  audio/        Audio atlas, PC speaker / sound-card decode, MIDI/WAV export.
-  simulation/   Runtime-oriented room simulation helpers.
-  ui/           Tkinter tabs, widgets, palette panels, and editor actions.
-  exporters/    CLI/export helpers for previews, CSV probes, bank sheets.
+  app/          Editor command line and Tk window wiring.
+  ui/           Tkinter editor tabs, widgets and interaction state.
+
+ae_game/
+  app/          Player-facing source-port application.
+
+run_editor.py
+run_game.py
 ```
 
-Recommended dependency direction:
+Dependency direction:
 
 ```text
-game_data
-   ↓
-engine / rendering / audio
-   ↓
-editor UI / future game UI
-   ↓
-app
+ancient_empires.game_data
+          ↓
+ancient_empires.engine / rendering / audio
+          ↓
+ae_editor / ae_game / tools
 ```
 
-Runtime extraction has started in `engine/`; `simulation/` remains the largest
-migration source. See [Engine architecture](engine_architecture.md).
+`ae_editor` and `ae_game` must not be imported by `ancient_empires`.
 
+## Shared package
 
-## app
+- `game_data/level_format.py` — level, difficulty part and room binary format.
+- `game_data/room_payload.py` — room payload, control, platform and actor records.
+- `game_data/actor_dsl.py` — lossless actor VM DSL and assembler-like IR.
+- `game_data/actor_scripts.py` — actor bytecode disassembly and path summaries.
+- `engine/runtime.py` — shared control-target and platform movement rules.
+- `engine/room_simulation.py` — recovered room-local actor/control/puzzle runtime.
+- `engine/player.py` — recovered room-local player walking, gravity and jump.
+- `rendering/room_renderer.py` — static room rendering from decoded assets.
+- `rendering/overlay.py` — diagnostic overlay geometry.
+- `audio/core.py` — audio atlas, stream parsing and MIDI/WAV/VGM export.
+- `audio/playback.py` — realtime playback and preview lifecycle.
+- `project.py` — archive, executable asset, graphics, level and renderer bundle.
 
-- `app/cli.py` — command line parsing and startup.
-- `app/main_window.py` — `LevelEditorApp`, the small Tk shell that combines UI mixins.
+## Applications
 
-## game_data
+- `ae_editor/app/cli.py` — editor startup and export commands.
+- `ae_editor/app/main_window.py` — Tk editor window.
+- `ae_editor/ui/` — editor-only interaction and presentation.
+- `ae_game/app/cli.py` — game startup and first room-local gameplay slice.
 
-- `dat_archive.py` — DAT archive offsets and resource access.
-- `compression.py` — original resource compression helpers.
-- `graphics.py` — graphics resource decoding and `GraphicsSet`.
-- `palette.py` — EGA/VGA palette helpers.
-- `game_graphics_records.py` — game graphics bitmap records marked by byte `0x47`.
-- `level_format.py` — level/part/room binary format.
-- `room_payload.py` — room payload tables, object/control/platform records.
-- `actor_dsl.py` — lossless actor VM DSL / assembler-like IR.
-- `actor_scripts.py` — actor bytecode disassembly and path summaries.
-- `conveyors.py` — conveyor record decoding/composition.
-
-## rendering
-
-- `room_renderer.py` — final room rendering from decoded game data.
-- `overlay.py` — diagnostic/editor overlays.
-- `coordinates.py` — runtime/editor coordinate conversions.
-- `object_mapping.py` — visual object-to-sprite mapping.
-- `tile_mapping.py` — terrain and collision tile mappings.
-
-## audio
-
-- `core.py` — audio atlas, stream parsing, MIDI/WAV/VGM export.
-- `playback.py` — realtime PC-speaker/Nuked-OPL3 callback playback, shared
-  preview workers, cached WAV generation and subprocess playback lifecycle.
-- `gm.py` — General MIDI names/default mapping.
-
-## engine
-
-- `runtime.py` — shared control-target decoding and platform movement rules.
-
-## simulation
-
-- `room_simulation.py` — room simulation and actor/control stepping helpers.
-
-## ui
-
-- `ui/audio_tab.py` — Audio Atlas controls, preview, WAV/RAW/MIDI export.
-- `ui/simulation_tab.py` — simulation tab, runtime stepping, actor/control debugging.
-- `ui/actor_scripting_tab.py` — actor script viewer/editor and DSL preview.
-- `ui/editor_tab.py` — main editor tab construction and shared editor state helpers.
-- `ui/editor_tools.py` — editing tools, parsing, footprint rewriting, property panel logic.
-- `ui/editor_canvas.py` — room canvas drawing, handles, painting, placement, movement, deletion.
-- `ui/palettes.py` — tile/object/decor/actor palettes and graphics bank preview.
-- `ui/navigation.py` — level/room/part switching and redraw orchestration.
-- `ui/file_actions.py` — save/export/close actions.
-- `ui/common.py` — shared imports, small UI dataclasses, constants, and palette specs.
-
-## exporters
-
-- `exporters/core.py` — room preview, bank sheet, and probe CSV exports.
+See [Shared engine architecture](engine_architecture.md) and
+[Gameplay reverse engineering](gameplay_reverse_engineering.md).

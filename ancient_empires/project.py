@@ -10,7 +10,7 @@ from .rendering.room_renderer import RoomRenderer
 
 
 class AncientEmpiresProject:
-    """Loaded game data bundle used by GUI and CLI."""
+    """Loaded original asset bundle shared by editor, tools, and game."""
 
     def __init__(self, exe: Path | str, dat_paths: list[Path | str]):
         self.exe = Path(exe)

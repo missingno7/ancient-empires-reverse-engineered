@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from ae_editor.audio.core import (
+from ancient_empires.audio.core import (
     _opl_note_index_register_writes,
     _soundcard_freq_to_note_index,
     _stream_dosbox_opl_filter_block,
@@ -26,14 +26,14 @@ def test_soundcard_wav_uses_chip_emulator_only_with_no_fallback():
     # One correct path: the Nuked-OPL3 cffi chip renderer.  There is no
     # Python-FM or square-wave fallback - a missing backend is a loud, explicit
     # error, not a quietly different sound.
-    from ae_editor.audio.core import OplBackendUnavailable
+    from ancient_empires.audio.core import OplBackendUnavailable
 
     expected = Path("chip.wav")
-    with patch("ae_editor.audio.core.synthesize_nuked_opl_wav", return_value=expected) as chip:
+    with patch("ancient_empires.audio.core.synthesize_nuked_opl_wav", return_value=expected) as chip:
         assert synthesize_soundcard_music_wav(b"x", "game.exe", "out.wav") == expected
         chip.assert_called_once()
 
-    with patch("ae_editor.audio.core.synthesize_nuked_opl_wav", side_effect=OplBackendUnavailable("no backend")):
+    with patch("ancient_empires.audio.core.synthesize_nuked_opl_wav", side_effect=OplBackendUnavailable("no backend")):
         try:
             synthesize_soundcard_music_wav(b"x", "game.exe", "out.wav")
             assert False, "expected OplBackendUnavailable to propagate (no fallback)"

@@ -148,7 +148,10 @@ class RenderOptions:
     draw_puzzle_panels: bool = True
     draw_actors: bool = True
     draw_player_start: bool = True
+    draw_background: bool = True
     control_state_overrides: dict[int, bool] | None = None
+    platform_offsets: dict[int, tuple[int, int]] | None = None
+    show_invisible: bool = False
     display_mode: str = "vga"  # vga, ega, cga
 
 
@@ -212,7 +215,8 @@ class RoomRenderer:
             #   control buttons/switches/triggers (0x2f10)
             #   puzzle symbols (0x3085), green blocks (0x3132)
             #   actors last, drawn each frame on top (0x4ef8, base 0xb8)
-            self._draw_background(image, part.theme)
+            if options.draw_background:
+                self._draw_background(image, part.theme)
             if options.mode == "game":
                 self._draw_animated_decor(image, room, part.theme)
                 self._draw_visual_objects(image, room, layer="background")
@@ -223,7 +227,9 @@ class RoomRenderer:
                 self._draw_conveyor_tiles(image, room)
                 self._draw_laser_crystals(image, room)
                 if options.draw_platforms:
-                    self._draw_platforms(image, room)
+                    self._draw_platforms(image, room, offsets=options.platform_offsets)
+                if options.show_invisible:
+                    self._draw_invisible_blocks(image, room)
                 self._draw_header_objects(image, room, part.header)
                 self._draw_exit_door(image, room, part.header, part.theme)
                 self._draw_apple_pickup(image, part, room)
@@ -319,17 +325,35 @@ class RoomRenderer:
                 # object anchor.
                 self._blit(image, strip, *object_screen_xy(cv.x_raw, cv.y))
 
-    def _draw_platforms(self, image: Image.Image, room: Room) -> None:
+    def _draw_platforms(self, image: Image.Image, room: Room, *, offsets: dict[int, tuple[int, int]] | None = None) -> None:
         horizontal = self.graphics.sprite("AE000", 47, 0)
         vertical = self.graphics.sprite("AE000", 48, 0)
         for triplet in parse_platform_triplets(room):
             if not triplet.visible:
                 continue
             x, y = platform_xy(triplet)
+            # Draw the platform at its current (gradually travelled) offset, in
+            # lockstep with the runtime collision shift in RoomSimulation.
+            if offsets is not None:
+                dx, dy = offsets.get(triplet.index, (0, 0))
+                x += dx
+                y += dy
             if triplet.orientation == "vertical" and vertical is not None:
                 self._blit(image, vertical, x, y)
             elif triplet.orientation == "horizontal" and horizontal is not None:
                 self._blit(image, horizontal, x, y)
+
+    def _draw_invisible_blocks(self, image: Image.Image, room: Room) -> None:
+        """Debug overlay: outline invisible solid clusters (developer menu)."""
+        from .overlay import _invisible_clusters
+
+        draw = ImageDraw.Draw(image, "RGBA")
+        for x_px, y_px, w_px, h_px in _invisible_clusters(room):
+            draw.rectangle(
+                [x_px, y_px, x_px + w_px - 1, y_px + h_px - 1],
+                outline=(255, 0, 255, 200),
+                fill=(255, 0, 255, 60),
+            )
 
     def _draw_control_records(
         self,
@@ -544,10 +568,18 @@ class RoomRenderer:
             self._blit(image, sprite, x, y)
 
     def _sprite_for_actor_record(self, actor: ActorTableRecord) -> Image.Image | None:
+        return self.actor_sprite(actor.frame, actor.frame_variant)
+
+    def actor_sprite(self, frame: int, frame_variant: int) -> Image.Image | None:
+        """Resolve an actor sprite for a (frame, frame_variant) pair.
+
+        Shared by the static record draw and the live simulation draw so both
+        paths key off the same AE000 frame runs and horizontal-flip bit.
+        """
         for frame_start, count, resource_id in self.ACTOR_FRAME_RUNS:
-            if frame_start <= actor.frame < frame_start + count:
-                sprite = self.graphics.sprite("AE000", resource_id, actor.frame - frame_start)
-                if sprite is not None and (actor.frame_variant & 0x01):
+            if frame_start <= frame < frame_start + count:
+                sprite = self.graphics.sprite("AE000", resource_id, frame - frame_start)
+                if sprite is not None and (frame_variant & 0x01):
                     sprite = sprite.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
                 return sprite
         return None

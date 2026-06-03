@@ -1,9 +1,13 @@
 [project]
-name = "ancient-empires-level-editor"
+name = "ancient-empires-reverse-engineered"
 version = "0.1.0"
-description = "Research level viewer/editor for Super Solvers: Challenge of the Ancient Empires"
+description = "Reverse-engineered source port and research editor for Super Solvers: Challenge of the Ancient Empires"
 requires-python = ">=3.10"
 dependencies = ["Pillow>=10.0", "numpy>=1.24", "sounddevice>=0.5", "cffi>=1.15"]
 
 [project.scripts]
 ae-level-editor = "ae_editor.app.cli:main"
+ancient-empires = "ae_game.app.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ancient_empires*", "ae_editor*", "ae_game*", "nuked_opl3*"]

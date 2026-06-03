@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from ae_editor.audio.core import AudioItem
+from ancient_empires.audio.core import AudioItem
 from ae_editor.ui.simulation_tab import SimulationTabMixin
 
 

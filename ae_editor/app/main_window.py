@@ -25,8 +25,8 @@ from ..ui.file_actions import FileActionsMixin
 from ..ui.navigation import NavigationMixin
 from ..ui.palettes import PaletteMixin
 from ..ui.simulation_tab import SimulationTabMixin
-from ..game_data.level_flip import flip_level_horizontally
-from ..game_data.level_format import Level
+from ancient_empires.game_data.level_flip import flip_level_horizontally
+from ancient_empires.game_data.level_format import Level
 
 
 class LevelEditorApp(
