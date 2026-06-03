@@ -8,8 +8,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ae_editor.project import AncientEmpiresProject
+from ae_editor.engine import control_targets
 from ae_editor.game_data.room_payload import control_commands, header_exit_door, parse_exe_payload_directory, parse_platform_triplets, visual_compact3_table, laser_crystal_table
-from ae_editor.rendering.overlay import control_ref_values
 
 
 def main() -> None:
@@ -52,7 +52,7 @@ def main() -> None:
         print("  decoded control command bodies:")
         for cmd in control_commands(room):
             state = cmd.body[3] if len(cmd.body) >= 4 else None
-            targets = control_ref_values(cmd)
+            targets = [target.raw for target in control_targets(cmd)]
             print(f"    {cmd.label} type={cmd.command} x={cmd.x_raw} y={cmd.y_raw} state={state} targets={targets} raw_tail={cmd.body[4:].hex(' ') if len(cmd.body) >= 5 else ''}")
         if d.sections:
             print("  EXE sections after control records:")

@@ -4,27 +4,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import math
 import os
-import platform
-import shutil
 import struct
-import tempfile
 import wave
 from typing import Callable
 
 from ..constants import GAME_MASTER_TICK_HZ
-from .gm import GM_PROGRAM_NAMES
 
 SAMPLE_RATE = 44100
 PIT_HZ = 1193180.0
 
 
-class Ym3812Unavailable(RuntimeError):
-    """Raised when the OPL (Nuked-OPL3 cffi) sound-card backend is unavailable.
-
-    Distinct from PreviewCancelled (also a RuntimeError) so that cancelling a
-    render is never mistaken for a missing-backend fallback.  (Name kept for
-    backwards compatibility with existing call sites and tests.)
-    """
+class OplBackendUnavailable(RuntimeError):
+    """Raised when the Nuked-OPL3 cffi sound-card backend is unavailable."""
 
 # PC speaker / CAF1 SFX facts that are now considered stable:
 #
@@ -335,9 +326,6 @@ OPL_VOICE_OPERATOR_SLOTS = (
     (0x10, 0x13), (0x11, 0x14), (0x12, 0x15),
 )
 
-OPL_MULTIPLIER_TABLE = (0.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0,
-                        8.0, 9.0, 10.0, 10.0, 12.0, 12.0, 15.0, 15.0)
-
 # DEFA builds the runtime pitch tables consumed by E48A. For the default table,
 # C5EA maps note index -> octave and C64A maps note index -> semitone. C6C3 holds
 # the standard YM3812 FNUM row below; E48A writes it directly to A0/B0.
@@ -396,68 +384,13 @@ def soundcard_music_opl_init_writes(data: bytes, exe_path: Path | str) -> list[O
     return writes
 
 
-def write_opl_register_trace_csv(data: bytes, exe_path: Path | str, path: Path | str) -> Path:
-    path = Path(path)
-    rows = ["time_ticks,voice,register,value,note"]
-    for write in soundcard_music_opl_init_writes(data, exe_path):
-        rows.append(f"{write.time_ticks},{write.voice},0x{write.register:02X},0x{write.value:02X},{write.note}")
-    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    return path
+def _opl_voice_key_off_writes(voice: int) -> list[tuple[int, int]]:
+    """A0/B0 writes that silence one OPL voice (mirrors E52A: B0 then A0)."""
+    return [(0xB0 + voice, 0x00), (0xA0 + voice, 0x00)]
 
 
-def _opl_fnum_block_from_freq(freq: float) -> tuple[int, int]:
-    """Convert a Hz frequency to YM3812 F-number/block fields.
-
-    The game ultimately writes OPL A0/B0 registers through E48A.  The exact DOS
-    code uses precomputed tables built at runtime, but the YM3812 relationship
-    is stable enough to reproduce the same register layer for debugging/VGM
-    export:
-
-        freq ~= fnum * 49716 / 2 ** (20 - block)
-
-    Choose the block with an in-range 10-bit fnum, preferring the normal OPL
-    0x157..0x2AE-ish range to minimize rounding error.
-    """
-    if freq <= 0:
-        return 0, 0
-    best: tuple[float, int, int] | None = None
-    for block in range(8):
-        fnum = int(round(freq * (2 ** (20 - block)) / 49716.0))
-        if not (0 <= fnum <= 0x3FF):
-            continue
-        # Prefer the central range used by normal OPL note tables, but allow
-        # anything legal when very low/high notes need it.
-        penalty = 0.0 if 0x100 <= fnum <= 0x3FF else 1000.0
-        actual = fnum * 49716.0 / (2 ** (20 - block))
-        err = abs(actual - freq) + penalty
-        if best is None or err < best[0]:
-            best = (err, block, fnum)
-    if best is None:
-        return 0x3FF, 7
-    _err, block, fnum = best
-    return fnum & 0x3FF, block & 0x07
-
-
-def _opl_note_register_writes(voice: int, freq: float | None, *, key_on: bool) -> list[tuple[int, int]]:
-    """Return A0/B0 writes for one OPL voice.
-
-    Mirrors the useful part of E52A/E48A: E52A turns a voice off by writing B0
-    then A0, and E48A writes A0 low fnum and B0 block/fnum-hi/key-on.  For note
-    on we keep the A0/B0 order used by E48A.
-    """
-    if freq is None or not key_on:
-        return [(0xB0 + voice, 0x00), (0xA0 + voice, 0x00)]
-    fnum, block = _opl_fnum_block_from_freq(freq)
-    return [
-        (0xA0 + voice, fnum & 0xFF),
-        (0xB0 + voice, 0x20 | ((block & 0x07) << 2) | ((fnum >> 8) & 0x03)),
-    ]
-
-
-def _opl_note_index_register_writes(voice: int, note_index: int, *, key_on: bool) -> list[tuple[int, int]]:
-    """Return the exact default-table A0/B0 writes used by ASM E48A."""
-    if not key_on:
-        return [(0xB0 + voice, 0x00), (0xA0 + voice, 0x00)]
+def _opl_note_index_register_writes(voice: int, note_index: int) -> list[tuple[int, int]]:
+    """Return the exact default-table A0/B0 key-on writes used by ASM E48A."""
     note_index = max(0, min(0x5F, int(note_index)))
     block, semitone = divmod(note_index, 12)
     fnum = OPL_FNUM_TABLE[semitone]
@@ -475,13 +408,14 @@ def _soundcard_freq_to_note_index(freq: float) -> int:
 
 
 def soundcard_music_opl_full_writes(data: bytes, exe_path: Path | str, *, speed: float = DEFAULT_PREVIEW_SPEED) -> list[OplRegisterWrite]:
-    """Return a pragmatic full-song OPL register trace for a sound-card song.
+    """Return the full-song OPL register trace for a sound-card song.
 
-    The earlier CSV only emitted instrument initialization.  This adds the note
-    layer: stream 0 drives voices 0..2, stream 1 drives 3..5, stream 2 drives
-    6..8, with per-voice pitch offsets from the DAT header.  The trace is meant
-    for debugging and VGM export; the exact YM3812 synthesis should be delegated
-    to an OPL emulator/player rather than approximated by the atlas WAV synth.
+    This is the single source of truth for the sound-card path: the Nuked-OPL3
+    renderer, the MIDI export and the VGM export all consume it.  Instrument
+    setup comes from soundcard_music_opl_init_writes; the note layer is added
+    here - stream 0 drives voices 0..2, stream 1 drives 3..5, stream 2 drives
+    6..8, each with the per-voice pitch offset from the DAT header.  Register
+    values are verified against a DOSBox-X DRO capture of the real game.
     """
     header = soundcard_music_header(data)
     if header is None:
@@ -492,7 +426,7 @@ def soundcard_music_opl_full_writes(data: bytes, exe_path: Path | str, *, speed:
     writes.append(OplRegisterWrite(0, -1, 0x08, 0x00, "normal OPL mode"))
     writes.append(OplRegisterWrite(0, -1, 0xBD, 0x00, "melodic mode / rhythm off"))
     for voice in range(9):
-        for reg, value in _opl_note_register_writes(voice, None, key_on=False):
+        for reg, value in _opl_voice_key_off_writes(voice):
             writes.append(OplRegisterWrite(0, voice, reg, value, f"voice {voice} initial off"))
     writes.extend(soundcard_music_opl_init_writes(data, exe_path))
 
@@ -521,31 +455,21 @@ def soundcard_music_opl_full_writes(data: bytes, exe_path: Path | str, *, speed:
             ]
             if freq is None or freq < 0:
                 for voice in voices:
-                    for reg, value in _opl_note_register_writes(voice, None, key_on=False):
+                    for reg, value in _opl_voice_key_off_writes(voice):
                         writes.append(OplRegisterWrite(pos_ticks, voice, reg, value, f"stream {group} rest/off"))
             else:
                 for voice in voices:
                     # The real DB60 calls E52A immediately before E48A.
-                    for reg, value in _opl_note_register_writes(voice, None, key_on=False):
+                    for reg, value in _opl_voice_key_off_writes(voice):
                         writes.append(OplRegisterWrite(pos_ticks, voice, reg, value, f"voice {voice} retrigger off"))
                     cfg = header.configs[voice] if voice < len(header.configs) else 0
                     pitch_offset = 0 if cfg is None else (cfg - 0x100 if cfg >= 0x80 else cfg)
                     note_index = _soundcard_freq_to_note_index(freq) + pitch_offset
-                    for reg, value in _opl_note_index_register_writes(voice, note_index, key_on=True):
+                    for reg, value in _opl_note_index_register_writes(voice, note_index):
                         writes.append(OplRegisterWrite(pos_ticks, voice, reg, value, f"stream {group} note voice {voice}"))
             pos_ticks += event_ticks
     writes.sort(key=lambda w: w.time_ticks)
     return writes
-
-
-def write_opl_full_register_trace_csv(data: bytes, exe_path: Path | str, path: Path | str, *, speed: float = DEFAULT_PREVIEW_SPEED) -> Path:
-    path = Path(path)
-    rows = ["time_ticks,time_seconds,voice,register,value,note"]
-    for write in soundcard_music_opl_full_writes(data, exe_path, speed=speed):
-        seconds = write.time_ticks * TICK_SECONDS / max(0.10, min(8.0, float(speed)))
-        rows.append(f"{write.time_ticks},{seconds:.6f},{write.voice},0x{write.register:02X},0x{write.value:02X},{write.note}")
-    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    return path
 
 
 def write_opl_vgm(data: bytes, exe_path: Path | str, path: Path | str, *, speed: float = DEFAULT_PREVIEW_SPEED) -> Path:
@@ -603,28 +527,42 @@ def write_opl_vgm(data: bytes, exe_path: Path | str, path: Path | str, *, speed:
     return path
 
 
-def _stream_dosbox_opl_filter_block(pcm, sample_rate: int, previous: float | None, *, cancel_check: Callable[[], None] | None = None):
-    """Filter one PCM block and return (filtered_block, final_state).
+# Optional DOSBox-style Sound Blaster OPL output low-pass profiles.  A real card
+# rolls off the OPL DAC; these one-pole cutoffs approximate that when the user
+# picks a profile in the Audio Atlas (env AE_OPL_FILTER_PROFILE).  "off" (the
+# default) leaves the Nuked-OPL3 output untouched.
+_OPL_FILTER_CUTOFF_HZ = {
+    "off": 0,
+    "none": 0,
+    "sb16": 0,
+    "modern": 0,
+    "sb1": 12000,
+    "sb2": 12000,
+    "sbpro1": 8000,
+    "sbpro2": 8000,
+}
 
-    This is the streaming equivalent of _apply_dosbox_opl_filter().  It lets the
-    accurate YM3812 WAV renderer write frames incrementally instead of building
-    an entire song in memory and then filtering it in one expensive pass.
-    """
-    profile = os.environ.get("AE_OPL_FILTER_PROFILE", "off").strip().lower()
-    cutoff_hz = {
-        "off": 0,
-        "none": 0,
-        "sb16": 0,
-        "modern": 0,
-        "sb1": 12000,
-        "sb2": 12000,
-        "sbpro1": 8000,
-        "sbpro2": 8000,
-    }.get(profile)
-    if cutoff_hz is None:
+
+def opl_filter_cutoff_hz(profile: str | None = None) -> int:
+    """Resolve an OPL filter profile name to its cutoff (0 = no filtering)."""
+    if profile is None:
+        profile = os.environ.get("AE_OPL_FILTER_PROFILE", "off")
+    cutoff = _OPL_FILTER_CUTOFF_HZ.get(profile.strip().lower())
+    if cutoff is None:
         raise RuntimeError(
             "AE_OPL_FILTER_PROFILE must be off, sb1, sb2, sbpro1, sbpro2, sb16, or modern"
         )
+    return cutoff
+
+
+def _stream_dosbox_opl_filter_block(pcm, sample_rate: int, previous: float | None, *, cancel_check: Callable[[], None] | None = None):
+    """Filter one PCM block and return ``(filtered_block, final_state)``.
+
+    A one-pole low-pass run incrementally so the renderer can filter each chip
+    block as it is generated instead of buffering a whole song.  Returns the
+    input untouched when no profile is selected.
+    """
+    cutoff_hz = opl_filter_cutoff_hz()
     if not cutoff_hz or len(pcm) < 2:
         return pcm, previous
 
@@ -637,39 +575,6 @@ def _stream_dosbox_opl_filter_block(pcm, sample_rate: int, previous: float | Non
         state += alpha * (float(out[index]) - state)
         out[index] = state
     return out, state
-
-
-def _apply_dosbox_opl_filter(pcm, sample_rate: int, *, cancel_check: Callable[[], None] | None = None):
-    """Apply an optional DOSBox-style Sound Blaster OPL low-pass profile."""
-    profile = os.environ.get("AE_OPL_FILTER_PROFILE", "off").strip().lower()
-    cutoff_hz = {
-        "off": 0,
-        "none": 0,
-        "sb16": 0,
-        "modern": 0,
-        "sb1": 12000,
-        "sb2": 12000,
-        "sbpro1": 8000,
-        "sbpro2": 8000,
-    }.get(profile)
-    if cutoff_hz is None:
-        raise RuntimeError(
-            "AE_OPL_FILTER_PROFILE must be off, sb1, sb2, sbpro1, sbpro2, sb16, or modern"
-        )
-    if not cutoff_hz or len(pcm) < 2:
-        return pcm
-
-    # DOSBox Staging uses a first-order LPF for these OPL profiles. This is the
-    # equivalent one-pole form applied after chip synthesis.
-    alpha = 1.0 - math.exp(-2.0 * math.pi * cutoff_hz / sample_rate)
-    out = pcm.astype("float64", copy=True)
-    previous = float(out[0])
-    for index in range(1, len(out)):
-        if cancel_check is not None and index % 8192 == 0:
-            cancel_check()
-        previous += alpha * (float(out[index]) - previous)
-        out[index] = previous
-    return out
 
 
 def synthesize_nuked_opl_wav(
@@ -692,7 +597,7 @@ def synthesize_nuked_opl_wav(
         import numpy as np  # type: ignore
         from nuked_opl3 import OPL3, OPL_NATIVE_RATE  # type: ignore
     except Exception as exc:  # noqa: BLE001
-        raise Ym3812Unavailable(
+        raise OplBackendUnavailable(
             "Accurate sound-card rendering requires the nuked_opl3 cffi "
             "extension. Build it once with `python -m nuked_opl3._ffi_build` "
             "(needs a C compiler: MSVC Build Tools on Windows)."
@@ -881,18 +786,6 @@ def describe_soundcard_music_header(data: bytes) -> str:
     )
 
 
-def soundcard_music_preamble(data: bytes) -> bytes:
-    """Return bytes between the channel-offset table and stream 0."""
-    offsets = soundcard_music_offsets(data)
-    if not offsets:
-        return b""
-    table_len = len(offsets) * 2
-    first_stream = offsets[0]
-    if first_stream <= table_len:
-        return b""
-    return data[table_len:first_stream]
-
-
 KNOWN_MUSIC_BASES = {
     ("AE000", 49): "startup/title intro music (confirmed: D26C pushes resource 0x31)",
     ("AE000", 53): "menu/interstitial music (confirmed D5F9 call with 0x35)",
@@ -1018,10 +911,8 @@ def _chromatic_note_to_freq(note: int, octave: int, *, transpose: int = 0) -> fl
 
 def _note_to_freq(note: int, octave: int, *, transpose: int = 0, pitch_mode: str = "musical") -> float | None:
     # Normal note events are musical bytecode events, not raw PIT divisors.
-    # Real-game capture of AE000:054 confirms that the sound-card branch is one
-    # octave lower than the older generic preview: byte 35 01 should sound as E4,
-    # not E5. Keep PC speaker previews on the old base and shift only the
-    # sound-card/Tandy-style branch.
+    # AE000:054 byte 35 01 sounds as E4 on the sound-card branch, one octave
+    # below the PC-speaker mapping.
     if pitch_mode == "soundcard":
         transpose -= 12
     return _chromatic_note_to_freq(note, octave, transpose=transpose)
@@ -1071,7 +962,7 @@ def _gm_program_for_timbre(selector: int | None, stream_no: int, *, rhythm: bool
         return 8
     if stream_no == 1:
         return 34
-    return 80      # Lead 1 (square) fallback for old exports.
+    return 80      # Lead 1 (square).
 
 
 def _expression_for_aux_byte(value: int) -> int:
@@ -1180,8 +1071,6 @@ def parse_game_audio_drum_stream(
     i = 0
     base_ticks = initial_base_ticks if initial_base_ticks is not None else _shared_initial_base_ticks([data], music=music)
     bend_ticks = 0
-    gate_ticks = 6
-    gate_enabled = True
     effect_ticks = 1
     while i + 1 < len(data) and len(events) < max_events:
         op = data[i]
@@ -1194,13 +1083,9 @@ def parse_game_audio_drum_stream(
         if lo == 0x0F:
             break
         if lo == 0x0D:
-            if hi == 0:
-                if arg:
-                    gate_enabled = True
-                    gate_ticks = max(1, arg)
-                else:
-                    gate_enabled = False
-            elif hi in (1, 2):
+            # 0x0D/hi0 is the note-gate command; drums play fixed-length hits, so
+            # gating does not apply here (only pitched streams use it).
+            if hi in (1, 2):
                 if arg:
                     delta = (base_ticks * arg + 50) // 100
                     bend_ticks = delta if hi == 1 else -delta
@@ -1250,7 +1135,7 @@ def _shared_initial_base_ticks(streams: list[bytes], *, music: bool) -> int:
         if base is not None:
             return base
     # Music channels that do not carry their own leading 4D normally inherit
-    # the title/theme default 4D 64 from another channel.  CAF1 SFX historically
+    # the title/theme default 4D 64 from another channel.  CAF1 SFX
     # start from 4D 4B unless a stream overrides it.
     return (0x64 if music else 0x4B) * 4
 
@@ -1416,24 +1301,6 @@ def parse_game_audio_stream(
     return events
 
 
-# Backward-compatible name used by the GUI/export code.
-def parse_note_pairs(
-    data: bytes,
-    *,
-    music: bool = False,
-    max_events: int = 800,
-    initial_base_ticks: int | None = None,
-    pitch_mode: str = "pc_speaker",
-) -> list[tuple[float | None, float]]:
-    return parse_game_audio_stream(
-        data,
-        max_events=max_events,
-        music=music,
-        initial_base_ticks=initial_base_ticks,
-        pitch_mode=pitch_mode,
-    )
-
-
 @dataclass
 class _AudioStreamCursor:
     stream_no: int
@@ -1583,7 +1450,7 @@ def parse_pc_speaker_preview_tracks(
 
     Keep all PC-speaker bytecode decoding in one place.  The GUI can play the
     result via a cached WAV file or a realtime callback, but both paths must use
-    this exact parser so old experimental playback paths cannot drift in timing.
+    this exact parser so playback and export cannot drift in timing.
     Durations returned here are game-speed durations; callers apply the preview
     speed multiplier only once at the final rendering boundary.
     """
@@ -1613,7 +1480,7 @@ def parse_pc_speaker_preview_tracks(
             )
             parsed.append([((-float(note) if note is not None else None), dur) for note, dur in drum_events])
         else:
-            parsed.append(parse_note_pairs(
+            parsed.append(parse_game_audio_stream(
                 stream,
                 music=music,
                 max_events=max_music_events if music else max_sfx_events,

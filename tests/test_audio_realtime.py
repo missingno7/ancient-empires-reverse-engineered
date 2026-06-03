@@ -48,7 +48,7 @@ def test_soundcard_music_uses_realtime_when_backend_exists():
     fake_sd = _fake_sounddevice()
     with (
         patch.dict("sys.modules", {"sounddevice": fake_sd}),
-        patch("ae_editor.audio.playback.Ym3812RealtimeSource", return_value=_Source()) as source,
+        patch("ae_editor.audio.playback.OplRealtimeSource", return_value=_Source()) as source,
     ):
         assert play_audio_item_realtime(item, exe_path="game.exe")
     source.assert_called_once()
@@ -56,8 +56,9 @@ def test_soundcard_music_uses_realtime_when_backend_exists():
 
 
 def test_realtime_raises_loudly_when_backend_missing_instead_of_silent_fallback():
-    # sounddevice/numpy/ymfm are hard dependencies (requirements.txt).  A missing
-    # one must raise, not silently degrade to a different renderer.
+    # sounddevice/numpy are hard deps and sound-card music needs the nuked_opl3
+    # cffi backend (requirements.txt).  A missing one must raise, not silently
+    # degrade to a different renderer.
     with patch.dict("sys.modules", {"sounddevice": None}):
         try:
             play_audio_item_realtime(_item(), exe_path="game.exe")

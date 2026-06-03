@@ -9,7 +9,7 @@ buffer at the background backdrop origin.  So every editor position is just
 from __future__ import annotations
 
 from ..constants import CELL_SIZE
-from ..game_data.room_payload import ControlCommand, ObjectTableEntry, PlatformTriplet
+from ..game_data.room_payload import ControlCommand, ObjectTableEntry
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -96,41 +96,5 @@ def header_object_xy(x_raw: int, y_raw: int) -> tuple[int, int]:
 
 
 def header_exit_door_xy(x_raw: int, y_raw: int) -> tuple[int, int]:
-    """Exit-door top-left.  Same shared object anchor as everything else."""
+    """Exit-door top-left. Same shared object anchor as everything else."""
     return object_screen_xy(x_raw, y_raw)
-
-
-def platform_xy(p: PlatformTriplet) -> tuple[int, int]:
-    """Resting platform top-left, from the static platform draw at AEPROG 0x28ac.
-
-    0x28ac walks the room+0x2AC triplets (flags, x_raw, y), writes the 0x07
-    collision footprint, and blits the platform sprite at a buffer position that
-    is NOT the universal object anchor - platforms are nudged (-4, -4) from it:
-
-        x_buf = x_raw*2 - 4   (0x28ac: si = x_raw*2; sub si,4)
-        y_buf = y + 0xb4      (0x28ac: add di,0xb4 = 180, not the usual 0xb8)
-
-    Cropping at the view origin (8, 200) gives editor (x_raw*2 - 12, y - 20).
-    (The 0x338a path is the per-frame *moving* redraw and uses the shared anchor;
-    the editor previews the resting position, so it matches 0x28ac.)
-    """
-    return p.x_raw * 2 - 12, p.y - 20
-
-
-# Moving platforms encode orientation and travel direction in their flag nibble.
-# The room payload does not store an explicit destination next to the triplet,
-# so use a shared travel constant for overlay/debug visualization.
-PLATFORM_TRAVEL_DISTANCE = 48
-PLATFORM_TRAVEL_BY_FLAGS: dict[int, tuple[int, int]] = {
-    # Playtesting confirmed the horizontal flag families move opposite to the
-    # original editor-side "left/right" labels.
-    0x40: (+PLATFORM_TRAVEL_DISTANCE, 0),
-    0x60: (-PLATFORM_TRAVEL_DISTANCE, 0),
-    0x80: (0, +PLATFORM_TRAVEL_DISTANCE),
-    0xA0: (0, -PLATFORM_TRAVEL_DISTANCE),
-}
-
-
-def platform_motion_delta(p: PlatformTriplet) -> tuple[int, int]:
-    """Best current platform travel vector for overlay visualization."""
-    return PLATFORM_TRAVEL_BY_FLAGS.get(p.flags & 0xF0, (0, 0))

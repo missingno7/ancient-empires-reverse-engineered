@@ -105,8 +105,7 @@ Known controls from the SFX path:
 4D xx   base duration = xx * 4 ticks, stored in DS:1E84
 ```
 
-The previous parser mistake was treating too many values as simple timing.  In
-particular, `?E` duration is controlled by `3D`, not by the second byte of `?E`.
+`?E` duration is controlled by `3D`, not by the second byte of `?E`.
 
 ### `C9A4` — normal note/rest duration
 
@@ -372,8 +371,8 @@ C6C3[...]  = 157 16B 181 198 1B0 1CA 1E5 202 220 241 263 287
 `DB60` adds the header voice offset before calling `E48A`, which clamps the note
 index to `0..0x5F` and writes A0/B0 directly. The editor VGM/full-trace path now
 uses this ASM-shaped lookup instead of converting through Hz and applying a
-capture-tuned transpose. Normal atlas playback now renders this trace through
-`ymfm.YM3812`; the older approximate WAV path remains only as a fallback.
+capture-tuned transpose. Normal atlas playback renders this trace through the
+Nuked-OPL3 cffi backend (no fallback renderer).
 
 ### `5D` / `6D` controls are PSG envelope controls
 

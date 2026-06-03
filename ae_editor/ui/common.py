@@ -11,7 +11,8 @@ from PIL import Image, ImageDraw, ImageTk
 
 from ..constants import ACTOR_TICK_HZ, CELL_SIZE, DEFAULT_SIMULATION_TICK_HZ, ROOM_COUNT, ROOM_COLUMNS, ROOM_ROWS
 from ..exporters import export_bank_sheets, export_probe_csv, export_room_previews
-from ..rendering.overlay import build_room_overlay, control_ref_values, control_targets, decode_control_target
+from ..engine import control_targets, decode_control_target, platform_motion_delta, platform_xy
+from ..rendering.overlay import build_room_overlay
 from ..rendering.coordinates import control_xy, actor_xy, object_entry_xy, object_screen_xy
 from ..game_data.actor_scripts import decode_actor_script
 from ..game_data.actor_dsl import (
@@ -25,7 +26,6 @@ from ..game_data.actor_dsl import (
     parse_actor_ref,
     parse_int,
 )
-from ..rendering.coordinates import platform_motion_delta, platform_xy
 from ..game_data.conveyors import ConveyorSpec, compose_conveyor, iter_conveyor_runs
 from ..project import AncientEmpiresProject
 from ..rendering.room_renderer import RenderOptions

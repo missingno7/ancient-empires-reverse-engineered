@@ -1,8 +1,6 @@
 # Reverse-Engineering Notes
 
-This file keeps the current research posture: what is known, what is partial,
-and where to continue. Historical false starts were removed from the main docs
-so the editor has one current model.
+This file records what is known, what is partial, and where to continue.
 
 ## Known With High Confidence
 

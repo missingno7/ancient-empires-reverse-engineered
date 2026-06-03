@@ -15,7 +15,6 @@ from .core import (
     describe_soundcard_music_header,
     load_opl_instrument_table,
     parse_game_audio_stream,
-    parse_note_pairs,
     parse_pc_speaker_preview_tracks,
     pc_speaker_preview_duration_seconds,
     soundcard_music_header,
@@ -25,8 +24,6 @@ from .core import (
     synthesize_wav,
     write_midi,
     write_opl_trace_midi,
-    write_opl_full_register_trace_csv,
-    write_opl_register_trace_csv,
     write_opl_vgm,
 )
 from .playback import play_audio_file, play_audio_item_realtime, render_preview_async, start_audio_preview_async, stop_audio_playback, temp_preview_wav
@@ -46,7 +43,6 @@ __all__ = [
     "describe_soundcard_music_header",
     "load_opl_instrument_table",
     "parse_game_audio_stream",
-    "parse_note_pairs",
     "parse_pc_speaker_preview_tracks",
     "pc_speaker_preview_duration_seconds",
     "play_audio_file",
@@ -62,7 +58,5 @@ __all__ = [
     "temp_preview_wav",
     "write_midi",
     "write_opl_trace_midi",
-    "write_opl_full_register_trace_csv",
-    "write_opl_register_trace_csv",
     "write_opl_vgm",
 ]

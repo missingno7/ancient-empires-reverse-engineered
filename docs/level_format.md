@@ -1,7 +1,6 @@
 # Current Level Format
 
-This is the canonical level-format note for the editor. Older versioned notes
-were removed because they mixed confirmed behavior with research dead ends.
+This is the canonical level-format note for the editor.
 
 ## Level Resources
 

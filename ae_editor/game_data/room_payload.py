@@ -12,9 +12,8 @@ this structure:
     trailing +0x00  ten 3-byte platform/control triplets
     trailing +0x1E  payload directory / control records / compact3 sections
 
-This module intentionally avoids the old brute-force scanners. Anything still
-unknown is represented explicitly as an unknown section rather than being drawn
-as a guessed object.
+Anything still unknown is represented explicitly as an unknown section rather
+than being drawn as a guessed object.
 """
 from __future__ import annotations
 
@@ -217,10 +216,8 @@ class LengthPrefixedControlRecord:
 class ControlCommand:
     """Length-prefixed room command with the prefix stripped.
 
-    Older renderer versions accidentally treated the length byte itself as the
-    command/type.  The actual command body starts at raw[1:].  This small
-    wrapper makes that explicit and prevents trigger ids from being confused
-    with sprite ids.
+    The command body starts at raw[1:], keeping the length prefix separate from
+    the command and its arguments.
     """
 
     record: LengthPrefixedControlRecord

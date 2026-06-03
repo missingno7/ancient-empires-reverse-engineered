@@ -1,8 +1,6 @@
 # Audio engine status
 
-This is the current authoritative note for the editor audio code. Older notes
-that treated the beginning of `AE000:065` as a PIT divisor table have been
-removed from the project.
+This is the authoritative note for the editor audio code.
 
 ## Confirmed PC speaker SFX path
 
@@ -17,8 +15,7 @@ sound id -> stream offset
 ...
 ```
 
-`0x0096` is therefore the start of sound `0x00`, not a frequency divisor. This
-is the main bug that caused earlier high/warped previews.
+`0x0096` is therefore the start of sound `0x00`, not a frequency divisor.
 
 The SFX streams are bytecode pairs:
 
@@ -51,8 +48,7 @@ else:
 
 The live divisor base is not stored as the first word of `AE000:065`. `CA9B`
 reads the first word of the EXE PIT divisor table at `DS:17FC`; that word is
-`0x8E88`. The editor now uses this exact ASM-backed value. The earlier
-capture-fitted approximation was `0x8F90`.
+`0x8E88`. The editor uses this exact ASM-backed value.
 
 ## Confirmed timing model
 
@@ -106,23 +102,22 @@ PC-speaker SFX/music decoding is centralized in `parse_pc_speaker_preview_tracks
 and sound-card music in the YM3812 register trace. Playback and WAV export share
 that exact decode, so there is no second independent decoder.
 
-There is one playback path and one set of dependencies. numpy, ymfm-py and
-sounddevice are all hard requirements (`requirements.txt`); the code does not
-silently degrade to a different renderer when one is missing - that raises a
-clear error. Two cleanly separated concerns:
+There is one playback path and one set of dependencies. numpy, sounddevice and
+cffi are hard requirements (`requirements.txt`), and sound-card music is rendered
+through the bundled **Nuked-OPL3** cffi backend in `nuked_opl3/` (the same
+cycle-accurate OPL core DOSBox-X and VGMPlay use - build it once with
+`python -m nuked_opl3._ffi_build`). The code does not silently degrade to a
+different renderer when one is missing - that raises a clear error. Two cleanly
+separated concerns:
 
 - **Interactive playback** (Audio Atlas double-click / Play preview) =
   `play_audio_item_realtime`, a low-latency sounddevice callback. pc-speaker uses
-  the square/noise source, sound-card music uses the real `ymfm.YM3812` chip.
-  Setup runs in a worker thread so Tk stays responsive; there is no full-song WAV
+  the square/noise source, sound-card music drives the Nuked-OPL3 chip. Setup
+  runs in a worker thread so Tk stays responsive; there is no full-song WAV
   render and no WAV cache on this path.
 - **WAV generation** (Export WAV button, Simulation tab) = `synthesize_wav`
-  (pc-speaker) and `synthesize_ym3812_wav` (sound-card music). File output only;
-  never used for the normal preview.
-
-The old Python-FM approximation (`synthesize_adlib_like_wav`) and the
-numpy/ymfm fallback chain were removed - they were a second, lower-fidelity
-sound-card renderer that could be reached silently.
+  (pc-speaker) and `synthesize_nuked_opl_wav` (sound-card music). File output
+  only; never used for the normal preview.
 
 ## Resource classes
 
@@ -133,13 +128,6 @@ separates it into:
 - `pc-speaker-music`: simple PC-speaker music stream beginning at `0x96`.
 - `soundcard-music`: multi-channel sound-card music with channel offsets, driven
   by the register-synthesis path described below.
-- `soundcard-channel`: one channel from a sound-card music resource.
-- `soundcard-patch`: named 27-byte records such as `Silly`, `Viktor`, `Dj`,
-  `MissingN` — these are save/high-score/progress data, NOT instruments.
-- `raw`: preserved unknown data.
-
-The patch banks are intentionally not treated as playable audio.
-
 ## Sound-card music is register synthesis — there are no PCM samples
 
 There is **no PCM/sample path anywhere in the binary**, confirmed three ways:
@@ -194,8 +182,8 @@ Interactive preview (Audio Atlas double-click / Play) is realtime for every
 playable kind, through `start_audio_preview_async` -> `play_audio_item_realtime`:
 
 - `pc-speaker-sfx` / `pc-speaker-music` -> `PcSpeakerRealtimeSource` (square/noise).
-- `soundcard-music` -> `Ym3812RealtimeSource` (the real `ymfm.YM3812` chip fed the
-  recovered register trace).
+- `soundcard-music` -> `OplRealtimeSource` (Nuked-OPL3 driven by the recovered
+  register trace).
 
 `start_audio_preview_async` runs the setup (register trace, device open) in a
 worker thread so the Tk callback never imports backends, builds an OPL trace, or
@@ -204,27 +192,22 @@ opens a device synchronously. Results return to the UI thread through
 or a newer request, and a cancellation token aborts obsolete setup. There is no
 WAV render or WAV cache on the playback path.
 
-numpy, ymfm-py and sounddevice are hard dependencies. If one is missing the
-realtime path raises a clear error - it never silently switches to a different
-renderer. Set `AE_DISABLE_REALTIME_AUDIO=1` only to turn realtime off in
-headless/CI contexts.
+numpy and sounddevice are hard dependencies and sound-card music needs the
+nuked_opl3 cffi backend built. If one is missing the realtime path raises a clear
+error - it never silently switches to a different renderer. Set
+`AE_DISABLE_REALTIME_AUDIO=1` only to turn realtime off in headless/CI contexts.
 
 WAV generation is a separate concern (Export WAV button, Simulation tab):
 `synthesize_wav` for pc-speaker (1-bit square-wave device) and
-`synthesize_ym3812_wav` for sound-card music (chunked: register writes are fed
+`synthesize_nuked_opl_wav` for sound-card music (chunked: register writes are fed
 to the OPL core in chronological order and PCM blocks are written straight to the
 WAV file). `temp_preview_wav` content-addresses these files so Simulation/export
 do not re-render the same item. This branch is never used for the normal preview.
 
 The same `render_preview_async` helper is used by Simulation PC-speaker effects,
-so CAF1 sound events do not synthesize WAV files inside the simulation tick and
-do not go through the experimental sounddevice PC-speaker callback.
+so CAF1 sound events do not synthesize WAV files inside the simulation tick.
 
-The preview cache version was bumped again in this cleanup so stale WAVs rendered
-by broken PC-speaker timing or by the all-WAV routing experiment cannot be
-reused.
-
-## Current state and limitation
+## Current limitations
 
 PC speaker SFX are capture-accurate enough for editor playback.
 
@@ -233,23 +216,22 @@ The OPL path is decoded, not guessed: `ae_editor/audio/core.py` extracts the
 `0x200 + 0x0FA30 + 0x301A = 0x12C4A`), parses each 56-byte patch as two 13-word
 operator blocks plus two waveform words (`parse_opl_instrument_patch`), applies
 the `0x3F - level*9` carrier-level override, expands each channel to its octave
-voice stack (`DB60`), and emits an OPL register trace driven into `ymfm.YM3812`
+voice stack (`DB60`), and emits an OPL register trace driven into Nuked-OPL3
 (plus a VGM file for external players). Verified against the disassembly
-(`D8F0/DA66/E0C0/C898/DB60`).
+(`D8F0/DA66/E0C0/C898/DB60`) and against a DOSBox-X DRO capture of the real game.
 
 The VGM/full-register trace follows `E48A`'s default pitch lookup directly: the
 runtime maps note index to `block = note // 12`, `semitone = note % 12`, then
 writes the YM3812 FNUM row from `C6C3`. All playback and WAV export route those
-writes through the real `ymfm.YM3812` chip - there is no approximate FM synth and
-no fallback. Operator feedback, envelopes and waveforms are whatever the chip
-does; the editor does not model them itself.
+writes through the Nuked-OPL3 chip. Operator feedback, envelopes and waveforms
+are whatever the chip does;
+the editor does not model them itself. (One data fix found via the DRO capture:
+channel feedback `0xC0` comes from the *modulator* operator, not the carrier.)
 
 DOSBox Staging uses `Nuked-OPL3-fast` for this register layer and renders the OPL
 channel at `49716 Hz`. It may then apply a Sound Blaster model-specific
 low-pass filter: `12000 Hz` for SB1/SB2, `8000 Hz` for SBPro1/SBPro2, and none
-for SB16/modern output. The atlas uses YMFM rather than Nuked, so a direct
-DOSBox capture comparison is still useful, but it no longer guesses FM
-waveforms or envelopes.
+for SB16/modern output.
 
 For A/B comparison, choose the Audio Atlas `OPL filter` profile or set
 `AE_OPL_FILTER_PROFILE` before launching the editor. Supported values are `off`
@@ -258,18 +240,16 @@ For A/B comparison, choose the Audio Atlas `OPL filter` profile or set
 `sbpro1`/`sbpro2` profiles use `8000 Hz`, matching DOSBox Staging's model
 choices. The cache key includes this profile.
 
-The register trace sent to YMFM renders all nine stacked OPL voices at their real
-OPL-relative levels (carrier total-level + header voice level), with no
-per-channel weighting and no octave-stack damping. Earlier previews damped the
-octave voices to ~60% and nearly muted the third stream to match one capture,
-which is why the sound-card music sounded thin compared with the original's
-deeper, fuller stack — `0xDB60` plays every enabled voice at full level.
+The register trace renders all nine stacked OPL voices at their real OPL-relative
+levels (carrier total-level + header voice level), with no per-channel weighting
+or octave-stack damping. `0xDB60` plays every enabled voice at full level.
 
-OPL operator **feedback** (`0xC0` bits 1..3) matters here: several instruments
-use maximum feedback (AE000:054 ids `0F`/`17` = 7, `0E` = 6), which turns the
-operator into a bright, gritty, noise-like timbre - the thing that can sound like
-a missing "PCM/sample" channel. The register trace carries the real `0xC0` value,
-so `ymfm.YM3812` reproduces feedback exactly.
+OPL channel **feedback** (`0xC0` bits 1..3) matters here: it makes an operator
+self-modulate into a bright, gritty, noise-like timbre - the thing that can sound
+like a missing "PCM/sample" channel. Feedback comes from the **modulator**
+operator's shadow byte (confirmed against the DRO capture: AE000:054 ids `1B` = 7,
+`0F` = 5, `0E`/`14` = 3, `01` = 1, `17` = 0). The register trace carries this
+`0xC0` value, which Nuked-OPL3 reproduces.
 
 Things that are NOT missing (verified against the OPL music tick `C27D`): the
 detune/chorus system (`CA24` tables + `CA6D` offsets) exists but its setter
@@ -278,9 +258,9 @@ detune; the vibrato/envelope updater `C440` and the `6D`/`E1F2` dynamic-volume
 path run only for device 1 (Tandy/PCjr PSG), not for OPL. So the editor is
 correct to omit detune, vibrato and per-note volume swells for AdLib.
 
-Fixed: the note trigger only keys on voices that loaded a real instrument. Songs
-that disable voices 6..8 with header id `0xFF` (AE000:068/120/124 and AE001:124/126)
-no longer get a phantom third channel of garbage tone.
+The note trigger only keys on voices that loaded a real instrument. Songs that
+disable voices 6..8 with header id `0xFF` (AE000:068/120/124 and AE001:124/126)
+leave those voices silent.
 
 Remaining weaknesses:
 
@@ -292,14 +272,18 @@ Remaining weaknesses:
 - The trace recovers note pitch by round-tripping the parser frequency back to a
   YM3812 note index. It is exact for the known mapping but would be cleaner to
   compute the note index straight from the bytecode.
-- MIDI export still maps FM patches to conservative GM voices.
 
-For a Nuked-OPL comparison, use `write_opl_vgm` and play the VGM through a
-Nuked-based player.
+MIDI export (`write_opl_trace_midi`) is driven from the same OPL register trace:
+each of the 9 OPL channels becomes a MIDI channel, FNum/block become a fractional
+note rendered as an integer note plus a pitch-wheel (microtonal tuning + small
+glides), and the carrier total level becomes note velocity. pc-speaker music
+keeps the simpler stream-based MIDI path. `write_opl_vgm` still exports a VGM for
+cross-checking against other Nuked/OPL players.
 
-## 2026-05 FM instrument correction
+## FM instrument mapping
 
-The previous hypothesis that `AE000:061/062` were sound-card instrument banks was rejected. They are 27-byte named records and look more like save/high-score/progress data.
+`AE000:061/062` are 27-byte named save/high-score/progress records, not
+sound-card instrument banks.
 
 The sound-card music resources themselves contain the first real AdLib/Sound Blaster mapping layer. Before the bytecode streams, bytes `0x08..0x10` store nine OPL instrument ids, bytes `0x11..0x19` store voice config values, and bytes `0x1A..0x22` store voice level/routing values. For example, `AE000:054` uses OPL ids:
 

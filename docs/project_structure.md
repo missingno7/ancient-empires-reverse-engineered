@@ -1,13 +1,12 @@
 # Project structure
 
-The editor is split into small packages with one-way dependencies. Import paths now
-point directly at the package that owns the logic; there are no old top-level
-redirect modules.
+The project is split into small packages with one-way dependencies.
 
 ```text
 ae_editor/
   app/          CLI entry point and Tk main window shell.
   game_data/    Low-level decoders/parsers for original game data.
+  engine/       Shared deterministic gameplay runtime.
   rendering/    Room rendering, visual mapping, overlays, coordinates.
   audio/        Audio atlas, PC speaker / sound-card decode, MIDI/WAV export.
   simulation/   Runtime-oriented room simulation helpers.
@@ -20,12 +19,15 @@ Recommended dependency direction:
 ```text
 game_data
    ↓
-rendering / audio / simulation
+engine / rendering / audio
    ↓
-ui
+editor UI / future game UI
    ↓
 app
 ```
+
+Runtime extraction has started in `engine/`; `simulation/` remains the largest
+migration source. See [Engine architecture](engine_architecture.md).
 
 
 ## app
@@ -57,9 +59,13 @@ app
 ## audio
 
 - `core.py` — audio atlas, stream parsing, MIDI/WAV/VGM export.
-- `playback.py` — realtime PC-speaker/YM3812 callback playback, shared preview
-  workers, cached WAV fallback and subprocess playback lifecycle.
+- `playback.py` — realtime PC-speaker/Nuked-OPL3 callback playback, shared
+  preview workers, cached WAV generation and subprocess playback lifecycle.
 - `gm.py` — General MIDI names/default mapping.
+
+## engine
+
+- `runtime.py` — shared control-target decoding and platform movement rules.
 
 ## simulation
 

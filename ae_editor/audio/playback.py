@@ -19,10 +19,7 @@ from .core import (
     SAMPLE_RATE,
     TICK_SECONDS,
     _events_to_absolute_spans,
-    _is_probable_rhythm_stream,
-    _parse_music_streams_synchronized,
-    _shared_initial_base_ticks,
-    _streams_from_resource,
+    opl_filter_cutoff_hz,
     parse_pc_speaker_preview_tracks,
     soundcard_music_opl_full_writes,
     synthesize_soundcard_music_wav,
@@ -112,13 +109,8 @@ class AudioPreviewStartTask:
             raise PreviewCancelled("Audio preview start cancelled")
 
 
-class Ym3812RealtimeSource:
-    """Incremental Nuked-OPL3 renderer for realtime callback playback.
-
-    Named for backwards compatibility with existing call sites; the underlying
-    engine is the cycle-accurate Nuked-OPL3 core (cffi), the same one DOSBox-X
-    and VGMPlay use, so the live preview matches those players.
-    """
+class OplRealtimeSource:
+    """Incremental Nuked-OPL3 renderer for realtime callback playback."""
 
     def __init__(self, data: bytes, exe_path: Path | str, *, speed: float) -> None:
         from nuked_opl3 import OPL3, OPL_NATIVE_RATE  # type: ignore
@@ -158,18 +150,7 @@ class Ym3812RealtimeSource:
             self._sample += count
             remaining -= count
         pcm = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.int32)
-        cutoff_hz = {
-            "off": 0,
-            "none": 0,
-            "sb16": 0,
-            "modern": 0,
-            "sb1": 12000,
-            "sb2": 12000,
-            "sbpro1": 8000,
-            "sbpro2": 8000,
-        }.get(self._filter_profile)
-        if cutoff_hz is None:
-            raise RuntimeError("Invalid AE_OPL_FILTER_PROFILE")
+        cutoff_hz = opl_filter_cutoff_hz(self._filter_profile)
         if cutoff_hz and len(pcm):
             alpha = 1.0 - math.exp(-2.0 * math.pi * cutoff_hz / self.sample_rate)
             out = pcm.astype("float64", copy=True)
@@ -268,7 +249,7 @@ def play_audio_item_realtime(
 
     This is THE interactive playback path (Audio Atlas double-click / Play): it
     starts immediately and never renders a whole-song WAV.  pc-speaker items use
-    the square/noise source and sound-card music uses the YM3812 chip source;
+    the square/noise source and sound-card music uses the Nuked-OPL3 chip source;
     both consume the same canonical parser/register-trace code as WAV export, so
     there is no second independent decoder.
 
@@ -283,7 +264,7 @@ def play_audio_item_realtime(
     import sounddevice as sd  # type: ignore
 
     if item.kind == "soundcard-music" and exe_path is not None:
-        source = Ym3812RealtimeSource(item.data, exe_path, speed=speed)
+        source = OplRealtimeSource(item.data, exe_path, speed=speed)
     elif item.kind in {"pc-speaker-music", "pc-speaker-sfx"}:
         source = PcSpeakerRealtimeSource(item, speed=speed)
     else:
@@ -325,7 +306,7 @@ def start_audio_preview_async(
 
     Every playable kind (pc-speaker SFX/music and sound-card music) goes through
     the realtime callback backend - one path, no WAV-cache fallback.  The worker
-    thread does the expensive setup (YM3812 register trace, device open) so Tk
+    thread does the expensive setup (OPL register trace, device open) so Tk
     callbacks stay responsive.  WAV generation is a separate concern used only by
     Export WAV and the Simulation tab.
     """
@@ -449,10 +430,8 @@ def play_audio_file(path: Path | str) -> None:
 
 def temp_preview_wav(item: AudioItem, *, speed: float = DEFAULT_PREVIEW_SPEED, exe_path: Path | str | None = None, cancel_check: Callable[[], None] | None = None) -> Path:
     path = _preview_cache_path(item, speed=speed, exe_path=exe_path)
-    # Sound-card music is OPL FM, not a square-wave PC-speaker tone.  When we have
-    # AEPROG.EXE (for the FM patch table), use the YM3812 chip renderer. It falls
-    # back to the lightweight FM preview when the optional binding is missing,
-    # then to the generic renderer if the resource has no OPL header.
+    # Sound-card music is OPL FM, not a square-wave PC-speaker tone. AEPROG.EXE
+    # provides the FM patch table needed by the single Nuked-OPL3 render path.
     if item.kind == "soundcard-music" and exe_path is not None:
         return _cached_preview(
             path,

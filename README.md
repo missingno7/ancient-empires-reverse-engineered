@@ -29,6 +29,8 @@ folder, or override individual paths (see [Quick Launch](#quick-launch)).
   tabs.
 - [Simulation Mode](docs/simulation_mode.md): how the runtime preview models
   controls, actors, platforms, room links and green blocks.
+- [Shared Engine Architecture](docs/engine_architecture.md): planned boundary
+  between the editor, shared gameplay rules and the future real game.
 - [AI Maintainer Context](docs/ai_context.md): compact technical map for future
   coding agents and maintainers.
 - [Handoff Notes](docs/handoff.md): current state, smoke rooms and good next
@@ -149,8 +151,6 @@ python tools/probe_exe_payload.py --exe game_data/AEPROG.EXE --level 6 --difficu
 - [Actor Script Space](docs/actor_script_space.md): shared bytecode region and
   safe editing model.
 - [Actor DSL](docs/actor_dsl.md): editable script syntax.
-- [Editor Overhaul Notes](docs/editor_overhaul_notes.md): historical design and
-  cleanup context.
 
 ## Current Data Model
 
@@ -179,10 +179,8 @@ Each difficulty part currently parses as:
 0x0BB8 actor block
 ```
 
-The old 13-room interpretation was a parser artifact: the 3000-byte actor block
-is the same size as three room records, so it used to appear as garbage rooms
-10..12. The editor now exposes only rooms 0..9 and treats the actor block as its
-own section. See [docs/level_format.md](docs/level_format.md) for the canonical
+The 3000-byte actor block follows the ten room records and is parsed as its own
+section. See [docs/level_format.md](docs/level_format.md) for the canonical
 format notes.
 
 ## Project Layout
@@ -213,7 +211,7 @@ ae_editor/
     room_renderer.py          static room renderer
     overlay.py                editor overlay model
   simulation/
-    room_simulation.py        in-memory simulation runtime
+    room_simulation.py        current runtime prototype; migration source for shared engine
   ui/                         Tkinter tabs (editor, simulation, script, audio)
   audio/                      OPL/MIDI decode and preview playback
   exporters/                  PNG/CSV export helpers
@@ -227,7 +225,6 @@ docs/
   level_format.md
   file_format_summary.md
   reverse_engineering_notes.md
-  editor_overhaul_notes.md
   actor_script_space.md
   actor_dsl.md
   handoff.md

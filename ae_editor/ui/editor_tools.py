@@ -18,7 +18,6 @@ from .common import (
     animated_decor_table,
     clear_part_apple_marker,
     control_commands,
-    control_ref_values,
     control_targets,
     cv_geometry_to_raw,
     decode_actor_script,
@@ -1110,7 +1109,7 @@ class EditorToolsMixin:
                 if len(body) >= 3 and self.property_y_var.get().strip():
                     body[2] = self._parse_int_property(self.property_y_var.get(), default=body[2]) & 0xFF
                 if self.property_len_var.get().strip():
-                    current_targets = control_ref_values(cmd)
+                    current_targets = [target.raw for target in control_targets(cmd)]
                     targets = self._parse_control_targets(self.property_len_var.get(), current=current_targets)
                     self._rewrite_control_targets(body, targets)
                 set_control_command_body(room, idx, bytes(body), allow_resize=True)

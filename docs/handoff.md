@@ -17,20 +17,22 @@ are stored back into `AE001.DAT` as plain uncompressed resources.
 
 ## Start Here
 
-- `ae_editor/level_format.py` parses levels, difficulty parts and room records.
-- `ae_editor/room_payload.py` parses platform triplets, controls, compact3
+- `ae_editor/game_data/level_format.py` parses levels, difficulty parts and room records.
+- `ae_editor/game_data/room_payload.py` parses platform triplets, controls, compact3
   tables, actor records, room links, header pickups, exit door and player start
   data.
-- `ae_editor/renderer.py` is the static room renderer.
-- `ae_editor/simulation.py` is the in-memory simulation runtime for actor VM
+- `ae_editor/rendering/room_renderer.py` is the static room renderer.
+- `ae_editor/simulation/room_simulation.py` is the in-memory simulation runtime for actor VM
   stepping, actor mode activation, controls, green blocks and runtime
   collision.
-- `ae_editor/overlay.py` builds editor overlay geometry and relationship lines.
-- `ae_editor/gui.py` wires the Tk UI, tabs, object atlas and overlay presets.
+- `ae_editor/rendering/overlay.py` builds editor overlay geometry and relationship lines.
+- `ae_editor/app/main_window.py` and `ae_editor/ui/` wire the Tk UI, tabs, object atlas and overlay presets.
   The `Editor` tab is the active editing surface; `Simulation` is the active
   runtime preview; the level viewer stays mostly read-only/diagnostic.
-- `ae_editor/audio.py` handles the Audio atlas, synchronized music parsing,
+- `ae_editor/audio/` handles the Audio atlas, synchronized music parsing,
   PC-speaker SFX previews and MIDI/WAV export.
+- `docs/engine_architecture.md` defines the planned shared engine boundary for
+  the editor Simulation tab and the future real game.
 - `docs/level_format.md` is the canonical current format note.
 - `docs/simulation_mode.md` describes the runtime preview model and known gaps.
 - `docs/quick_start.md` and `docs/screenshots.md` are the human-facing entry
@@ -104,6 +106,8 @@ python tools/capture_docs_screenshots.py --exe game_data/AEPROG.EXE --dat game_d
 
 ## Good Next Tasks
 
+- Extract runtime state and gameplay rules from `ae_editor/simulation/` into the
+  shared engine boundary described in `docs/engine_architecture.md`.
 - Add binary fixture tests around parser invariants.
 - Add behavioral fixtures for Simulation: control XOR, platform `0x07`
   footprint movement, green-block sequence progress/reset/toggle, and

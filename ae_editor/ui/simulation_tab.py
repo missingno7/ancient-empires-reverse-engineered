@@ -222,9 +222,8 @@ class SimulationTabMixin:
         self._simulation_active_sound_until = time.monotonic() + duration
         generation = getattr(self, "_simulation_audio_generation", 0) + 1
         self._simulation_audio_generation = generation
-        # Use the canonical cached WAV path for CAF1 SFX in the editor UI.
-        # The sounddevice PC-speaker callback remains available for experiments,
-        # but WAV preview is the timing reference and avoids device-rate drift.
+        # Use the cached WAV path so simulation timing is independent of the
+        # output device's callback rate.
         task = render_preview_async(item, speed=DEFAULT_PREVIEW_SPEED)
 
         def poll() -> None:
@@ -703,4 +702,3 @@ class SimulationTabMixin:
             image.alpha_composite(sprite, (sim.player_x - 4, sim.player_y - 16))
         draw.line((sim.player_x - 6, sim.player_y, sim.player_x + 6, sim.player_y), fill=(124, 255, 107, 230), width=1)
         draw.line((sim.player_x, sim.player_y - 6, sim.player_x, sim.player_y + 6), fill=(124, 255, 107, 230), width=1)
-

@@ -22,8 +22,7 @@ AE000:065 word 0 = 0x0096 = offset of sound id 0x00
 ```
 
 It is not the first PIT divisor. Direct-pitch effects use the live CAF1 divisor
-base from the EXE table at `DS:17FC`, exactly `0x8E88`. The earlier
-capture-fitted approximation was `0x8F90`.
+base from the EXE table at `DS:17FC`, exactly `0x8E88`.
 
 ## Capture-verified behavior
 

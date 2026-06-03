@@ -232,7 +232,7 @@ def _mirror_platform_triplets(room: Room, graphics=None) -> int:
         off = triplet.source_offset
         data[off] = _mirror_platform_flags(data[off])
         # Preserve the visible platform footprint. The payload x is the same
-        # anchor used by rendering/platform_xy: left = x_raw*2 - 12.
+        # anchor used by engine.platform_xy: left = x_raw*2 - 12.
         if triplet.orientation == "horizontal":
             width, _height = _sprite_size(graphics, "AE000", 47, 0, default=(56, 16))
         elif triplet.orientation == "vertical":

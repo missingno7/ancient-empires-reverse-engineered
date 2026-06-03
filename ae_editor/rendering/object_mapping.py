@@ -38,9 +38,8 @@ def visual_sprite_ref(
     code = entry.code
 
     # Confirmed global/gameplay objects from screenshots and asset browsing.
-    # Do NOT map code 0x0E to AE000:039 here.  That older assumption was wrong:
-    # in visual compact3 tables, 0x0E is usually just theme decoration
-    # AE001:(25+theme):14.  Real buttons come from control records.
+    # Visual compact3 code 0x0E is theme decoration AE001:(25+theme):14;
+    # buttons come from control records.
     if code == 0x8E:
         return SpriteRef("AE000", 44, 0, "diamond/artifact pickup")
     if code == 0x7D:

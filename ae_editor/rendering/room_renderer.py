@@ -5,7 +5,6 @@ from PIL import Image, ImageDraw
 
 from ..constants import (
     CELL_SIZE,
-    DEFAULT_TERRAIN_CODE_TO_SPRITE,
     ROOM_COLUMNS,
     ROOM_ROWS,
     ROOM_SCREEN_HEIGHT_PX,
@@ -18,15 +17,16 @@ from .coordinates import (
     header_object_xy,
     object_entry_xy,
     object_screen_xy,
-    platform_xy,
     rope_tile_xy,
     terrain_tile_xy,
 )
 from ..game_data.conveyors import ConveyorSpec, compose_conveyor, iter_conveyor_runs
 from ..game_data.graphics import GraphicsSet
 from ..game_data.level_format import Level, Room
+from ..engine import platform_xy
 from .object_mapping import visual_render_layer, visual_sprite_ref
 from .tile_mapping import CONVEYOR_PHYSICS_TILE_CODES
+from .tile_mapping import TERRAIN_CODE_TO_SPRITE
 
 
 def _green_block_xy(raw_x: int, raw_y: int) -> tuple[int, int]:
@@ -51,12 +51,6 @@ def _record12_alternate_xy(rec: bytes) -> tuple[int, int] | None:
     if len(rec) < 4:
         return None
     return _green_block_xy(rec[2], rec[3])
-
-
-def _record12_panel_xy(rec: bytes) -> tuple[int, int] | None:
-    # Backward-compatible name used by older code: this is the default/current
-    # green-block position, not a separate panel location.
-    return _record12_default_xy(rec)
 
 
 def _record12_sequence_values(rec: bytes) -> list[int]:
@@ -161,7 +155,7 @@ class RenderOptions:
 @dataclass
 class RoomRenderer:
     graphics: GraphicsSet
-    code_to_sprite: dict[int, int | None] = field(default_factory=lambda: dict(DEFAULT_TERRAIN_CODE_TO_SPRITE))
+    code_to_sprite: dict[int, int | None] = field(default_factory=lambda: dict(TERRAIN_CODE_TO_SPRITE))
 
     debug_colours = [
         (0, 0, 0), (60, 60, 60), (50, 170, 255), (110, 240, 255),
@@ -376,7 +370,7 @@ class RoomRenderer:
         """Draw symbol buttons from section_a.
 
         The base marker is AE000:009.  Its symbol is a separate one-sprite bank
-        AE000:010..016 selected by the compact3 code. This replaces the older
+        AE000:010..016 selected by the compact3 code. This is distinct from the
         renderer that drew only the blank medallion and missed the puzzle state
         encoded in the payload.
         """
@@ -390,7 +384,7 @@ class RoomRenderer:
             # AEPROG 0x3085: the medallion (sprite 0x6e88) is blitted at the
             # shared object anchor, and the symbol overlay (selected by
             # record[2]) at exactly +4 px in X (0x30d2: di+4) with the same Y.
-            # The old code centred both sprites on the anchor, which is wrong.
+            # Both sprites use the record anchor as their top-left position.
             x, y = object_screen_xy(entry.x_raw, entry.y)
             self._blit(image, base, x, y)
             symbol = self.graphics.sprite("AE000", 10 + (entry.code & 0x07), 0)

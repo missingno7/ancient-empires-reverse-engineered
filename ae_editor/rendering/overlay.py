@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .coordinates import actor_xy, control_xy, header_object_xy, object_screen_xy, platform_xy, platform_motion_delta
+from .coordinates import actor_xy, control_xy, header_object_xy, object_screen_xy
 from ..constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS, ROOM_SCREEN_HEIGHT_PX as ROOM_HEIGHT_PX, ROOM_SCREEN_WIDTH_PX as ROOM_WIDTH_PX
+from ..engine import control_targets, platform_motion_delta, platform_xy
 from ..game_data.level_format import Room
 from ..game_data.actor_scripts import actor_script_bytes, decode_actor_script
 from ..game_data.conveyors import iter_conveyor_runs
@@ -59,23 +60,6 @@ class OverlayLine:
     label: str
     colour: str
     dashed: bool = False
-
-
-@dataclass(frozen=True)
-class ControlTarget:
-    raw: int
-    kind: str
-    index: int
-
-    @property
-    def label(self) -> str:
-        if self.kind == "platform":
-            return f"P{self.index}"
-        if self.kind == "conveyor":
-            return f"CV{self.index}"
-        if self.kind == "reflector":
-            return f"R{self.index}"
-        return f"?{self.raw:02X}"
 
 
 @dataclass(frozen=True)
@@ -147,47 +131,6 @@ def _record12_alternate_rect(rec: bytes) -> tuple[int, int, int, int] | None:
         return None
     x, y = _green_block_xy(rec[2], rec[3])
     return x, y, 56, 16
-
-
-def decode_control_target(value: int) -> ControlTarget:
-    """Decode one target byte used by button/switch/jello commands.
-
-    Current reverse-engineering model:
-      * 00..0F -> runtime platform slots P0..P15
-      * 10..1F -> conveyor/CV slots CV0..CV15
-      * 40..4F -> section_c reflector slots R0..R15
-
-    The exact high-nibble classes may still grow, but keeping the raw byte while
-    exposing the class makes trigger editing much less ambiguous than a flat
-    numeric id.
-    """
-    value &= 0xFF
-    if value < 0x10:
-        return ControlTarget(value, "platform", value)
-    if 0x10 <= value < 0x20:
-        return ControlTarget(value, "conveyor", value - 0x10)
-    if 0x40 <= value < 0x50:
-        return ControlTarget(value, "reflector", value - 0x40)
-    return ControlTarget(value, "unknown", value)
-
-
-def control_targets(cmd: ControlCommand) -> list[ControlTarget]:
-    """Return decoded control targets from body bytes after type/x/y/state."""
-    if len(cmd.body) < 5:
-        return []
-    out: list[ControlTarget] = []
-    seen: set[int] = set()
-    for raw in cmd.body[4:]:
-        if raw in seen:
-            continue
-        seen.add(raw)
-        out.append(decode_control_target(raw))
-    return out
-
-
-def control_ref_values(cmd: ControlCommand) -> list[int]:
-    """Backward-compatible raw target byte list."""
-    return [target.raw for target in control_targets(cmd)]
 
 
 def reflector_target_indices(level, part, room: Room, target_index: int) -> list[int]:

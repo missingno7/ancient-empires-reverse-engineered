@@ -491,7 +491,7 @@ class EditorCanvasMixin:
 
         # Actors are larger than the small editor handle dot.  Let clicks anywhere
         # inside the rendered sprite select the actor, while still dragging the
-        # stored actor-table anchor smoothly.  This avoids the old jumpy behavior
+        # stored actor-table anchor smoothly.
         # where the visual handle was offset from the value being written back.
         for actor in reversed(actor_records_for_room(part, room.index)):
             if actor.hidden and not self.overlay_hidden_var.get():

@@ -5,8 +5,7 @@ import random
 
 from ..game_data.actor_dsl import ActorScriptError, branch_target, decode_instruction, opcode_size
 from ..constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS
-from ..rendering.coordinates import platform_motion_delta, platform_xy
-from ..rendering.overlay import control_targets
+from ..engine import control_targets, platform_motion_delta, platform_xy
 from ..game_data.room_payload import (
     ACTOR_TABLE_OFFSET,
     ACTOR_TABLE_SIZE,

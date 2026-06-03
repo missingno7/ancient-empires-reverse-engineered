@@ -204,9 +204,9 @@ class LevelEditorApp(
         view_menu.add_checkbutton(label="Collision 07", variable=self.show_collision_var, command=self.redraw_room)
         menu_bar.add_cascade(label="View", menu=view_menu)
 
-        experimental_menu = tk.Menu(menu_bar, tearoff=False)
-        experimental_menu.add_command(label="Flip current level horizontally", command=self.flip_current_level_horizontally)
-        menu_bar.add_cascade(label="Experimental", menu=experimental_menu)
+        tools_menu = tk.Menu(menu_bar, tearoff=False)
+        tools_menu.add_command(label="Flip current level horizontally", command=self.flip_current_level_horizontally)
+        menu_bar.add_cascade(label="Tools", menu=tools_menu)
 
         self.config(menu=menu_bar)
         self.bind_all("<Control-s>", lambda _event: self.save_ae001())
@@ -282,7 +282,7 @@ class LevelEditorApp(
         level = self.current_level()
         if not messagebox.askyesno(
             "Flip level horizontally",
-            "This experimental action mirrors the whole current level in both difficulties.\n\n"
+            "This action mirrors the whole current level in both difficulties.\n\n"
             "It flips room tiles, payload objects, actors, actor-script directions, "
             "conveyors, horizontal platforms, reflectors and left/right room links.\n\n"
             "Continue?",
