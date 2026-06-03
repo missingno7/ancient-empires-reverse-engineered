@@ -155,6 +155,7 @@ class RenderOptions:
     green_block_remaining: dict[int, list[int]] | None = None
     conveyor_frame: int = 0
     conveyor_tiles: list[int] | None = None
+    reflector_frames: dict[int, int] | None = None
     show_invisible: bool = False
     display_mode: str = "vga"  # vga, ega, cga
 
@@ -229,7 +230,7 @@ class RoomRenderer:
             if options.mode == "game":
                 self._draw_visual_objects(image, room, layer="foreground")
                 self._draw_conveyor_tiles(image, room, frame=options.conveyor_frame, live_tiles=options.conveyor_tiles)
-                self._draw_laser_crystals(image, room)
+                self._draw_laser_crystals(image, room, frame_overrides=options.reflector_frames)
                 if options.draw_platforms:
                     self._draw_platforms(image, room, offsets=options.platform_offsets)
                 if options.show_invisible:
@@ -489,7 +490,7 @@ class RoomRenderer:
                 ghost.putalpha(alpha)
                 self._blit(image, ghost, *ghost_xy)
 
-    def _draw_laser_crystals(self, image: Image.Image, room: Room) -> None:
+    def _draw_laser_crystals(self, image: Image.Image, room: Room, *, frame_overrides: dict[int, int] | None = None) -> None:
         table = laser_crystal_table(room)
         if not table:
             return
@@ -498,8 +499,8 @@ class RoomRenderer:
             # object sprite pointer table.  Laser reflector tables use the same
             # high-bit flags; treating the raw byte as the sprite index hid
             # entries like 0x8A/0x8B/0x8D/0xCA and left only low-valued crystals.
-            sprite_index = entry.code & 0x3F
-            sprite = self.graphics.sprite("AE000", 19, sprite_index)
+            sprite_index = (frame_overrides or {}).get(entry.index, entry.code & 0x1F)
+            sprite = self.graphics.sprite("AE000", 19, sprite_index & 0x1F)
             if sprite is None:
                 continue
             self._blit(image, sprite, *object_entry_xy(entry))

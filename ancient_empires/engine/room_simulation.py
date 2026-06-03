@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 import random
 
 from ..game_data.actor_dsl import ActorScriptError, branch_target, decode_instruction, opcode_size
@@ -26,7 +27,12 @@ LASER_TTL = 0x18
 LASER_RING_SLOTS = 0x18
 LASER_SUBSTEPS_PER_TICK = 8
 LASER_PIXEL_STEP = 1
-LASER_FREEZE_TICKS = 0x40
+# Actor byte 0x09 is copied to byte 0x0A when the laser head overlaps
+# the actor.  A zero value intentionally means "not frozen"; this is how
+# stock projectile/secondary records avoid being stopped by the flashlight.
+LASER_FREEZE_TICKS = 0x40  # legacy fallback only; real actors use record.delay
+from ..game_data.game_graphics_records import iter_game_graphics_records
+from ..game_data.dat_archive import DatArchive
 from ..game_data.room_payload import (
     ACTOR_TABLE_OFFSET,
     ACTOR_TABLE_SIZE,
@@ -55,7 +61,85 @@ PLATFORM_FOOTPRINT_CELLS = {
     "unknown": (1, 1),
 }
 REFLECTOR_FRAME_COUNT = 24
-REFLECTOR_AUTO_TICKS = 6
+REFLECTOR_AUTO_TICKS = 10
+LASER_DIRECTION_COUNT = 12
+LASER_DIRECTION_PHASES = 6
+# 12-way direction table copied from the DS:0900 signed-word table used by
+# AEPROG 0x5ac3.  Direction 3 is due-right, 9 is due-left, and diagonal-ish
+# rows use a six-step dither so the beam can travel at shallow/steep angles
+# without requiring fractional coordinates.
+LASER_DIRECTION_STEPS = {
+    0: [(0, 0), (0, -1), (0, -1), (0, -1), (0, -1), (0, -1)],
+    1: [(0, -1), (1, -1), (1, -1), (0, -1), (1, -1), (1, -1)],
+    2: [(0, -1), (1, -1), (1, 0), (1, -1), (1, 0), (1, -1)],
+    3: [(1, 0)] * 6,
+    4: [(1, 0), (1, 1), (1, 0), (1, 1), (1, 0), (1, 1)],
+    5: [(1, 0), (1, 1), (1, 1), (0, 1), (1, 1), (1, 1)],
+    6: [(0, 1)] * 6,
+    7: [(0, 1), (-1, 1), (-1, 1), (0, 1), (-1, 1), (-1, 1)],
+    8: [(0, 1), (-1, 1), (-1, 0), (-1, 1), (-1, 0), (-1, 1)],
+    9: [(-1, 0)] * 6,
+    10: [(-1, 0), (-1, -1), (-1, 0), (-1, -1), (-1, 0), (-1, -1)],
+    11: [(-1, 0), (-1, -1), (-1, -1), (0, -1), (-1, -1), (-1, -1)],
+}
+
+
+def _load_reflector_pixel_masks() -> list[list[list[int]]]:
+    """Load the 30x30 reflection-class masks used by AEPROG 0x5f3c.
+
+    Reflector sprites live in AE000 resource 19.  The draw routine at 0x6036
+    blits one 0x0f-byte x 0x1e-row sprite, while 0x5f3c indexes the same
+    packed 4bpp data nibble-by-nibble to decide which triangular face was hit.
+    In the VGA mode used by the game, 0x5f3c classifies the already mapped
+    screen colours 0x83/0x86/0x8a rather than raw logical nibbles.  The per-frame
+    VGA lookup table changes which logical nibbles are reflective, so precompute
+    class masks here instead of using one global raw-nibble mapping.
+    """
+    candidates = [
+        Path("game_data/AE000.DAT"),
+        Path(__file__).resolve().parents[2] / "game_data" / "AE000.DAT",
+    ]
+    dat_path = next((path for path in candidates if path.exists()), None)
+    if dat_path is None:
+        return []
+    try:
+        res = DatArchive(dat_path)[19]
+        masks: list[list[list[int]]] = []
+        for rec in iter_game_graphics_records(res.decoded, res.rtype):
+            payload = rec.payload
+            row_bytes = payload[0x20]
+            height = payload[0x21]
+            if row_bytes != 0x0F or height != 0x1E:
+                continue
+            raw = payload[0x22:0x22 + row_bytes * height]
+            if len(raw) < row_bytes * height:
+                continue
+            vga_table = list(payload[16:32])
+            rows: list[list[int]] = []
+            for y in range(height):
+                row: list[int] = []
+                for byte in raw[y * row_bytes:(y + 1) * row_bytes]:
+                    for value in ((byte >> 4) & 0x0F, byte & 0x0F):
+                        row.append(_reflector_vga_pixel_to_class(vga_table[value]))
+                rows.append(row)
+            masks.append(rows)
+        return masks
+    except Exception:
+        return []
+
+
+def _reflector_vga_pixel_to_class(value: int) -> int:
+    """Return AEPROG 0x5f3c VGA reflection class for one mapped pixel value."""
+    if value == 0x83:
+        return 1
+    if value == 0x86:
+        return 2
+    if value == 0x8A:
+        return 3
+    return 0
+
+
+REFLECTOR_PIXEL_MASKS = _load_reflector_pixel_masks()
 
 
 @dataclass
@@ -69,6 +153,7 @@ class SimActorState:
     frame: int
     frame_variant: int
     hidden: int
+    delay: int
     frame_min: int
     frame_max: int
     script_offset: int
@@ -93,6 +178,7 @@ class SimActorState:
             frame=record.frame,
             frame_variant=record.frame_variant,
             hidden=record.hidden,
+            delay=record.delay,
             frame_min=record.frame_min,
             frame_max=record.frame_max,
             script_offset=record.script_offset,
@@ -224,6 +310,9 @@ class RoomSimulation:
         self.green_blocks: list[SimGreenBlockState] = []
         self.reflector_frames: dict[int, int] = {}
         self.reflector_events: dict[int, str] = {}
+        # AEPROG 0x60a9 rotates auto reflectors only while no laser is active;
+        # DS:0A20 is initialised/reset to 10 and decremented once per call.
+        self._reflector_auto_counter = REFLECTOR_AUTO_TICKS
         self.runtime_tiles_cache: list[int] | None = None
         self._last_object_code: int | None = None
         # Per-platform travel progress in pixels (0..PLATFORM_TRAVEL_DISTANCE).
@@ -235,9 +324,17 @@ class RoomSimulation:
         # used by render/tests.
         self._laser_slots: list[tuple[int, int]] = []
         self._laser_head = 0
-        self._laser_dx = 0
-        self._laser_dy = 0
+        self._laser_direction = 3
+        self._laser_phase = 0
         self._laser_inactive_substeps = 0
+        # Mirrors DS:C0B6 as a collision latch: after a reflector hit, the ASM
+        # skips repeated classification while the head is still in that object,
+        # but later reflector objects can still bounce the same beam.
+        self._laser_reflection_latch_entry: int | None = None
+        # Mirrors DS:C0BE/pending 0x338a trigger: one jello/lever control may be
+        # tripped by a beam, and the hit kills the travelling head.
+        self._laser_triggered_controls: set[int] = set()
+        self._laser_freeze_probe_points: list[tuple[int, int]] = []
         self.laser_points: list[tuple[int, int]] = []
         self.laser_ttl = 0
         self._load_initial_controls()
@@ -277,7 +374,11 @@ class RoomSimulation:
         if table is None:
             return
         for entry in table.entries:
-            self.reflector_frames[entry.index] = (entry.code & 0x3F) % REFLECTOR_FRAME_COUNT
+            # ASM masks the orientation with 0x1f everywhere it draws/updates
+            # these crystals (0x6053, 0x60f7/0x6101, 0x61b1/0x61bb).
+            # Bit 0x80 is auto-rotate and bit 0x40 reverses step direction;
+            # bit 0x20 is preserved as metadata but is not part of the frame.
+            self.reflector_frames[entry.index] = (entry.code & 0x1F) % REFLECTOR_FRAME_COUNT
 
     def _initial_player_position(self) -> tuple[int, int]:
         start = header_player_start(self.part.header)
@@ -325,12 +426,19 @@ class RoomSimulation:
 
     def _advance_reflector(self, index: int, code: int, *, reason: str) -> None:
         direction = -1 if (code & 0x40) else 1
-        current = self.reflector_frames.get(index, (code & 0x3F) % REFLECTOR_FRAME_COUNT)
+        current = self.reflector_frames.get(index, (code & 0x1F) % REFLECTOR_FRAME_COUNT)
         self.reflector_frames[index] = (current + direction) % REFLECTOR_FRAME_COUNT
-        self.reflector_events[index] = f"{reason}: frame {self.reflector_frames[index]}"
+        message = f"{reason}: frame {self.reflector_frames[index]}"
+        previous = self.reflector_events.get(index, "")
+        # Auto-rotation is noisy and happens every draw/update pass.  Do not
+        # immediately hide the more important laser-reflection trace.
+        if "reflect" in previous and reason == "auto":
+            self.reflector_events[index] = f"{previous}; {message}"
+        else:
+            self.reflector_events[index] = message
 
     def reflector_sprite_index(self, entry) -> int:
-        return self.reflector_frames.get(entry.index, (entry.code & 0x3F) % REFLECTOR_FRAME_COUNT)
+        return self.reflector_frames.get(entry.index, (entry.code & 0x1F) % REFLECTOR_FRAME_COUNT)
 
     def reflector_runtime_summary(self) -> list[str]:
         table = laser_crystal_table(self.room)
@@ -398,12 +506,12 @@ class RoomSimulation:
     # all in raw-x / full-y space:
     #   command 0 ceiling button -> (x+6, y+3, 2, 6)   (0x2f98..0x2fb2)
     #   command 1 floor button   -> (x+3, y,   7, 7)   (0x3001..0x3017)
-    #   command 2 lever          -> (x,   y,  16, 8)   (0x3039..0x304a)
+    #   command 2 light sensor   -> (x,   y,   8, 16)  (0x3039..0x307a)
     #   command 3+ trigger       -> (x,   y,   8, 4)   (0x2f38..0x2f49)
     _CONTROL_BOX = {
         0: (6, 3, 2, 6),
         1: (3, 0, 7, 7),
-        2: (0, 0, 16, 8),
+        2: (0, 0, 8, 16),
     }
 
     def _object_code_at_player(self) -> int | None:
@@ -479,6 +587,7 @@ class RoomSimulation:
             for actor in list(self.actors.values()):
                 if actor.room_index == self.room_index and actor.active:
                     self._step_actor(actor)
+            self._laser_freeze_actors()
 
     def fire_laser(self, x: int, y: int, facing: int) -> bool:
         """Start the flashlight laser if the original cooldown flag is clear.
@@ -497,9 +606,12 @@ class RoomSimulation:
 
         self._laser_slots = [(sx, sy)] * LASER_RING_SLOTS
         self._laser_head = LASER_RING_SLOTS - 1  # DS:C04E = 0x17
-        self._laser_dx = -LASER_PIXEL_STEP if facing else LASER_PIXEL_STEP
-        self._laser_dy = 0
+        self._laser_direction = 9 if facing else 3
+        self._laser_phase = 0
         self._laser_inactive_substeps = 0
+        self._laser_reflection_latch_entry = None
+        self._laser_triggered_controls.clear()
+        self._laser_freeze_probe_points = [(sx, sy)]
         self.laser_ttl = LASER_TTL  # DS:C0C0 = 0x18 / DS:08FE = 1
         self._refresh_laser_points()
         return True
@@ -523,39 +635,166 @@ class RoomSimulation:
                 compact.append(point)
         self.laser_points = compact
 
-    def _laser_hits_solid_or_edge(self, x: int, y: int) -> bool:
+    def _laser_hits_edge(self, x: int, y: int) -> bool:
         if not (8 <= x <= 0x137 and 0x10 <= y <= 0x9f):
             return True
+        return False
+
+    def _laser_crossed_tile_boundary(self, old_x: int, old_y: int, x: int, y: int) -> bool:
+        return (old_x >> 3) != (x >> 3) or (old_y >> 3) != (y >> 3)
+
+    def _laser_hits_solid(self, x: int, y: int) -> bool:
         col = x // 8 - 1
         row = y // 8 - 2
         if 0 <= col < ROOM_COLUMNS and 0 <= row < ROOM_ROWS:
             return bool(self.runtime_tiles()[row * ROOM_COLUMNS + col] & 0x07)
         return False
 
-    def _laser_trip_levers(self) -> None:
-        ox, oy, ow, oh = self._CONTROL_BOX[2]  # lever box (0, 0, 16, 8) raw-x
+    def _laser_direction_step(self) -> tuple[int, int]:
+        row = LASER_DIRECTION_STEPS[self._laser_direction % LASER_DIRECTION_COUNT]
+        dx, dy = row[self._laser_phase % LASER_DIRECTION_PHASES]
+        self._laser_phase = (self._laser_phase + 1) % LASER_DIRECTION_PHASES
+        return dx * LASER_PIXEL_STEP, dy * LASER_PIXEL_STEP
+
+    @staticmethod
+    def _reflector_entry_xy(entry) -> tuple[int, int]:
+        # Same transform as rendering.coordinates.object_entry_xy, kept local to
+        # avoid coupling the simulation package back to the renderer.
+        return entry.x_raw * 2 - 8, entry.y - 16
+
+    def _reflector_at_point(self, x: int, y: int):
+        table = laser_crystal_table(self.room)
+        if table is None:
+            return None
+        for entry in table.entries:
+            # AEPROG 0x5c18 calls the object hit-test with (laser_x >> 1,
+            # laser_y) and accepts section-C objects 0x30..0x4f.  The matched
+            # entry then provides the exact raw anchor used by 0x5f3c below:
+            # local_x = laser_x - entry.x_raw*2, local_y = laser_y - entry.y.
+            # Do not use the editor/rendered top-left here; it is cropped by
+            # (-8,-16) for display and makes the triangular faces reflect from
+            # the wrong pixels.
+            if entry.x_raw <= (x >> 1) < entry.x_raw + 0x0F and entry.y <= y < entry.y + 0x1E:
+                return entry
+        return None
+
+    @staticmethod
+    def _laser_reflection_class(entry, x: int, y: int, frame: int | None = None) -> int:
+        # AEPROG 0x5f3c does not treat the reflector as a rectangular mirror.
+        # It subtracts the section-C entry position (x_raw*2, y), indexes the
+        # current 30x30 packed 4bpp reflector sprite, extracts one nibble, and
+        # maps only selected logical colours to reflection classes.  This is the
+        # triangular-face test: class 1/2/3 is selected by the actual sprite
+        # colour at the touched pixel, not by a simple box or diagonal.
+        local_x = x - entry.x_raw * 2
+        local_y = y - entry.y
+        if not (0 <= local_x < 0x1E and 0 <= local_y < 0x1E):
+            return 0
+
+        if frame is None:
+            frame = entry.code & 0x1F
+        if REFLECTOR_PIXEL_MASKS:
+            mask = REFLECTOR_PIXEL_MASKS[frame % len(REFLECTOR_PIXEL_MASKS)]
+            return mask[local_y][local_x]
+
+        # Fallback for test/minimal installs without AE000.DAT: keep the same
+        # triangle-shaped idea rather than the old square/diagonal classifier.
+        if local_x + local_y < 8 or local_x + local_y > 50:
+            return 0
+        if abs(local_x - local_y) <= 3:
+            return 1
+        return 2 if local_x > local_y else 3
+
+    def _laser_try_reflect(self, x: int, y: int) -> bool:
+        entry = self._reflector_at_point(x, y)
+        if entry is None:
+            self._laser_reflection_latch_entry = None
+            return False
+        if self._laser_reflection_latch_entry == entry.index:
+            return False
+        frame = self.reflector_sprite_index(entry) & 0x1F
+        reflection_class = self._laser_reflection_class(entry, x, y, frame)
+        if reflection_class == 0:
+            return False
+
+        # AEPROG 0x5d00/0x5d20/0x5d43: the three coloured triangular faces are
+        # not equivalent.  The 0x5f3c sprite-nibble classifier returns class
+        # 1/2/3, and that selects frame-old_dir, frame-old_dir-8, or
+        # frame-old_dir+8.  DS:C0B0 (the dither phase into DS:0900) is *not*
+        # reset after reflection, so keep our phase too.
+        old_direction = self._laser_direction
+        adjustment = {1: 0, 2: -8, 3: 8}[reflection_class]
+        self._laser_direction = (frame - old_direction + adjustment) % LASER_DIRECTION_COUNT
+        self._laser_reflection_latch_entry = entry.index
+        self.reflector_events[entry.index] = (
+            f"reflect face {reflection_class}: frame {frame} old {old_direction} -> dir {self._laser_direction}"
+        )
+        self.pending_sound_ids.append(0x0F)
+        return True
+
+    def _laser_try_trigger_jello(self, x: int, y: int) -> bool:
+        """Return True when the beam hits a command-2 jello/lever trigger.
+
+        In the ASM this is the 0x5c2f..0x5c67 path: object codes 0x08..0x1f
+        are converted to control records, only command byte 2 is accepted,
+        DS:C0BE is set, SI is cleared, and 0x6021 later calls 0x338a exactly
+        once.  The old preview scanned the whole visible trail every tick,
+        which made one beam toggle the same jello repeatedly.
+        """
+        qx = x >> 1
         for cmd in self.controls():
             if cmd.command != 2 or cmd.x_raw is None or cmd.y_raw is None:
                 continue
+            ox, oy, ow, oh = self._CONTROL_BOX[2]
             left, top = cmd.x_raw + ox, cmd.y_raw + oy
-            for bx, by in self.laser_points:
-                if left <= bx // 2 < left + ow and top <= by < top + oh:
+            if left <= qx < left + ow and top <= y < top + oh:
+                if cmd.record.index not in self._laser_triggered_controls:
+                    self._laser_triggered_controls.add(cmd.record.index)
                     self.toggle_control(cmd.record.index)
-                    break
+                return True
+        return False
+
+    def _laser_trip_levers(self) -> None:
+        # Compatibility stub retained for older callers/tests.  Jello/lever
+        # laser triggering is now done during _step_laser() from the travelling
+        # head only, matching the ASM object-probe path and preventing repeated
+        # toggles from the historical 24-slot trail.
+        return
+
+    def _laser_head_point(self) -> tuple[int, int] | None:
+        """Return the single DS:C04E laser coordinate used for actor freeze.
+
+        The renderer shows the whole 24-slot trail, but AEPROG 0x4c7a tests
+        actors only against the current head slot (DS:C050/C080 indexed by
+        DS:C04E), not every historical point in the trail.
+        """
+        if self.laser_ttl <= 0 or not self._laser_slots:
+            return None
+        point = self._laser_slots[self._laser_head]
+        return None if point == (0, 0) else point
 
     def _laser_freeze_actors(self) -> None:
-        # Freeze every active actor the current moving trail overlaps
-        # (AEPROG 0x4c7a).  The exact actor-local freeze duration is still a
-        # conservative constant here.
+        # AEPROG 0x4c7a copies actor byte 0x09 into byte 0x0A when the active
+        # laser coordinate overlaps the actor's sprite bounds.  Zero remains the
+        # exclusion filter for projectiles/secondary records.  In this cleaned
+        # simulation we test the current tick's moved head positions instead of
+        # only the final substep; otherwise an 8-px-per-tick head can skip over
+        # many 16-px sprites in the preview.
+        points = self._laser_freeze_probe_points or ([self._laser_head_point()] if self._laser_head_point() else [])
+        if not points:
+            return
         for actor in self.actors.values():
-            if actor.room_index != self.room_index or not actor.active:
+            if actor.room_index != self.room_index:
+                continue
+            if actor.hidden or actor.frozen > 0 or actor.delay <= 0:
                 continue
             ax0, ay0 = actor.x, actor.y
             ax1, ay1 = actor.x + 16, actor.y + 16
-            if any(ax0 <= bx <= ax1 and ay0 <= by <= ay1 for bx, by in self.laser_points):
-                actor.frozen = LASER_FREEZE_TICKS
+            if any(ax0 <= bx <= ax1 and ay0 <= by <= ay1 for bx, by in points):
+                actor.frozen = actor.delay
 
     def _step_laser(self) -> None:
+        self._laser_freeze_probe_points = []
         if self.laser_ttl <= 0:
             self._laser_slots = []
             self.laser_points = []
@@ -564,33 +803,50 @@ class RoomSimulation:
         x, y = self._laser_slots[self._laser_head]
         for _ in range(LASER_SUBSTEPS_PER_TICK):
             if x == 0:
-                self._laser_inactive_substeps += 1
-                if self._laser_inactive_substeps >= LASER_RING_SLOTS:
-                    self.laser_ttl -= 1
-                    self._laser_inactive_substeps = 0
+                # ASM 0x5d80 decrements DS:C0C0 only after the travelling head
+                # has died (SI == 0).  There is no fixed range counter while the
+                # beam is moving; range is effectively bounded by room edge,
+                # solid tiles, or a non-reflective collision.
+                self.laser_ttl -= 1
                 next_x, next_y = 0, 0
+                if self.laser_ttl <= 0:
+                    self._laser_slots = []
+                    self.laser_points = []
+                    self._laser_freeze_probe_points = []
+                    return
             else:
-                next_x = x + self._laser_dx
-                next_y = y + self._laser_dy
-                if self._laser_hits_solid_or_edge(next_x, next_y):
+                dx, dy = self._laser_direction_step()
+                next_x = x + dx
+                next_y = y + dy
+                if self._laser_hits_edge(next_x, next_y):
+                    next_x, next_y = 0, 0
+                elif (_ % 4) == 0:
+                    # AEPROG 0x5c07 tests object collisions only when the
+                    # per-call substep counter has bits 0..1 clear.  This is
+                    # important for triangular reflectors: the face sampled by
+                    # 0x5f3c is a 4-pixel cadence point, not every pixel along
+                    # the entering edge.
+                    if self._laser_try_trigger_jello(next_x, next_y):
+                        next_x, next_y = 0, 0
+                    elif self._laser_crossed_tile_boundary(x, y, next_x, next_y) and self._laser_hits_solid(next_x, next_y):
+                        next_x, next_y = 0, 0
+                    else:
+                        reflected = self._laser_try_reflect(next_x, next_y)
+                        if reflected:
+                            # Reflection rewrites DS:C0B8 (direction) but keeps
+                            # this substep's coordinate alive; the new direction
+                            # is consumed by the next DS:0900 row lookup.
+                            pass
+                elif self._laser_crossed_tile_boundary(x, y, next_x, next_y) and self._laser_hits_solid(next_x, next_y):
                     next_x, next_y = 0, 0
 
             self._laser_head = (self._laser_head + 1) % LASER_RING_SLOTS
             self._laser_slots[self._laser_head] = (next_x, next_y)
+            if next_x != 0:
+                self._laser_freeze_probe_points.append((next_x, next_y))
             x, y = next_x, next_y
 
-        # This is the user-visible lifetime/cooldown.  The ASM's DS:C0C0 is
-        # decremented once inactive slots circulate after impact/edge; using one
-        # visible tick here preserves the practical 0x18-shot cooldown.
-        self.laser_ttl -= 1
-        if self.laser_ttl <= 0:
-            self._laser_slots = []
-            self.laser_points = []
-            return
-
         self._refresh_laser_points()
-        self._laser_trip_levers()
-        self._laser_freeze_actors()
 
     def _advance_platforms(self) -> None:
         """Slide each platform toward/away from its target by 8 px (0x25b3)."""
@@ -620,8 +876,16 @@ class RoomSimulation:
         return (round(dx * scale), round(dy * scale))
 
     def _step_auto_reflectors(self) -> None:
-        if self.tick_count % REFLECTOR_AUTO_TICKS != 0:
+        # AEPROG 0x60a9 first checks DS:08FE and returns immediately while a
+        # flashlight laser is active/cooling down.  Only when no laser exists
+        # does it decrement DS:0A20; on zero it resets the counter to 10 and
+        # advances each reflector whose code has bit 0x80.
+        if self.laser_ttl > 0:
             return
+        self._reflector_auto_counter -= 1
+        if self._reflector_auto_counter > 0:
+            return
+        self._reflector_auto_counter = REFLECTOR_AUTO_TICKS
         table = laser_crystal_table(self.room)
         if table is None:
             return

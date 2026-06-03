@@ -147,24 +147,77 @@ The selected tool is `DS:0b7e` (0..2), drawn as AE000:063 sprite `3 + tool`:
   (`0x4214..0x422c`).  `0x5a3b` seeds two `0x18`-word coordinate arrays
   (`DS:c050..c07f` / `DS:c080..c0af`) with `(player_x+0x10, player_y+4)`, sets
   ring index `DS:c04e = 0x17`, direction row `DS:c0b8` (`3` right, `9` left),
-  cooldown/lifetime `DS:c0c0 = 0x18`, and raises `DS:08fe = 1`.  It does **not**
-  create an instant full-room beam.
+  inactive-tail countdown `DS:c0c0 = 0x18`, and raises `DS:08fe = 1`.  It does
+  **not** create an instant full-room beam, and `DS:c0c0` is not a range limit.
 
   The updater (`0x5ac3`) advances only eight 1-pixel substeps per tick through
-  the 24-slot coordinate ring, so the visible laser is a short yellow line that
-  grows and moves through space.  It stops at solid terrain/edge, activates
-  command-2 **levers** it crosses (`0x5c41`, the only way to trip those), and
-  **freezes** any actor it overlaps (`0x4c7a` sets the actor's freeze timer
-  `[di+0xa]` from `[di+0x9]`; a frozen actor skips its script and counts down at
-  `0x4b39`/`0x4b70`).  Jello light-sensors (object codes `0x30-0x4f`)
-  **reflect** the beam via the direction tables at `DS:0900`, with hit/reflect
-  SFX `0x0f`.
+  the 24-slot coordinate ring, so the visible laser is a short **1-pixel**
+  yellow line that grows and moves through space.  While `SI != 0`, `DS:c0c0`
+  is not decremented; it only counts down at `0x5d80` after the head has died,
+  so range is effectively limited by solid terrain, room edge, or collision, not
+  by the initial `0x18` value.  It checks room edges every pixel, but checks
+  solid terrain only when the 1-pixel head crosses an 8-pixel tile boundary;
+  it activates command-2 **jello/levers** through the `0x5c2f..0x5c67`
+  object-probe path using the registered command-2 object box
+  (`8` raw-X units by `16` pixels).  The jello probe
+  is allowed to fire at the sampled point before a solid-tile boundary kill at
+  that same point, which is important for beams reflected back into a sensor
+  from the opposite side.  The object probe converts the full-pixel laser X to
+  raw-X space with the same `x >> 1` shift for both left- and right-moving
+  beams.  It can also freeze actors during the actor pass.  That path sets
+  one pending trigger (`DS:c0be`) and clears `SI`, so a single moving beam toggles
+  a jello/lever only once; the visible historical trail must not retrigger it on
+  later ticks.  The freeze
+  check at `0x4c7a` copies actor byte `[di+0x9]` into freeze timer `[di+0xa]`.
+  Records with `[di+0x9] == 0` therefore do not stop; this matches
+  projectile/secondary records such as fireballs, energy orbs and pill
+  projectiles.  A frozen actor skips its script and counts down at
+  `0x4b39`/`0x4b70`.  Jello light-sensors / reflectors (object codes
+  `0x30-0x4f`) **reflect** the beam via the 12-way direction rows at `DS:0900`.
+  The collision path copies the reflector compact3 bytes, masks the runtime
+  frame with `0x1f` (`DS:c0c2`), then `0x5f3c` returns one of three reflector
+  classes.  The follow-up formulas are `new_dir = frame - old_dir`,
+  `frame - old_dir - 8`, or `frame - old_dir + 8`, normalized back into
+  `0..11`, and play hit/reflect SFX `0x0f` (`0x5c69..0x5d7c`).  The object
+  collision/classification branch is only entered when the local substep counter
+  satisfies `(counter & 3) == 0` (`0x5c07`), so the triangular face is sampled at
+  the same 4-pixel cadence as the original instead of every pixel along the
+  entering edge.  Reflection sets `DS:c0b6` as a collision latch so the beam
+  does not repeatedly reclassify the same reflector while still inside its
+  object box; the latch is cleared after leaving that reflector, so the same
+  beam can reflect from later reflectors.  It also keeps `DS:c0b0`, the
+  `DS:0900` dither-table phase, instead of resetting phase after reflection.
+  `0x5f3c`
+  does not reflect from the whole rectangular object box: it subtracts the
+  raw section-C reflector anchor (`local_x = laser_x - x_raw*2`,
+  `local_y = laser_y - y`), indexes the current 30x30 packed 4bpp sprite
+  nibble, and only specific logical colours return classes.  In the normal branch logical
+  colours `2/3/4` map to classes `1/2/3`; the alternate branch maps
+  `0x0b/0x09/0x08` to the same classes.  This is why the crystal behaves as a
+  triangular reflector rather than a square mirror.  The object-list box is
+  still 0x0f raw-x units by 0x1e pixels (`0x6036`), i.e. a 30x30 broad-phase
+  footprint; transparent/background pixels inside that box return class 0 and
+  do not deflect.
+
+  Reflector orientation uses only the low five bits (`code & 0x1f`), not
+  `0x3f`.  Bit `0x80` marks self-rotating reflectors (`0x60d2`), bit `0x40`
+  reverses the step direction, and controlled reflectors advance one frame per
+  button/switch trigger via the targeted `R0..R15` command bytes (`0x6181`).
+  Self-rotation is intentionally slow: `0x60a9` returns immediately while
+  `DS:08fe` says a laser is active, otherwise it decrements `DS:0a20`; only
+  when that counter reaches zero does it reset it to `10` and advance all
+  `0x80` reflectors by one frame.
 
   Ported: `RoomSimulation.fire_laser`/`_step_laser` now uses the 24-slot moving
   trail and cooldown instead of an instant beam, with wall stop, lever trip,
-  actor freeze, and yellow-line render.  Jello reflection and the exact
-  per-actor freeze duration are not modelled yet (a fixed `LASER_FREEZE_TICKS`
-  stands in).
+  actor freeze from each actor record's byte `0x09`, one-shot jello/lever
+  triggering from the moving head, projectile exclusion when
+  that byte is zero, 1-pixel yellow-line render, runtime reflector rotation
+  every ten non-laser ticks, low-five-bit reflector frames, raw-anchor 30x30
+  reflector broad-phase plus 4-pixel-cadence triangular sprite-nibble face reflection, unlimited
+  moving range until wall/edge, and reflector deflection into 12-way directions without resetting the dither phase.  The preview tests all head
+  substep positions from the current tick for freezing so the Python simulation
+  does not miss sprites between 8-px tick advances.
 
 - **Immortality** uses are limited to 4 per level (`DS:0b80`, shown by the
   overlay AE000:063:6..10 for counts 0..4); activating decrements the count via

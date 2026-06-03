@@ -76,6 +76,7 @@ class GameScreenRenderer:
             green_block_remaining = (
                 {gb.index: gb.remaining_sequence for gb in simulation.green_blocks} if live_room else None
             )
+            reflector_frames = (dict(simulation.reflector_frames) if live_room else None)
             if simulation is not None and room_index == simulation.room_index:
                 conveyor_tiles = simulation.runtime_tiles()
                 conveyor_frame = (simulation.tick_count // 2) % 4
@@ -103,6 +104,7 @@ class GameScreenRenderer:
                     green_block_remaining=green_block_remaining,
                     conveyor_frame=conveyor_frame,
                     conveyor_tiles=conveyor_tiles,
+                    reflector_frames=reflector_frames,
                     show_invisible=show_invisible,
                     display_mode=display_mode,
                 ),
@@ -133,7 +135,7 @@ class GameScreenRenderer:
             draw.point(points[0], fill=yellow)
             return
         for a, b in zip(points, points[1:]):
-            draw.line([a, b], fill=yellow, width=2)
+            draw.line([a, b], fill=yellow, width=1)
 
     def _draw_player(
         self,
