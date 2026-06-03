@@ -1752,7 +1752,16 @@ def write_midi(
     speed: float = DEFAULT_PREVIEW_SPEED,
     audio_kind: str | None = None,
     channel_programs: dict[int, int | None] | None = None,
+    exe_path: Path | str | None = None,
 ) -> Path:
+    # Sound-card (OPL) music is converted faithfully from its register trace -
+    # the same trace the audio renderer uses - which needs the EXE for the
+    # instrument patches.  PC-speaker music has no OPL registers and keeps the
+    # stream-based path below.
+    if audio_kind == "soundcard-music" and exe_path is not None:
+        return write_opl_trace_midi(
+            data, exe_path, path, speed=speed, channel_programs=channel_programs
+        )
     path = Path(path)
     streams = _streams_from_resource(data)
     ticks_per_quarter = 96
@@ -1848,5 +1857,196 @@ def write_midi(
     for tr in tracks:
         body += b"MTrk" + struct.pack(">I", len(tr)) + tr
     path.write_bytes(header + bytes(body))
+    return path
+
+
+# --- OPL register-trace -> MIDI (faithful converter) --------------------------
+#
+# Inspired by Paul Jensen's vgm2mid (basYM3812): convert the actual OPL register
+# writes - the same trace the audio renderer uses - into MIDI.  Each OPL channel
+# becomes its own MIDI channel; FNum/block give a *fractional* MIDI note that is
+# rendered as an integer note plus a pitch-wheel offset (so the microtonal OPL
+# tuning and small note glides survive), and the carrier total-level becomes the
+# note velocity.  This matches what you hear far better than snapping parsed
+# stream notes to the nearest equal-tempered semitone.
+
+#: OPL2 sample/reference clock used in the FNum->Hz relation (chipclock/72).
+OPL_FREQUENCY_CLOCK = 49716.0
+#: 14-bit pitch wheel: 0..16383, centre 8192 = no bend.
+_MIDI_WHEEL_CENTER = 0x2000
+#: General MIDI default pitch-bend range is +/-2 semitones, so one semitone is
+#: half of the 8192-unit half-range.
+_MIDI_WHEEL_PER_SEMITONE = 4096
+
+
+def _opl_fnum_block_to_hz(fnum: int, block: int) -> float:
+    if fnum <= 0:
+        return 0.0
+    return fnum * OPL_FREQUENCY_CLOCK / float(1 << (20 - block))
+
+
+def _hz_to_fractional_midi(hz: float) -> float:
+    if hz <= 0.0:
+        return 0.0
+    return 69.0 + 12.0 * math.log2(hz / 440.0)
+
+
+def _opl_carrier_tl_to_velocity(total_level: int) -> int:
+    # vgm2mid: dB = -TL*4/3, vel = 10^(dB/40) * 127.  TL 0 -> 127 (loudest),
+    # TL 0x3F -> ~1 (near silent).  Keeps the relative loudness of the OPL
+    # voices (set by their carrier levels) in the exported velocities.
+    velocity = int(round(127.0 * (10.0 ** ((-total_level * 4.0 / 3.0) / 40.0))))
+    return max(1, min(127, velocity))
+
+
+def _opl_register_channel_op(register: int) -> tuple[int, int] | None:
+    """Map an operator register (0x20/0x40/0x60/0x80/0xE0 bank) to (channel, op).
+
+    Returns None for the gaps in the OPL operator layout (slots 6,7 of each
+    0x20-block are unused).  op 0 is the modulator, op 1 the carrier.
+    """
+    low = register & 0x1F
+    if (low & 0x07) > 0x05:
+        return None
+    op = (low & 0x07) // 0x03
+    channel = ((low & 0x18) // 0x08) * 0x03 + ((low & 0x07) % 0x03)
+    return channel, op
+
+
+def write_opl_trace_midi(
+    data: bytes,
+    exe_path: Path | str,
+    path: Path | str,
+    *,
+    speed: float = DEFAULT_PREVIEW_SPEED,
+    channel_programs: dict[int, int | None] | None = None,
+) -> Path:
+    """Convert a sound-card music resource to MIDI from its OPL register trace."""
+    path = Path(path)
+    writes = soundcard_music_opl_full_writes(data, exe_path, speed=speed)
+    speed = max(0.10, min(8.0, float(speed)))
+    ticks_per_quarter = 96
+    ticks_per_second = ticks_per_quarter * 2  # 120 bpm
+
+    # Default GM programs per logical stream (3 OPL voices each), honouring any
+    # user override coming from the audio-atlas UI.
+    summaries = describe_music_channels(data, audio_kind="soundcard-music")
+
+    def program_for_channel(channel: int) -> int | None:
+        stream = channel // 3
+        if channel_programs is not None and stream in channel_programs:
+            return channel_programs[stream]
+        if stream < len(summaries):
+            return summaries[stream].default_program
+        return None
+
+    # Per-OPL-channel running state.
+    fnum_lsb = [0] * 9
+    block = [0] * 9
+    prev_key = [0] * 9
+    prev_note = [0.0] * 9
+    cur_midi_note = [None] * 9  # type: list[int | None]
+    wheel = [_MIDI_WHEEL_CENTER] * 9
+    carrier_tl = [0] * 9
+    events: list[list[tuple[int, int, bytes]]] = [[] for _ in range(9)]
+    used = [False] * 9
+
+    def emit(channel: int, tick: int, priority: int, payload: bytes) -> None:
+        events[channel].append((tick, priority, payload))
+
+    def pitch_wheel_bytes(channel: int, value: int) -> bytes:
+        value = max(0, min(0x3FFF, int(value)))
+        return bytes([0xE0 | channel, value & 0x7F, (value >> 7) & 0x7F])
+
+    def note_on(channel: int, tick: int, frac_note: float) -> None:
+        int_note = max(0, min(127, int(math.floor(frac_note))))
+        bend = _MIDI_WHEEL_CENTER + int(round((frac_note - math.floor(frac_note)) * _MIDI_WHEEL_PER_SEMITONE))
+        wheel[channel] = bend
+        emit(channel, tick, 1, pitch_wheel_bytes(channel, bend))
+        emit(channel, tick, 2, bytes([0x90 | channel, int_note, _opl_carrier_tl_to_velocity(carrier_tl[channel])]))
+        cur_midi_note[channel] = int_note
+
+    def note_off(channel: int, tick: int) -> None:
+        if cur_midi_note[channel] is not None:
+            emit(channel, tick, 0, bytes([0x80 | channel, cur_midi_note[channel], 0]))
+            cur_midi_note[channel] = None
+
+    for write in writes:
+        tick = int(round((write.time_ticks * TICK_SECONDS / speed) * ticks_per_second))
+        reg = write.register
+        val = write.value
+        if 0xA0 <= reg <= 0xA8:
+            fnum_lsb[reg - 0xA0] = val
+        elif 0xB0 <= reg <= 0xB8:
+            ch = reg - 0xB0
+            key = (val >> 5) & 1
+            block[ch] = (val >> 2) & 0x07
+            fnum = ((val & 0x03) << 8) | fnum_lsb[ch]
+            note2 = _hz_to_fractional_midi(_opl_fnum_block_to_hz(fnum, block[ch]))
+            note1 = prev_note[ch]
+            if key == 0:
+                note_off(ch, tick)
+            elif prev_key[ch] == 0 or cur_midi_note[ch] is None:
+                # Fresh key-on: retrigger at the new pitch.
+                note_off(ch, tick)
+                note_on(ch, tick, note2)
+                used[ch] = True
+            else:
+                # Still keyed: glide via pitch bend for small moves, else retrigger.
+                diff = (note2 - note1) * _MIDI_WHEEL_PER_SEMITONE
+                new_wheel = wheel[ch] + int(round(diff))
+                if 0 < abs(diff) <= _MIDI_WHEEL_PER_SEMITONE * 2 and 0 <= new_wheel <= 0x3FFF:
+                    wheel[ch] = new_wheel
+                    emit(ch, tick, 1, pitch_wheel_bytes(ch, new_wheel))
+                elif abs(diff) > 0:
+                    note_off(ch, tick)
+                    note_on(ch, tick, note2)
+            prev_key[ch] = key
+            prev_note[ch] = note2
+        elif 0x40 <= reg <= 0x55:
+            mapped = _opl_register_channel_op(reg)
+            if mapped is not None and mapped[1] == 1:
+                carrier_tl[mapped[0]] = val & 0x3F
+
+    # Release any notes still held when the trace ends so nothing sustains
+    # forever in the exported file.
+    final_tick = 0
+    for ch in range(9):
+        if events[ch]:
+            final_tick = max(final_tick, events[ch][-1][0])
+    for ch in range(9):
+        if cur_midi_note[ch] is not None:
+            # One tick past the last event so the release never collides with a
+            # simultaneous note-on (which would sort first and leave it ringing).
+            note_off(ch, final_tick + 1)
+
+    # Assemble the file: tempo track plus one track per channel that played.
+    tracks: list[bytes] = []
+    tempo = bytearray()
+    tempo += b"\x00\xFF\x51\x03\x07\xA1\x20"  # 120 bpm
+    tempo += b"\x00\xFF\x2F\x00"
+    tracks.append(bytes(tempo))
+
+    for ch in range(9):
+        if not used[ch]:
+            continue
+        tr = bytearray()
+        program = program_for_channel(ch)
+        if program is not None:
+            tr += b"\x00" + bytes([0xC0 | ch, max(0, min(127, int(program)))])
+        ch_events = sorted(events[ch], key=lambda item: (item[0], item[1]))
+        last_tick = 0
+        for tick, _priority, payload in ch_events:
+            tr += _midi_varlen(max(0, tick - last_tick)) + payload
+            last_tick = tick
+        tr += b"\x00\xFF\x2F\x00"
+        tracks.append(bytes(tr))
+
+    midi_format = 1 if len(tracks) > 1 else 0
+    out = b"MThd" + struct.pack(">IHHH", 6, midi_format, len(tracks), ticks_per_quarter)
+    body = bytearray()
+    for tr in tracks:
+        body += b"MTrk" + struct.pack(">I", len(tr)) + tr
+    path.write_bytes(out + bytes(body))
     return path
 

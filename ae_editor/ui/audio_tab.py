@@ -254,6 +254,7 @@ class AudioTabMixin:
             speed=self._audio_preview_speed(),
             audio_kind=item.kind,
             channel_programs=self._audio_channel_program_overrides(),
+            exe_path=self.project.exe,
         )
 
     def stop_audio_preview(self) -> None:
