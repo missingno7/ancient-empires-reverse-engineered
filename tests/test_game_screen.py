@@ -49,3 +49,26 @@ def test_toggling_a_platform_control_changes_the_render():
     assert sim.active_target_indices("platform")  # platform now travelled
     after = renderer.render(project.levels[0], room_index=1, simulation=sim).tobytes()
     assert before != after  # pressed switch + moved platform are drawn
+
+
+def test_green_block_moves_when_symbol_sequence_completes():
+    from ancient_empires.engine import RoomSimulation
+
+    project = AncientEmpiresProject(EXE, DATS)
+    renderer = GameScreenRenderer(project.graphics, project.renderer)
+    # L8 room 0 carries a green block with a symbol sequence.
+    sim = RoomSimulation(project.levels[8], 0, 0)
+    block = sim.green_blocks[0]
+
+    before = renderer.render(project.levels[8], room_index=0, simulation=sim).tobytes()
+    # Emitting one symbol consumes it from the drawn sequence (render changes).
+    sim.emit_symbol(block.sequence[0])
+    assert block.remaining_sequence == block.sequence[1:]
+    partial = renderer.render(project.levels[8], room_index=0, simulation=sim).tobytes()
+    assert before != partial  # a symbol disappeared from the block
+
+    for symbol in block.remaining_sequence[:]:
+        sim.emit_symbol(symbol)
+    assert block.at_alternate  # sequence complete -> block swapped
+    after = renderer.render(project.levels[8], room_index=0, simulation=sim).tobytes()
+    assert partial != after  # block now drawn at its alternate position

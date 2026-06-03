@@ -9,6 +9,8 @@ from ..game_data.room_payload import header_player_start
 
 SOLID_MASK = 0x07
 LADDER_MASK = 0x80
+CONVEYOR_MASK = 0x08       # floor tile bit marking a conveyor belt
+CONVEYOR_LEFT_MASK = 0x10  # belt direction: set = left (0x1F), clear = right (0x0F)
 JUMP_DELTAS = (0, 2, 2, 4, 8, 8, 8, 8, 8)
 
 # Tool indices (DS:0b7e), drawn as AE000:063 sprites 3 + tool.
@@ -170,6 +172,23 @@ class PlayerController:
                 state.frame = 1
         else:
             state.frame = 0
+
+        # Conveyor drag (AEPROG 0x4155): a conveyor floor tile (bit 0x8) carries
+        # the player along the belt - bit 0x10 set drags left (tile 0x1F), clear
+        # drags right (tile 0x0F) - with the same wall checks and edge clamps as
+        # walking.  Conveyor controls flip the direction by toggling 0x0F<->0x1F.
+        if near_floor & CONVEYOR_MASK:
+            if near_floor & CONVEYOR_LEFT_MASK:
+                if not self._vertical_span(tiles, state.x, state.y + 1, 0x27) & SOLID_MASK:
+                    state.x -= state.move_amount
+                    if state.x <= -4:
+                        state.x = -17
+            else:
+                if not self._vertical_span(tiles, state.x + 0x21, state.y + 1, 0x27) & SOLID_MASK:
+                    state.x += state.move_amount
+                    if state.x >= 0x130:
+                        state.x = 0x131
+
         state.move_amount = 4
         return state
 

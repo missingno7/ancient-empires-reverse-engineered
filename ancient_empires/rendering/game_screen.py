@@ -69,6 +69,19 @@ class GameScreenRenderer:
             # the play field reflects what the player has triggered.
             control_overrides = dict(simulation.control_states) if simulation is not None else None
             platform_offsets = self._platform_offsets(simulation, room_index)
+            live_room = simulation is not None and room_index == simulation.room_index
+            green_block_alternate = (
+                {gb.index: gb.at_alternate for gb in simulation.green_blocks} if live_room else None
+            )
+            green_block_remaining = (
+                {gb.index: gb.remaining_sequence for gb in simulation.green_blocks} if live_room else None
+            )
+            if simulation is not None and room_index == simulation.room_index:
+                conveyor_tiles = simulation.runtime_tiles()
+                conveyor_frame = (simulation.tick_count // 2) % 4
+            else:
+                conveyor_tiles = None
+                conveyor_frame = 0
             # The play-field backdrop is the AE001 rtype-0x47 image selected by
             # the level's region byte (resource 30 + region), drawn over the blue
             # clear at 0x2bc0.  Picking the correct region/resource is still being
@@ -86,6 +99,10 @@ class GameScreenRenderer:
                     draw_actors=actors is None,
                     control_state_overrides=control_overrides,
                     platform_offsets=platform_offsets,
+                    green_block_alternate=green_block_alternate,
+                    green_block_remaining=green_block_remaining,
+                    conveyor_frame=conveyor_frame,
+                    conveyor_tiles=conveyor_tiles,
                     show_invisible=show_invisible,
                     display_mode=display_mode,
                 ),

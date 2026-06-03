@@ -76,6 +76,33 @@ def test_ceiling_button_needs_reaching_up_not_walking_under():
     assert sim.control_states[idx] is True
 
 
+def test_player_touching_symbols_advances_green_block():
+    from ancient_empires.game_data.room_payload import section_a_symbol_table
+
+    project = AncientEmpiresProject(EXE, DATS)
+    # L8 room 0: green block sequence [3, 1, 1, 4], with symbol buttons.
+    sim = RoomSimulation(project.levels[8], 0, 0)
+    block = sim.green_blocks[0]
+    markers = {(e.code & 0x07) + 1: e for e in section_a_symbol_table(sim.room).entries}
+    assert block.remaining_sequence == [3, 1, 1, 4]
+
+    def touch(symbol):
+        entry = markers[symbol]
+        sim.set_player_position(entry.x_raw * 2, entry.y - 20)
+        sim.apply_player_object_interaction()
+        sim.set_player_position(0, 0)  # step off to re-arm the debounce
+        sim.apply_player_object_interaction()
+
+    touch(3)
+    assert block.remaining_sequence == [1, 1, 4]  # touched symbol disappears
+    touch(1)
+    touch(1)
+    assert block.remaining_sequence == [4]
+    assert not block.at_alternate
+    touch(4)
+    assert block.at_alternate  # full sequence -> block swaps
+
+
 def test_platform_slides_gradually():
     from ancient_empires.engine.runtime import control_targets
     from ancient_empires.game_data.room_payload import parse_platform_triplets

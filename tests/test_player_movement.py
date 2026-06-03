@@ -106,6 +106,40 @@ def test_player_leaves_ladder_when_walking():
     assert controller.state.on_ladder == 0
 
 
+def _tiles_with_conveyor(code: int, row: int = 7) -> list[int]:
+    tiles = [0] * (ROOM_COLUMNS * ROOM_ROWS)
+    for x in range(4, 34):
+        tiles[row * ROOM_COLUMNS + x] = code
+    return tiles
+
+
+def test_conveyor_drags_player_right_on_0x0f():
+    controller = _controller_at(x=80, y=32)
+    tiles = _tiles_with_conveyor(0x0F)  # bit 0x8 set, 0x10 clear -> right
+    x0 = controller.state.x
+    controller.tick(PlayerInput(), tiles)  # no input
+    assert controller.state.x == x0 + 4
+
+
+def test_conveyor_drags_player_left_on_0x1f():
+    controller = _controller_at(x=80, y=32)
+    tiles = _tiles_with_conveyor(0x1F)  # bit 0x8 set, 0x10 set -> left
+    x0 = controller.state.x
+    controller.tick(PlayerInput(), tiles)
+    assert controller.state.x == x0 - 4
+
+
+def test_conveyor_does_not_drag_into_a_wall():
+    controller = _controller_at(x=80, y=32)
+    tiles = _tiles_with_conveyor(0x0F)
+    # Solid wall column just to the right of the player's right probe.
+    for row in range(2, 13):
+        tiles[row * ROOM_COLUMNS + (80 + 0x21) // 8 - 1] = 0x07
+    x0 = controller.state.x
+    controller.tick(PlayerInput(), tiles)
+    assert controller.state.x == x0  # blocked, no drag
+
+
 def test_boots_jump_is_higher_than_normal_jump():
     tiles = _tiles_with_floor()
 

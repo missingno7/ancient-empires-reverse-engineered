@@ -151,6 +151,10 @@ class RenderOptions:
     draw_background: bool = True
     control_state_overrides: dict[int, bool] | None = None
     platform_offsets: dict[int, tuple[int, int]] | None = None
+    green_block_alternate: dict[int, bool] | None = None
+    green_block_remaining: dict[int, list[int]] | None = None
+    conveyor_frame: int = 0
+    conveyor_tiles: list[int] | None = None
     show_invisible: bool = False
     display_mode: str = "vga"  # vga, ega, cga
 
@@ -224,7 +228,7 @@ class RoomRenderer:
 
             if options.mode == "game":
                 self._draw_visual_objects(image, room, layer="foreground")
-                self._draw_conveyor_tiles(image, room)
+                self._draw_conveyor_tiles(image, room, frame=options.conveyor_frame, live_tiles=options.conveyor_tiles)
                 self._draw_laser_crystals(image, room)
                 if options.draw_platforms:
                     self._draw_platforms(image, room, offsets=options.platform_offsets)
@@ -236,7 +240,12 @@ class RoomRenderer:
                 self._draw_control_records(image, room, control_state_overrides=options.control_state_overrides)
                 self._draw_puzzle_markers(image, room)
                 if options.draw_puzzle_panels:
-                    self._draw_record12_puzzle_panels(image, room)
+                    self._draw_record12_puzzle_panels(
+                        image,
+                        room,
+                        alternate=options.green_block_alternate,
+                        remaining=options.green_block_remaining,
+                    )
                 if options.draw_actors:
                     self._draw_actors(image, part, room, include_hidden=False)
                 if options.draw_player_start:
@@ -300,30 +309,55 @@ class RoomRenderer:
         return self.graphics.sprite("AE000", resource_id, 0)
 
 
-    def _draw_conveyor_tiles(self, image: Image.Image, room: Room) -> None:
+    def _draw_conveyor_tiles(self, image: Image.Image, room: Room, *, frame: int = 0, live_tiles: list[int] | None = None) -> None:
         """Render visible conveyor belts from CV payload objects.
 
         Terrain codes 0x0F/0x1F are only the scrolling/physics footprint.  A
         tile-only belt is intentionally invisible in the original game.  The
         visible belt is a CV record in the room payload directory header.
+
+        ``frame`` scrolls the 4-frame belt animation; ``live_tiles`` (the runtime
+        collision tiles) lets a toggled belt show its current grey/teal direction
+        instead of the static payload default.
         """
         parts = [self.graphics.sprite("AE000", 38, i) for i in range(24)]
         runs = iter_conveyor_runs(room)
         for cv in parse_conveyor_visual_records(room):
-            # Prefer the tile footprint to choose grey/teal when it is present;
-            # otherwise keep the existing default so orphan CVs remain visible.
+            # Prefer the live tile (0x0F grey / 0x1F teal) so a triggered belt
+            # shows its current direction; otherwise fall back to the static run.
             kind = "teal"
-            for run in runs:
-                if run.cells & cv.cells:
-                    kind = run.kind
-                    break
+            live_kind = self._conveyor_live_kind(cv, live_tiles)
+            if live_kind is not None:
+                kind = live_kind
+            else:
+                for run in runs:
+                    if run.cells & cv.cells:
+                        kind = run.kind
+                        break
+            # Both belt kinds advance frames forward; the grey/teal sprite sets
+            # themselves encode the scroll direction (the teal frames are the
+            # left-moving artwork), so no per-kind frame reversal.
+            belt_frame = frame % 4
             width = max(8, (cv.length + 1) * CELL_SIZE)
-            strip = compose_conveyor(parts, ConveyorSpec(kind=kind, x=0, y=0, width=width, frame=0))
+            strip = compose_conveyor(parts, ConveyorSpec(kind=kind, x=0, y=0, width=width, frame=belt_frame))
             if strip is not None:
                 # CV records use the same (raw_x*2, raw_y+0xb8) object family as
                 # every other payload object, so the belt sits at the shared
                 # object anchor.
                 self._blit(image, strip, *object_screen_xy(cv.x_raw, cv.y))
+
+    @staticmethod
+    def _conveyor_live_kind(cv, live_tiles: list[int] | None):
+        if live_tiles is None:
+            return None
+        for x, y in cv.cells:
+            if 0 <= x < ROOM_COLUMNS and 0 <= y < ROOM_ROWS:
+                code = live_tiles[y * ROOM_COLUMNS + x]
+                if code == 0x0F:
+                    return "grey"
+                if code == 0x1F:
+                    return "teal"
+        return None
 
     def _draw_platforms(self, image: Image.Image, room: Room, *, offsets: dict[int, tuple[int, int]] | None = None) -> None:
         horizontal = self.graphics.sprite("AE000", 47, 0)
@@ -415,7 +449,7 @@ class RoomRenderer:
             if symbol is not None:
                 self._blit(image, symbol, x + 4, y)
 
-    def _draw_record12_puzzle_panels(self, image: Image.Image, room: Room) -> None:
+    def _draw_record12_puzzle_panels(self, image: Image.Image, room: Room, *, alternate: dict[int, bool] | None = None, remaining: dict[int, list[int]] | None = None) -> None:
         """Draw the puzzle progress block from the 12-byte section when present.
 
         This is still a partial model, but it is much cleaner than hard-coding
@@ -433,21 +467,27 @@ class RoomRenderer:
             alternate_xy = _record12_alternate_xy(rec)
             if default_xy is None:
                 continue
-            x, y = default_xy
-            seq_values = _record12_sequence_values(rec)
+            # Symbols are consumed as they are emitted/touched, so draw only the
+            # part of the sequence still to come.
+            if remaining is not None and i in remaining:
+                seq_values = list(remaining[i])
+            else:
+                seq_values = _record12_sequence_values(rec)
             panel_img = _draw_sequence_on_panel(self.graphics, panel, seq_values)
 
-            # The current/default position is byte0/byte1.  The alternate
-            # position is byte2/byte3 and is shown as a ghost, because event09
-            # swaps the two positions only when the configured symbol sequence
-            # has been emitted/pressed.
-            self._blit(image, panel_img, x, y)
-            if alternate_xy is not None:
-                ax, ay = alternate_xy
+            # Byte0/1 is the default position, byte2/3 the alternate.  event09
+            # swaps the block to the alternate once the symbol sequence is fully
+            # emitted; the live block draws solid at its current position and a
+            # ghost at the other.
+            at_alternate = bool(alternate.get(i)) if alternate else False
+            solid_xy = alternate_xy if (at_alternate and alternate_xy is not None) else default_xy
+            ghost_xy = default_xy if (at_alternate and alternate_xy is not None) else alternate_xy
+            self._blit(image, panel_img, *solid_xy)
+            if ghost_xy is not None and ghost_xy != solid_xy:
                 ghost = panel_img.copy()
                 alpha = ghost.getchannel("A").point(lambda a: min(a, 96))
                 ghost.putalpha(alpha)
-                self._blit(image, ghost, ax, ay)
+                self._blit(image, ghost, *ghost_xy)
 
     def _draw_laser_crystals(self, image: Image.Image, room: Room) -> None:
         table = laser_crystal_table(room)

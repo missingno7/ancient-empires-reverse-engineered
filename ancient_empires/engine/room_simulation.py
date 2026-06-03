@@ -25,6 +25,7 @@ from ..game_data.room_payload import (
     parse_conveyor_visual_records,
     record12_green_block_records,
     room_cell_for_runtime_offset,
+    section_a_symbol_table,
     laser_crystal_table,
 )
 
@@ -347,12 +348,21 @@ class RoomSimulation:
         is debounced on the code change so holding still does not retrigger.
         Levers (command 2) are excluded from the walk path in the EXE
         (0x3c67) - they are driven by the actor VM (opcode 0x08) instead.
+
+        Section_a symbol buttons register boxes with code ``symbol + 0x20``
+        (0x30ff); touching one emits ``symbol + 1`` (0x36f0), advancing the green
+        block sequence exactly like an actor's emit_symbol opcode.
         """
         code = self._object_code_at_player()
         if code == self._last_object_code:
             return
         self._last_object_code = code
-        if code is None or code < 8:
+        if code is None:
+            return
+        if code >= 0x20:
+            self.emit_symbol((code - 0x20) + 1)
+            return
+        if code < 8:
             return
         index = code - 8
         cmd = next((c for c in self.controls() if c.record.index == index), None)
@@ -387,6 +397,15 @@ class RoomSimulation:
             top = cmd.y_raw + oy
             if q_right >= left and left + ow > qx and q_bottom >= top and top + oh > qy:
                 return cmd.record.index + 8
+
+        # Section_a symbol buttons (0x30ff): box (x+1, y+4, 6, 10), code sym+0x20.
+        table = section_a_symbol_table(self.room)
+        if table is not None:
+            for entry in table.entries:
+                left = entry.x_raw + 1
+                top = entry.y + 4
+                if q_right >= left and left + 6 > qx and q_bottom >= top and top + 10 > qy:
+                    return (entry.code & 0x07) + 0x20
         return None
 
     def active_target_indices(self, kind: str) -> set[int]:
