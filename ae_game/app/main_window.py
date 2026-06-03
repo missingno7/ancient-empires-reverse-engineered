@@ -138,6 +138,10 @@ class GameWindow:
         # Walk-onto-button activation (0x3c50) plus the actor VM's scripted
         # triggers (opcode 0x08) inside step() are the real control paths.
         self.simulation.apply_player_object_interaction()
+        if self.player.state.fired_laser:
+            self.simulation.fire_laser(
+                self.player.state.x, self.player.state.y, self.player.state.facing
+            )
         self.simulation.step()
         self._render()
         self.root.after(self._tick_ms, self._tick)

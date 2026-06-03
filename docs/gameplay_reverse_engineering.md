@@ -142,11 +142,35 @@ The selected tool is `DS:0b7e` (0..2), drawn as AE000:063 sprite `3 + tool`:
 - **Boots** (`0x408a`): when grounded with the boots tool, Space sets jump
   counter **8** (rises ~48 px via `JUMP_DELTAS[8..1]`), double the normal up-jump
   counter 5 (~24 px), and plays SFX `0x10`.  Implemented and tick-accurate.
+- **Flashlight** (`0x5a3b`): Space starts the laser only when the active flag
+  `DS:08fe` is clear; otherwise the game plays blocked-action SFX `0x17`
+  (`0x4214..0x422c`).  `0x5a3b` seeds two `0x18`-word coordinate arrays
+  (`DS:c050..c07f` / `DS:c080..c0af`) with `(player_x+0x10, player_y+4)`, sets
+  ring index `DS:c04e = 0x17`, direction row `DS:c0b8` (`3` right, `9` left),
+  cooldown/lifetime `DS:c0c0 = 0x18`, and raises `DS:08fe = 1`.  It does **not**
+  create an instant full-room beam.
+
+  The updater (`0x5ac3`) advances only eight 1-pixel substeps per tick through
+  the 24-slot coordinate ring, so the visible laser is a short yellow line that
+  grows and moves through space.  It stops at solid terrain/edge, activates
+  command-2 **levers** it crosses (`0x5c41`, the only way to trip those), and
+  **freezes** any actor it overlaps (`0x4c7a` sets the actor's freeze timer
+  `[di+0xa]` from `[di+0x9]`; a frozen actor skips its script and counts down at
+  `0x4b39`/`0x4b70`).  Jello light-sensors (object codes `0x30-0x4f`)
+  **reflect** the beam via the direction tables at `DS:0900`, with hit/reflect
+  SFX `0x0f`.
+
+  Ported: `RoomSimulation.fire_laser`/`_step_laser` now uses the 24-slot moving
+  trail and cooldown instead of an instant beam, with wall stop, lever trip,
+  actor freeze, and yellow-line render.  Jello reflection and the exact
+  per-actor freeze duration are not modelled yet (a fixed `LASER_FREEZE_TICKS`
+  stands in).
+
 - **Immortality** uses are limited to 4 per level (`DS:0b80`, shown by the
   overlay AE000:063:6..10 for counts 0..4); activating decrements the count via
   `0x7313`, sets the invulnerability timer `DS:072c = 0x3a`, and plays SFX `0x11`
-  when the count is already 0.  Firing the laser and immortality are recovered in
-  the ASM but not yet ported (boots first, per the current milestone).
+  when the count is already 0.  Immortality is recovered in the ASM but not yet
+  ported.
 
 ## Missing engine systems
 

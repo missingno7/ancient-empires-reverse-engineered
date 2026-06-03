@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from ..engine.player import PlayerState
 from ..game_data.graphics import GraphicsSet
@@ -111,10 +111,29 @@ class GameScreenRenderer:
             if actors is not None:
                 self._draw_live_actors(screen, actors)
             self._draw_player(screen, level, part_index, room_index, player)
+            if simulation is not None and getattr(simulation, "laser_ttl", 0) > 0:
+                self._draw_laser(screen, simulation.laser_points)
             self._draw_hud(screen, hud)
             return screen
         finally:
             self.graphics.set_display_mode(previous_display_mode)
+
+    @staticmethod
+    def _draw_laser(screen: Image.Image, points) -> None:
+        """Draw the flashlight beam as a yellow line (AEPROG 0x5e98 dot trail).
+
+        Laser trail coordinates are in the same space as the play field, so each
+        point maps straight to a screen pixel.
+        """
+        if not points:
+            return
+        draw = ImageDraw.Draw(screen)
+        yellow = (255, 255, 85, 255)
+        if len(points) == 1:
+            draw.point(points[0], fill=yellow)
+            return
+        for a, b in zip(points, points[1:]):
+            draw.line([a, b], fill=yellow, width=2)
 
     def _draw_player(
         self,

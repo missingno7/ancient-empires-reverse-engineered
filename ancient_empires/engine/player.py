@@ -22,6 +22,7 @@ TOOL_COUNT = 3
 # Sound effect ids played by tool use (AEPROG 0xcaf1 calls).
 SFX_JUMP = 0x0C       # normal up-jump (0x410C/0x4133)
 SFX_BOOTS_JUMP = 0x10  # boots high jump (0x40B3)
+SFX_LASER = 0x14       # flashlight laser (0x421b)
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class PlayerState:
     tool: int = TOOL_BOOTS
     tool_ready: bool = True
     change_ready: bool = True
+    fired_laser: bool = False
 
 
 class PlayerController:
@@ -88,6 +90,15 @@ class PlayerController:
             state.change_ready = True
         if not command.use_tool:
             state.tool_ready = True
+
+        # Flashlight fires a laser on Space (AEPROG 0x421b).  The actual beam is
+        # spawned by the simulation from the post-tick position; here we only
+        # latch the one-shot intent and play the SFX.
+        state.fired_laser = False
+        if command.use_tool and state.tool_ready and state.tool == TOOL_FLASHLIGHT:
+            state.tool_ready = False
+            state.fired_laser = True
+            self.pending_sounds.append(SFX_LASER)
 
         # While climbing with up held, left/right is ignored (AEPROG 0x3db6,
         # 0x3e10); otherwise entering a walk branch releases the ladder

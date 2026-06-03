@@ -14,6 +14,19 @@ from .runtime import (
 
 # Platform slide speed in pixels per tick (AEPROG 0x25b3 moves 8 px/step).
 PLATFORM_STEP = 8
+
+# Flashlight laser (AEPROG 0x5a3b/0x5ac3).  The original does not draw an
+# instant full-width beam.  0x5a3b fills two 0x18-word coordinate arrays
+# (DS:C050..C07F and DS:C080..C0AF) with the muzzle position, sets DS:C04E to
+# the last ring slot, DS:C0C0 to 0x18, and raises the active/cooldown flag
+# DS:08FE.  Each 0x5ac3 update advances only eight 1-pixel substeps through
+# that 24-slot ring, so the visible laser is a short line that grows and then
+# travels through the room.
+LASER_TTL = 0x18
+LASER_RING_SLOTS = 0x18
+LASER_SUBSTEPS_PER_TICK = 8
+LASER_PIXEL_STEP = 1
+LASER_FREEZE_TICKS = 0x40
 from ..game_data.room_payload import (
     ACTOR_TABLE_OFFSET,
     ACTOR_TABLE_SIZE,
@@ -65,6 +78,7 @@ class SimActorState:
     call_stack: list[int] = field(default_factory=list)
     loop_counters: dict[int, int] = field(default_factory=dict)
     halted: bool = False
+    frozen: int = 0
     last_event: str = ""
 
     @classmethod
@@ -216,6 +230,16 @@ class RoomSimulation:
         # Platforms slide gradually toward/away from their target (8 px/tick,
         # AEPROG 0x25b3) rather than snapping.
         self.platform_offsets: dict[int, int] = {}
+        # Flashlight laser beam state.  `_laser_slots` mirrors the original
+        # 24-entry coordinate ring; `laser_points` is the ordered visible view
+        # used by render/tests.
+        self._laser_slots: list[tuple[int, int]] = []
+        self._laser_head = 0
+        self._laser_dx = 0
+        self._laser_dy = 0
+        self._laser_inactive_substeps = 0
+        self.laser_points: list[tuple[int, int]] = []
+        self.laser_ttl = 0
         self._load_initial_controls()
         self._load_green_blocks()
         self._load_reflectors()
@@ -449,11 +473,124 @@ class RoomSimulation:
     def step(self, ticks: int = 1) -> None:
         for _ in range(max(1, ticks)):
             self.tick_count += 1
+            self._step_laser()
             self._advance_platforms()
             self._step_auto_reflectors()
             for actor in list(self.actors.values()):
                 if actor.room_index == self.room_index and actor.active:
                     self._step_actor(actor)
+
+    def fire_laser(self, x: int, y: int, facing: int) -> bool:
+        """Start the flashlight laser if the original cooldown flag is clear.
+
+        AEPROG 0x4214 refuses to call 0x5a3b while DS:08FE is non-zero and plays
+        the blocked-action sound instead.  0x5a3b itself only seeds the 24-slot
+        coordinate ring at the muzzle.  The moving trail is produced later by
+        0x5ac3, eight 1-pixel substeps per game tick.
+        """
+        if self.laser_ttl > 0:
+            return False
+        sx = x + 0x10
+        sy = y + 4
+        if not (8 <= sx <= 0x137 and 0x10 <= sy <= 0x9f):
+            return False
+
+        self._laser_slots = [(sx, sy)] * LASER_RING_SLOTS
+        self._laser_head = LASER_RING_SLOTS - 1  # DS:C04E = 0x17
+        self._laser_dx = -LASER_PIXEL_STEP if facing else LASER_PIXEL_STEP
+        self._laser_dy = 0
+        self._laser_inactive_substeps = 0
+        self.laser_ttl = LASER_TTL  # DS:C0C0 = 0x18 / DS:08FE = 1
+        self._refresh_laser_points()
+        return True
+
+    def _refresh_laser_points(self) -> None:
+        if self.laser_ttl <= 0 or not self._laser_slots:
+            self.laser_points = []
+            return
+        # Oldest-to-newest order, starting after the current ring head.  Drop
+        # duplicate seed points so the first frames appear as a growing line
+        # rather than a pre-filled instant beam.
+        ordered = [
+            self._laser_slots[(self._laser_head + 1 + i) % LASER_RING_SLOTS]
+            for i in range(LASER_RING_SLOTS)
+        ]
+        compact: list[tuple[int, int]] = []
+        for point in ordered:
+            if point == (0, 0):
+                continue
+            if not compact or compact[-1] != point:
+                compact.append(point)
+        self.laser_points = compact
+
+    def _laser_hits_solid_or_edge(self, x: int, y: int) -> bool:
+        if not (8 <= x <= 0x137 and 0x10 <= y <= 0x9f):
+            return True
+        col = x // 8 - 1
+        row = y // 8 - 2
+        if 0 <= col < ROOM_COLUMNS and 0 <= row < ROOM_ROWS:
+            return bool(self.runtime_tiles()[row * ROOM_COLUMNS + col] & 0x07)
+        return False
+
+    def _laser_trip_levers(self) -> None:
+        ox, oy, ow, oh = self._CONTROL_BOX[2]  # lever box (0, 0, 16, 8) raw-x
+        for cmd in self.controls():
+            if cmd.command != 2 or cmd.x_raw is None or cmd.y_raw is None:
+                continue
+            left, top = cmd.x_raw + ox, cmd.y_raw + oy
+            for bx, by in self.laser_points:
+                if left <= bx // 2 < left + ow and top <= by < top + oh:
+                    self.toggle_control(cmd.record.index)
+                    break
+
+    def _laser_freeze_actors(self) -> None:
+        # Freeze every active actor the current moving trail overlaps
+        # (AEPROG 0x4c7a).  The exact actor-local freeze duration is still a
+        # conservative constant here.
+        for actor in self.actors.values():
+            if actor.room_index != self.room_index or not actor.active:
+                continue
+            ax0, ay0 = actor.x, actor.y
+            ax1, ay1 = actor.x + 16, actor.y + 16
+            if any(ax0 <= bx <= ax1 and ay0 <= by <= ay1 for bx, by in self.laser_points):
+                actor.frozen = LASER_FREEZE_TICKS
+
+    def _step_laser(self) -> None:
+        if self.laser_ttl <= 0:
+            self._laser_slots = []
+            self.laser_points = []
+            return
+
+        x, y = self._laser_slots[self._laser_head]
+        for _ in range(LASER_SUBSTEPS_PER_TICK):
+            if x == 0:
+                self._laser_inactive_substeps += 1
+                if self._laser_inactive_substeps >= LASER_RING_SLOTS:
+                    self.laser_ttl -= 1
+                    self._laser_inactive_substeps = 0
+                next_x, next_y = 0, 0
+            else:
+                next_x = x + self._laser_dx
+                next_y = y + self._laser_dy
+                if self._laser_hits_solid_or_edge(next_x, next_y):
+                    next_x, next_y = 0, 0
+
+            self._laser_head = (self._laser_head + 1) % LASER_RING_SLOTS
+            self._laser_slots[self._laser_head] = (next_x, next_y)
+            x, y = next_x, next_y
+
+        # This is the user-visible lifetime/cooldown.  The ASM's DS:C0C0 is
+        # decremented once inactive slots circulate after impact/edge; using one
+        # visible tick here preserves the practical 0x18-shot cooldown.
+        self.laser_ttl -= 1
+        if self.laser_ttl <= 0:
+            self._laser_slots = []
+            self.laser_points = []
+            return
+
+        self._refresh_laser_points()
+        self._laser_trip_levers()
+        self._laser_freeze_actors()
 
     def _advance_platforms(self) -> None:
         """Slide each platform toward/away from its target by 8 px (0x25b3)."""
@@ -494,6 +631,10 @@ class RoomSimulation:
 
     def _step_actor(self, actor: SimActorState) -> None:
         if actor.halted:
+            return
+        # A laser-frozen actor skips its script and counts down (AEPROG 0x4b39).
+        if actor.frozen > 0:
+            actor.frozen -= 1
             return
         for _ in range(16):
             pc = actor.pc
