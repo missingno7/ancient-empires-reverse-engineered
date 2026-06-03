@@ -73,6 +73,70 @@ def test_platform_offset_override_is_render_only():
     assert sim.platform_offsets == before_state
 
 
+def test_header_artifact_and_exit_door_render_options():
+    from ancient_empires.game_data.room_payload import header_exit_door, header_object_candidates
+
+    project = AncientEmpiresProject(EXE, DATS)
+    renderer = GameScreenRenderer(project.graphics, project.renderer)
+    part = project.levels[0].parts[0]
+    artifact = header_object_candidates(part.header)[0]
+    door = header_exit_door(part.header)
+
+    artifact_room = artifact.room_plus_one - 1
+    visible_artifact = renderer.render(project.levels[0], room_index=artifact_room).tobytes()
+    collected_artifact = renderer.render(
+        project.levels[0],
+        room_index=artifact_room,
+        collected_artifacts={artifact.index},
+    ).tobytes()
+
+    assert visible_artifact != collected_artifact
+    assert door is not None
+
+    visible_exit = renderer.render(project.levels[0], room_index=door.room_index).tobytes()
+    hidden_exit = renderer.render(
+        project.levels[0],
+        room_index=door.room_index,
+        show_exit_door=False,
+    ).tobytes()
+
+    assert visible_exit != hidden_exit
+
+
+def test_hud_artifact_pieces_and_invulnerability_uses_change_the_render():
+    from ancient_empires.rendering.game_screen import GameHudState
+
+    project = AncientEmpiresProject(EXE, DATS)
+    renderer = GameScreenRenderer(project.graphics, project.renderer)
+
+    empty = renderer.render(project.levels[0], hud=GameHudState(artifact_pieces=0)).tobytes()
+    collected = renderer.render(project.levels[0], hud=GameHudState(artifact_pieces=6)).tobytes()
+    uses_empty = renderer.render(
+        project.levels[0],
+        hud=GameHudState(tool_index=2, invulnerability_uses=0),
+    ).tobytes()
+    uses_full = renderer.render(
+        project.levels[0],
+        hud=GameHudState(tool_index=2, invulnerability_uses=4),
+    ).tobytes()
+
+    assert empty != collected
+    assert uses_empty != uses_full
+
+
+def test_hud_indices_follow_asm_level_table():
+    from ae_game.app.main_window import hud_indices_for_level, level_display_name
+
+    assert hud_indices_for_level(0) == (0, 0)
+    assert hud_indices_for_level(3) == (0, 3)
+    assert hud_indices_for_level(4) == (1, 0)
+    assert hud_indices_for_level(16) == (4, 0)
+    assert hud_indices_for_level(19) == (4, 3)
+    assert level_display_name(0) == "Near East I"
+    assert level_display_name(7) == "Egypt IV"
+    assert level_display_name(18) == "Ancient World III"
+
+
 def test_green_block_moves_when_symbol_sequence_completes():
     from ancient_empires.engine import RoomSimulation
 

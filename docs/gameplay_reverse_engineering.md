@@ -20,6 +20,8 @@ playable game.
 
 - `0x6FCA` loads resource `0x3F` (`AE000:063`) for the HUD.
 - `0x6FDA` blits HUD sprite 0 at `(6, 162)`.
+- `0x7202` draws collected artifact-piece segments using `AE000:063:1`,
+  starting at `(16, 176)` and advancing 18 px for each piece.
 - `0x7298` blits selected tool sprites 3..5 at `(152, 166)`.
 - `0x7417` blits region sprites 11..15 at `(244, 175)`.
 - `0x7443` blits cavern sprites 16..19 at `(244 + cavern*16, 186)`.

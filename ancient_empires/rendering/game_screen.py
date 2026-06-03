@@ -31,6 +31,8 @@ class GameHudState:
     """Values displayed by the recovered AE000:063 HUD routines."""
 
     tool_index: int = 0
+    artifact_pieces: int = 0
+    invulnerability_uses: int = 4
     region_index: int = 0
     cavern_index: int = 0
 
@@ -60,6 +62,8 @@ class GameScreenRenderer:
         show_invisible: bool = False,
         display_mode: str = "vga",
         platform_offsets_override: dict[int, tuple[int, int]] | None = None,
+        collected_artifacts: set[int] | None = None,
+        show_exit_door: bool = True,
     ) -> Image.Image:
         hud = hud or GameHudState()
         previous_display_mode = self.graphics.display_mode
@@ -110,6 +114,8 @@ class GameScreenRenderer:
                     conveyor_frame=conveyor_frame,
                     conveyor_tiles=conveyor_tiles,
                     reflector_frames=reflector_frames,
+                    collected_artifacts=collected_artifacts,
+                    show_exit_door=show_exit_door,
                     show_invisible=show_invisible,
                     display_mode=display_mode,
                 ),
@@ -207,11 +213,26 @@ class GameScreenRenderer:
         if base is not None:
             screen.alpha_composite(base, HUD_ORIGIN)
 
+        # AEPROG 0x7202: draw one collected artifact-piece segment per slot.
+        # The routine starts at x=0x10, y=0xb0 and advances by 0x12 pixels.
+        piece_count = max(0, min(6, int(hud.artifact_pieces)))
+        piece = self.graphics.sprite("AE000", 63, 1)
+        if piece is not None:
+            for index in range(piece_count):
+                screen.alpha_composite(piece, (16 + index * 18, 176))
+
         # AEPROG 0x7298: selected tool sprites 3..5 at (152, 166).
         tool_index = max(0, min(2, int(hud.tool_index)))
         tool = self.graphics.sprite("AE000", 63, 3 + tool_index)
         if tool is not None:
             screen.alpha_composite(tool, (152, 166))
+
+        # AEPROG 0x7298/0x7313: immortality uses overlay, only for tool 2.
+        if tool_index == 2:
+            uses = max(0, min(4, int(hud.invulnerability_uses)))
+            uses_sprite = self.graphics.sprite("AE000", 63, 6 + uses)
+            if uses_sprite is not None:
+                screen.alpha_composite(uses_sprite, (166, 174))
 
         # AEPROG 0x7417: region sprites 11..15 at (244, 175).
         region_index = max(0, min(4, int(hud.region_index)))

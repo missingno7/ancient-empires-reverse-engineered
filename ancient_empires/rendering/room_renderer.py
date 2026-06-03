@@ -156,6 +156,8 @@ class RenderOptions:
     conveyor_frame: int = 0
     conveyor_tiles: list[int] | None = None
     reflector_frames: dict[int, int] | None = None
+    collected_artifacts: set[int] | None = None
+    show_exit_door: bool = True
     show_invisible: bool = False
     display_mode: str = "vga"  # vga, ega, cga
 
@@ -235,8 +237,9 @@ class RoomRenderer:
                     self._draw_platforms(image, room, offsets=options.platform_offsets)
                 if options.show_invisible:
                     self._draw_invisible_blocks(image, room)
-                self._draw_header_objects(image, room, part.header)
-                self._draw_exit_door(image, room, part.header, part.theme)
+                self._draw_header_objects(image, room, part.header, collected=options.collected_artifacts)
+                if options.show_exit_door:
+                    self._draw_exit_door(image, room, part.header, part.theme)
                 self._draw_apple_pickup(image, part, room)
                 self._draw_control_records(image, room, control_state_overrides=options.control_state_overrides)
                 self._draw_puzzle_markers(image, room)
@@ -261,8 +264,9 @@ class RoomRenderer:
                 self._draw_laser_crystals(image, room)
                 self._draw_visual_objects(image, room, layer="foreground")
                 self._draw_record12_puzzle_panels(image, room)
-                self._draw_header_objects(image, room, part.header)
-                self._draw_exit_door(image, room, part.header, part.theme)
+                self._draw_header_objects(image, room, part.header, collected=options.collected_artifacts)
+                if options.show_exit_door:
+                    self._draw_exit_door(image, room, part.header, part.theme)
                 self._draw_apple_pickup(image, part, room)
                 self._draw_actors(image, part, room, include_hidden=True)
                 self._draw_player_start(image, room, part.header)
@@ -569,11 +573,13 @@ class RoomRenderer:
             colour = (0, 255, 255, 255)
             draw.rectangle([x - 3, y - 3, x + 3, y + 3], outline=colour, width=1)
 
-    def _draw_header_objects(self, image: Image.Image, room: Room, header: bytes) -> None:
+    def _draw_header_objects(self, image: Image.Image, room: Room, header: bytes, *, collected: set[int] | None = None) -> None:
         diamond = self.graphics.sprite("AE000", 44, 0)
         if diamond is None:
             return
         for cand in header_object_candidates(header):
+            if collected is not None and cand.index in collected:
+                continue
             if cand.room_plus_one != room.index + 1:
                 continue
             x, y = header_object_xy(cand.x_raw, cand.y_raw)

@@ -16,9 +16,19 @@ from ancient_empires.engine import (
     RoomSimulation,
     resolve_room_edge,
 )
-from ancient_empires.game_data.room_payload import transition_links_for_room
+from ancient_empires.game_data.room_payload import (
+    header_exit_door,
+    header_object_candidates,
+    transition_links_for_room,
+)
 from ancient_empires.project import AncientEmpiresProject
+from ancient_empires.rendering.coordinates import header_exit_door_xy, header_object_xy
 from ancient_empires.rendering.game_screen import GameHudState, GameScreenRenderer
+
+
+REGION_LEVEL_NAMES = ("Near East", "Egypt", "Greece and Rome", "India and China", "Ancient World")
+CHAMBER_NUMERALS = ("I", "II", "III", "IV")
+EXIT_ENTER_FRAMES = (19, 20, 21, 20, 21, 20)
 
 
 @dataclass
@@ -28,6 +38,16 @@ class _RenderSnapshot:
     player_y: int
     actor_positions: dict[int, tuple[int, int]]
     platform_offsets: dict[int, tuple[int, int]]
+
+
+def hud_indices_for_level(level_index: int) -> tuple[int, int]:
+    level_index = max(0, int(level_index))
+    return min(4, level_index // 4), min(3, level_index % 4)
+
+
+def level_display_name(level_index: int) -> str:
+    region_index, cavern_index = hud_indices_for_level(level_index)
+    return f"{REGION_LEVEL_NAMES[region_index]} {CHAMBER_NUMERALS[cavern_index]}"
 
 
 class GameWindow:
@@ -50,6 +70,9 @@ class GameWindow:
         self._rooms: dict[tuple[int, int], RoomSimulation] = {}
         self.simulation = self._room_simulation(self.room_index)
         self.player = PlayerController(self.level, self.part_index, self.room_index)
+        self.collected_artifacts: set[int] = set()
+        self._exit_enter_ticks = 0
+        self._exit_target_level_index: int | None = None
         self.show_invisible = False
         self.interpolate_frames = False
         self._keys: set[str] = set()
@@ -88,7 +111,7 @@ class GameWindow:
         self._level_var = tk.IntVar(value=self.level.index)
         for i, level in enumerate(self.project.levels):
             levels.add_radiobutton(
-                label=f"{i}: {getattr(level, 'name', None) or f'Level {i}'}",
+                label=f"{i + 1}: {level_display_name(i)}",
                 value=level.index,
                 variable=self._level_var,
                 command=lambda i=i: self._select_level(i),
@@ -152,6 +175,9 @@ class GameWindow:
         self._rooms.clear()
         self.simulation = self._room_simulation(self.room_index)
         self.player = PlayerController(self.level, self.part_index, self.room_index)
+        self.collected_artifacts.clear()
+        self._exit_enter_ticks = 0
+        self._exit_target_level_index = None
         self._reset_render_snapshots()
         self.root.focus_force()
         self._render()
@@ -172,12 +198,17 @@ class GameWindow:
             change_tool="return" in self._keys,
             use_tool="space" in self._keys,
         )
+        if self._tick_exit_enter_animation():
+            return
+        if command.jump and self._try_start_exit_door():
+            return
         self.player.tick(command, self.simulation.runtime_tiles())
         self._apply_room_transitions()
         self.simulation.set_player_position(self.player.state.x, self.player.state.y)
         # Walk-onto-button activation (0x3c50) plus the actor VM's scripted
         # triggers (opcode 0x08) inside step() are the real control paths.
         self.simulation.apply_player_object_interaction()
+        self._collect_artifacts()
         if self.player.state.fired_laser:
             self.simulation.fire_laser(
                 self.player.state.x, self.player.state.y, self.player.state.facing
@@ -218,6 +249,87 @@ class GameWindow:
         self.player.room_index = room_index
         self.player.part = self.simulation.part
         self._reset_render_snapshots()
+
+    @staticmethod
+    def _player_overlaps(left: int, top: int, width: int, height: int, player) -> bool:
+        player_left = player.x
+        player_top = player.y
+        player_right = player_left + 0x27
+        player_bottom = player_top + 0x2F
+        return (
+            player_right >= left
+            and left + width > player_left
+            and player_bottom >= top
+            and top + height > player_top
+        )
+
+    def _configured_artifacts(self) -> set[int]:
+        return {cand.index for cand in header_object_candidates(self.simulation.part.header)}
+
+    def _all_artifacts_collected(self) -> bool:
+        artifacts = self._configured_artifacts()
+        return bool(artifacts) and artifacts <= self.collected_artifacts
+
+    def _collect_artifacts(self) -> None:
+        for cand in header_object_candidates(self.simulation.part.header):
+            if cand.index in self.collected_artifacts:
+                continue
+            if cand.room_plus_one != self.room_index + 1:
+                continue
+            left, top = header_object_xy(cand.x_raw, cand.y_raw)
+            if self._player_overlaps(left, top, 16, 16, self.player.state):
+                self.collected_artifacts.add(cand.index)
+
+    def _try_start_exit_door(self) -> bool:
+        if not self._all_artifacts_collected():
+            return False
+        door = header_exit_door(self.simulation.part.header)
+        if door is None or door.room_index != self.room_index:
+            return False
+        left, top = header_exit_door_xy(door.x_raw, door.y_raw)
+        if not self._player_overlaps(left, top, 46, 33, self.player.state):
+            return False
+        next_level_index = self.level.index + 1
+        if next_level_index >= len(self.project.levels):
+            return False
+        self._exit_enter_ticks = len(EXIT_ENTER_FRAMES)
+        self._exit_target_level_index = next_level_index
+        self.player.state.frame = EXIT_ENTER_FRAMES[0]
+        self._last_tick_time = time.perf_counter()
+        self._current_render_snapshot = self._capture_render_snapshot()
+        if not self.interpolate_frames:
+            self._render()
+        self.root.after(self._tick_ms, self._tick)
+        return True
+
+    def _tick_exit_enter_animation(self) -> bool:
+        if self._exit_enter_ticks <= 0:
+            return False
+        frame_index = len(EXIT_ENTER_FRAMES) - self._exit_enter_ticks
+        self.player.state.frame = EXIT_ENTER_FRAMES[min(frame_index, len(EXIT_ENTER_FRAMES) - 1)]
+        self._exit_enter_ticks -= 1
+        if self._exit_enter_ticks <= 0 and self._exit_target_level_index is not None:
+            next_level_index = self._exit_target_level_index
+            self._exit_target_level_index = None
+            self._level_var.set(next_level_index)
+            self._load(self.project.levels[next_level_index], self.part_index)
+            self.root.after(self._tick_ms, self._tick)
+            return True
+        self._last_tick_time = time.perf_counter()
+        self._current_render_snapshot = self._capture_render_snapshot()
+        if not self.interpolate_frames:
+            self._render()
+        self.root.after(self._tick_ms, self._tick)
+        return True
+
+    def _hud_state(self) -> GameHudState:
+        region_index, cavern_index = hud_indices_for_level(self.level.index)
+        return GameHudState(
+            tool_index=self.player.state.tool,
+            artifact_pieces=len(self.collected_artifacts),
+            region_index=region_index,
+            cavern_index=cavern_index,
+        )
 
     def _capture_render_snapshot(self) -> _RenderSnapshot:
         actors = {
@@ -330,8 +442,10 @@ class GameWindow:
             actors=draw_actors,
             simulation=self.simulation,
             show_invisible=self.show_invisible,
-            hud=GameHudState(tool_index=self.player.state.tool),
+            hud=self._hud_state(),
             platform_offsets_override=platform_offsets,
+            collected_artifacts=set(self.collected_artifacts),
+            show_exit_door=self._all_artifacts_collected(),
         )
         if self.scale != 1:
             image = image.resize(
