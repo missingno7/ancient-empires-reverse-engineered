@@ -182,10 +182,14 @@ class OplInstrumentPatch:
 
     @property
     def feedback(self) -> int:
-        # The C0 register uses the second operator's byte 2 as feedback-ish
-        # value in the EXE path; the low bit comes from byte 12 as the
-        # additive/FM connection flag.
-        return self.carrier.feedback_or_op_hint & 0x07
+        # The C0 register's feedback field (bits 1..3) comes from the
+        # MODULATOR operator's byte 2 (verified against a DOSBox-X DRO capture
+        # of AE000:054: the game's 0xC0 feedback equals modulator byte 2 for
+        # every channel, e.g. inst 01->1, 1B->7, 0F->5, 0E->3, 17->0). Reading
+        # it from the carrier — as we did before — produced wrong feedback on
+        # 8 of 9 voices, distorting the FM brightness/grit balance. The low bit
+        # (connection) still comes from the carrier byte 12.
+        return self.modulator.feedback_or_op_hint & 0x07
 
     @property
     def additive(self) -> bool:
@@ -504,7 +508,16 @@ def soundcard_music_opl_full_writes(data: bytes, exe_path: Path | str, *, speed:
         pos_ticks = 0
         for freq, dur_seconds in events:
             event_ticks = max(1, int(round((dur_seconds * speed) / TICK_SECONDS)))
-            voices = range(group * 3, min(group * 3 + 3, 9))
+            # Only the voices that loaded a real instrument play.  AEPROG's note
+            # trigger (DB60) gates each stacked voice on the per-voice enable byte
+            # ds:[voice+0xC6AB], which the instrument loader sets only when the
+            # header id is not 0xFF.  Songs like AE000:068/120/124/126 disable
+            # voices 6..8, so keying them on here added a phantom third channel.
+            voices = [
+                voice
+                for voice in range(group * 3, min(group * 3 + 3, 9))
+                if voice < len(header.instrument_ids) and header.instrument_ids[voice] is not None
+            ]
             if freq is None or freq < 0:
                 for voice in voices:
                     for reg, value in _opl_note_register_writes(voice, None, key_on=False):

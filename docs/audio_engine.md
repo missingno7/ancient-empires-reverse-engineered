@@ -271,13 +271,27 @@ operator into a bright, gritty, noise-like timbre - the thing that can sound lik
 a missing "PCM/sample" channel. The register trace carries the real `0xC0` value,
 so `ymfm.YM3812` reproduces feedback exactly.
 
+Things that are NOT missing (verified against the OPL music tick `C27D`): the
+detune/chorus system (`CA24` tables + `CA6D` offsets) exists but its setter
+`df98` is never called, so OPL voices stay on the base pitch table with zero
+detune; the vibrato/envelope updater `C440` and the `6D`/`E1F2` dynamic-volume
+path run only for device 1 (Tandy/PCjr PSG), not for OPL. So the editor is
+correct to omit detune, vibrato and per-note volume swells for AdLib.
+
+Fixed: the note trigger only keys on voices that loaded a real instrument. Songs
+that disable voices 6..8 with header id `0xFF` (AE000:068/120/124 and AE001:124/126)
+no longer get a phantom third channel of garbage tone.
+
 Remaining weaknesses:
 
-- It applies only the static header voice level, not the live per-voice volume
-  scaling from `0xE1F2` (`ds:[voice-0x35B0]`), so song-internal swells are flat.
-- Dynamic `CA24/CA6D` detuned pitch-table selection is not yet connected.
-- The atlas does not currently emulate a selected Sound Blaster model's analog
-  low-pass filter after YM3812 rendering.
+- The atlas does not emulate the AdLib/Sound Blaster analog **output low-pass
+  filter**, so the YM3812 render is brighter/harsher than a real card. This is
+  the most likely remaining tone difference. Choose an `OPL filter` profile in
+  the Audio Atlas (`sb2` ~12 kHz, `sbpro1/2` ~8 kHz) to approximate it; the right
+  choice depends on which card the reference recording used.
+- The trace recovers note pitch by round-tripping the parser frequency back to a
+  YM3812 note index. It is exact for the known mapping but would be cleaner to
+  compute the note index straight from the bytecode.
 - MIDI export still maps FM patches to conservative GM voices.
 
 For a Nuked-OPL comparison, use `write_opl_vgm` and play the VGM through a

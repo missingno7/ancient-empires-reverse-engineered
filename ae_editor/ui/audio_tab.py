@@ -18,6 +18,7 @@ from .common import (
     tk,
     ttk,
     write_midi,
+    write_opl_vgm,
 )
 
 
@@ -43,6 +44,7 @@ class AudioTabMixin:
         ttk.Button(top, text="Play preview", command=self.play_selected_audio).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(top, text="Stop", command=self.stop_audio_preview).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Button(top, text="Export WAV", command=self.export_selected_audio_wav).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(top, text="Export VGM", command=self.export_selected_audio_vgm).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(top, text="Export MIDI", command=self.export_selected_audio_midi).pack(side=tk.LEFT, padx=(8, 0))
 
         ttk.Label(
@@ -332,6 +334,23 @@ class AudioTabMixin:
             self.status.set(f"Exported WAV preview: {path}")
         except Exception as exc:
             messagebox.showerror("WAV export failed", str(exc))
+
+    def export_selected_audio_vgm(self) -> None:
+        item = self._selected_audio_item()
+        if item is None:
+            return
+        if item.kind != "soundcard-music":
+            messagebox.showinfo("Export VGM", "VGM export is only available for sound-card (OPL/YM3812) music.")
+            return
+        default = item.label.replace("/", "_").replace(" ", "_").replace(":", "") + ".vgm"
+        path = filedialog.asksaveasfilename(defaultextension=".vgm", initialfile=default, filetypes=[("VGM register log", "*.vgm")])
+        if not path:
+            return
+        try:
+            write_opl_vgm(item.data, self.project.exe, path, speed=self._audio_preview_speed())
+            self.status.set(f"Exported YM3812 VGM: {path}")
+        except Exception as exc:
+            messagebox.showerror("VGM export failed", str(exc))
 
     def export_selected_audio_raw(self) -> None:
         item = self._selected_audio_item()
