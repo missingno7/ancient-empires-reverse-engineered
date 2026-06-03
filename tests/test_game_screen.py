@@ -51,6 +51,28 @@ def test_toggling_a_platform_control_changes_the_render():
     assert before != after  # pressed switch + moved platform are drawn
 
 
+def test_platform_offset_override_is_render_only():
+    from ancient_empires.engine import RoomSimulation
+    from ancient_empires.game_data.room_payload import parse_platform_triplets
+
+    project = AncientEmpiresProject(EXE, DATS)
+    renderer = GameScreenRenderer(project.graphics, project.renderer)
+    sim = RoomSimulation(project.levels[0], 0, 1)
+    platform = next(p for p in parse_platform_triplets(sim.room) if p.visible)
+
+    before_state = dict(sim.platform_offsets)
+    baseline = renderer.render(project.levels[0], room_index=1, simulation=sim).tobytes()
+    shifted = renderer.render(
+        project.levels[0],
+        room_index=1,
+        simulation=sim,
+        platform_offsets_override={platform.index: (8, 0)},
+    ).tobytes()
+
+    assert shifted != baseline
+    assert sim.platform_offsets == before_state
+
+
 def test_green_block_moves_when_symbol_sequence_completes():
     from ancient_empires.engine import RoomSimulation
 

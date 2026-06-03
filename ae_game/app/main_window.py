@@ -1,6 +1,10 @@
 """Tk presentation shell for the reverse-engineered game."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+from dataclasses import replace
+import copy
+import time
 import tkinter as tk
 
 from PIL import Image, ImageTk
@@ -15,6 +19,15 @@ from ancient_empires.engine import (
 from ancient_empires.game_data.room_payload import transition_links_for_room
 from ancient_empires.project import AncientEmpiresProject
 from ancient_empires.rendering.game_screen import GameHudState, GameScreenRenderer
+
+
+@dataclass
+class _RenderSnapshot:
+    room_index: int
+    player_x: int
+    player_y: int
+    actor_positions: dict[int, tuple[int, int]]
+    platform_offsets: dict[int, tuple[int, int]]
 
 
 class GameWindow:
@@ -38,8 +51,15 @@ class GameWindow:
         self.simulation = self._room_simulation(self.room_index)
         self.player = PlayerController(self.level, self.part_index, self.room_index)
         self.show_invisible = False
+        self.interpolate_frames = False
         self._keys: set[str] = set()
         self._tick_ms = round(1000 / ACTOR_TICK_HZ)
+        self._render_ms = round(1000 / 60)
+        self._tick_seconds = 1.0 / ACTOR_TICK_HZ
+        self._last_tick_time = time.perf_counter()
+        self._previous_render_snapshot: _RenderSnapshot | None = None
+        self._current_render_snapshot: _RenderSnapshot | None = None
+        self._render_after_id: str | None = None
         self.canvas = tk.Canvas(
             self.root,
             width=320 * self.scale,
@@ -53,7 +73,10 @@ class GameWindow:
         self.root.bind("<KeyPress>", self._on_key_press)
         self.root.bind("<KeyRelease>", self._on_key_release)
         self.root.focus_force()
+        self._current_render_snapshot = self._capture_render_snapshot()
+        self._previous_render_snapshot = self._current_render_snapshot
         self._render()
+        self._schedule_render_loop()
         self.root.after(self._tick_ms, self._tick)
 
     def _build_menu(self) -> None:
@@ -92,12 +115,27 @@ class GameWindow:
             variable=self._show_invisible_var,
             command=self._toggle_invisible,
         )
+        self._interpolate_frames_var = tk.BooleanVar(value=self.interpolate_frames)
+        develop.add_checkbutton(
+            label="Frame Interpolation",
+            variable=self._interpolate_frames_var,
+            command=self._toggle_frame_interpolation,
+        )
         # Placeholders for upcoming cheats (god mode, etc.).
         menubar.add_cascade(label="Develop", menu=develop)
         self.root.config(menu=menubar)
 
     def _toggle_invisible(self) -> None:
         self.show_invisible = bool(self._show_invisible_var.get())
+        self._render()
+
+    def _toggle_frame_interpolation(self) -> None:
+        self.interpolate_frames = bool(self._interpolate_frames_var.get())
+        now = time.perf_counter()
+        self._last_tick_time = now
+        self._current_render_snapshot = self._capture_render_snapshot()
+        self._previous_render_snapshot = self._current_render_snapshot
+        self._schedule_render_loop()
         self._render()
 
     def _select_level(self, level_index: int) -> None:
@@ -114,6 +152,7 @@ class GameWindow:
         self._rooms.clear()
         self.simulation = self._room_simulation(self.room_index)
         self.player = PlayerController(self.level, self.part_index, self.room_index)
+        self._reset_render_snapshots()
         self.root.focus_force()
         self._render()
 
@@ -124,6 +163,7 @@ class GameWindow:
         self._keys.discard(str(event.keysym).lower())
 
     def _tick(self) -> None:
+        self._previous_render_snapshot = self._current_render_snapshot or self._capture_render_snapshot()
         command = PlayerInput(
             left="left" in self._keys,
             right="right" in self._keys,
@@ -143,7 +183,10 @@ class GameWindow:
                 self.player.state.x, self.player.state.y, self.player.state.facing
             )
         self.simulation.step()
-        self._render()
+        self._last_tick_time = time.perf_counter()
+        self._current_render_snapshot = self._capture_render_snapshot()
+        if not self.interpolate_frames:
+            self._render()
         self.root.after(self._tick_ms, self._tick)
 
     def _apply_room_transitions(self) -> None:
@@ -174,6 +217,100 @@ class GameWindow:
         self.simulation = self._room_simulation(room_index)
         self.player.room_index = room_index
         self.player.part = self.simulation.part
+        self._reset_render_snapshots()
+
+    def _capture_render_snapshot(self) -> _RenderSnapshot:
+        actors = {
+            actor.index: (actor.x, actor.y)
+            for actor in self.simulation.actors.values()
+            if actor.room_index == self.room_index
+        }
+        platform_offsets = {}
+        from ancient_empires.game_data.room_payload import parse_platform_triplets
+
+        for platform in parse_platform_triplets(self.simulation.room):
+            if platform.visible:
+                platform_offsets[platform.index] = self.simulation.platform_render_offset(platform)
+        return _RenderSnapshot(
+            room_index=self.room_index,
+            player_x=self.player.state.x,
+            player_y=self.player.state.y,
+            actor_positions=actors,
+            platform_offsets=platform_offsets,
+        )
+
+    def _reset_render_snapshots(self) -> None:
+        snapshot = self._capture_render_snapshot()
+        self._previous_render_snapshot = snapshot
+        self._current_render_snapshot = snapshot
+        self._last_tick_time = time.perf_counter()
+
+    @staticmethod
+    def _lerp_int(a: int, b: int, alpha: float) -> int:
+        return round(a + (b - a) * alpha)
+
+    @staticmethod
+    def _lerp_point(a: tuple[int, int], b: tuple[int, int], alpha: float) -> tuple[int, int]:
+        return round(a[0] + (b[0] - a[0]) * alpha), round(a[1] + (b[1] - a[1]) * alpha)
+
+    def _interpolation_alpha(self) -> float:
+        if not self.interpolate_frames:
+            return 1.0
+        return max(0.0, min(1.0, (time.perf_counter() - self._last_tick_time) / self._tick_seconds))
+
+    def _interpolated_player_state(self, alpha: float):
+        previous = self._previous_render_snapshot
+        current = self._current_render_snapshot
+        if not self.interpolate_frames or previous is None or current is None or previous.room_index != current.room_index:
+            return self.player.state
+        return replace(
+            self.player.state,
+            x=self._lerp_int(previous.player_x, current.player_x, alpha),
+            y=self._lerp_int(previous.player_y, current.player_y, alpha),
+        )
+
+    def _interpolated_actors(self, actors, alpha: float):
+        previous = self._previous_render_snapshot
+        current = self._current_render_snapshot
+        if not self.interpolate_frames or previous is None or current is None or previous.room_index != current.room_index:
+            return actors
+        out = []
+        for actor in actors:
+            old_xy = previous.actor_positions.get(actor.index)
+            new_xy = current.actor_positions.get(actor.index)
+            if old_xy is None or new_xy is None:
+                out.append(actor)
+                continue
+            drawn = copy.copy(actor)
+            drawn.x, drawn.y = self._lerp_point(old_xy, new_xy, alpha)
+            out.append(drawn)
+        return out
+
+    def _interpolated_platform_offsets(self, alpha: float) -> dict[int, tuple[int, int]] | None:
+        previous = self._previous_render_snapshot
+        current = self._current_render_snapshot
+        if not self.interpolate_frames or previous is None or current is None or previous.room_index != current.room_index:
+            return None
+        out: dict[int, tuple[int, int]] = {}
+        for index, new_offset in current.platform_offsets.items():
+            old_offset = previous.platform_offsets.get(index, new_offset)
+            out[index] = self._lerp_point(old_offset, new_offset, alpha)
+        return out
+
+    def _schedule_render_loop(self) -> None:
+        if not self.interpolate_frames:
+            if self._render_after_id is not None:
+                self.root.after_cancel(self._render_after_id)
+                self._render_after_id = None
+            return
+        if self._render_after_id is None:
+            self._render_after_id = self.root.after(self._render_ms, self._render_loop)
+
+    def _render_loop(self) -> None:
+        self._render_after_id = None
+        if self.interpolate_frames:
+            self._render()
+            self._render_after_id = self.root.after(self._render_ms, self._render_loop)
 
     def _render(self) -> None:
         actors = [
@@ -181,15 +318,20 @@ class GameWindow:
             for actor in self.simulation.actors.values()
             if actor.room_index == self.room_index
         ]
+        alpha = self._interpolation_alpha()
+        draw_player = self._interpolated_player_state(alpha)
+        draw_actors = self._interpolated_actors(actors, alpha)
+        platform_offsets = self._interpolated_platform_offsets(alpha)
         image = self.screen_renderer.render(
             self.level,
             part_index=self.part_index,
             room_index=self.room_index,
-            player=self.player.state,
-            actors=actors,
+            player=draw_player,
+            actors=draw_actors,
             simulation=self.simulation,
             show_invisible=self.show_invisible,
             hud=GameHudState(tool_index=self.player.state.tool),
+            platform_offsets_override=platform_offsets,
         )
         if self.scale != 1:
             image = image.resize(

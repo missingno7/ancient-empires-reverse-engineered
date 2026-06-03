@@ -59,6 +59,7 @@ class GameScreenRenderer:
         simulation=None,
         show_invisible: bool = False,
         display_mode: str = "vga",
+        platform_offsets_override: dict[int, tuple[int, int]] | None = None,
     ) -> Image.Image:
         hud = hud or GameHudState()
         previous_display_mode = self.graphics.display_mode
@@ -68,7 +69,11 @@ class GameScreenRenderer:
             # Live simulation state (pressed switches + travelled platforms) so
             # the play field reflects what the player has triggered.
             control_overrides = dict(simulation.control_states) if simulation is not None else None
-            platform_offsets = self._platform_offsets(simulation, room_index)
+            platform_offsets = (
+                platform_offsets_override
+                if platform_offsets_override is not None
+                else self._platform_offsets(simulation, room_index)
+            )
             live_room = simulation is not None and room_index == simulation.room_index
             green_block_alternate = (
                 {gb.index: gb.at_alternate for gb in simulation.green_blocks} if live_room else None
