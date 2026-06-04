@@ -33,6 +33,7 @@ class GameHudState:
     tool_index: int = 0
     artifact_pieces: int = 0
     invulnerability_uses: int = 4
+    energy: int = 4
     region_index: int = 0
     cavern_index: int = 0
 
@@ -63,9 +64,12 @@ class GameScreenRenderer:
         display_mode: str = "vga",
         platform_offsets_override: dict[int, tuple[int, int]] | None = None,
         collected_artifacts: set[int] | None = None,
+        apple_collected: bool = False,
         show_exit_door: bool = True,
         exit_door_frame: int = 0,
         show_player: bool = True,
+        player_frame_override: int | None = None,
+        player_halo: bool = False,
     ) -> Image.Image:
         hud = hud or GameHudState()
         previous_display_mode = self.graphics.display_mode
@@ -122,6 +126,7 @@ class GameScreenRenderer:
                     conveyor_tiles=conveyor_tiles,
                     reflector_frames=reflector_frames,
                     collected_artifacts=collected_artifacts,
+                    apple_collected=apple_collected,
                     show_exit_door=show_exit_door,
                     exit_door_frame=exit_door_frame,
                     show_invisible=show_invisible,
@@ -132,7 +137,10 @@ class GameScreenRenderer:
             if actors is not None:
                 self._draw_live_actors(screen, actors)
             if show_player:
-                self._draw_player(screen, level, part_index, room_index, player)
+                self._draw_player(
+                    screen, level, part_index, room_index, player,
+                    frame_override=player_frame_override, halo=player_halo,
+                )
             if simulation is not None and getattr(simulation, "laser_ttl", 0) > 0:
                 self._draw_laser(screen, simulation.laser_points)
             self._draw_hud(screen, hud)
@@ -164,6 +172,9 @@ class GameScreenRenderer:
         part_index: int,
         room_index: int,
         player: PlayerState | None,
+        *,
+        frame_override: int | None = None,
+        halo: bool = False,
     ) -> None:
         if player is None:
             part = level.part(part_index)
@@ -180,6 +191,16 @@ class GameScreenRenderer:
             frame = player.frame
             facing = player.facing
 
+        origin = (ROOM_ORIGIN[0] + x - 8, ROOM_ORIGIN[1] + y - 16)
+        # Immortality halo (AE000:004:23) is blitted under the player at the same
+        # anchor (AEPROG 0x43e6).
+        if halo:
+            halo_sprite = self.graphics.sprite("AE000", 4, 23)
+            if halo_sprite is not None:
+                screen.alpha_composite(halo_sprite, origin)
+
+        if frame_override is not None:
+            frame = frame_override
         sprite = self.graphics.sprite("AE000", 4, frame)
         if sprite is None:
             return
@@ -192,7 +213,7 @@ class GameScreenRenderer:
         # y both net to zero against ROOM_ORIGIN.  The previous -4 x offset put
         # the player 4px right of every object/rope/terrain tile, which showed
         # up as the player hanging off-centre on a rope.
-        screen.alpha_composite(sprite, (ROOM_ORIGIN[0] + x - 8, ROOM_ORIGIN[1] + y - 16))
+        screen.alpha_composite(sprite, origin)
 
     @staticmethod
     def _platform_offsets(simulation, room_index):
@@ -257,6 +278,18 @@ class GameScreenRenderer:
             uses_sprite = self.graphics.sprite("AE000", 63, 6 + uses)
             if uses_sprite is not None:
                 screen.alpha_composite(uses_sprite, (166, 174))
+
+        # AEPROG 0x738a: the energy bar is a 64x10 gauge at (244, 164) whose
+        # filled width is energy*16 (DS:0xb82, 0..4).  The remainder is drawn in
+        # the empty colour.
+        energy = max(0, min(4, int(hud.energy)))
+        filled = energy * 16
+        bar_x, bar_y, bar_h = 244, 164, 10
+        draw = ImageDraw.Draw(screen)
+        if filled < 64:
+            draw.rectangle((bar_x + filled, bar_y, bar_x + 63, bar_y + bar_h - 1), fill=(96, 0, 0, 255))
+        if filled > 0:
+            draw.rectangle((bar_x, bar_y, bar_x + filled - 1, bar_y + bar_h - 1), fill=(0, 200, 0, 255))
 
         # AEPROG 0x7417: region sprites 11..15 at (244, 175).
         region_index = max(0, min(4, int(hud.region_index)))

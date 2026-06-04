@@ -22,10 +22,13 @@ from ancient_empires.engine import (
     RoomSimulation,
     resolve_room_edge,
 )
+from ancient_empires.engine.player import TOOL_IMMORTALITY
 from ancient_empires.game_data.room_payload import (
     HeaderExitDoor,
     header_exit_door,
     header_object_candidates,
+    part_apple_marker,
+    apple_marker_screen_xy,
     transition_links_for_room,
 )
 from ancient_empires.project import AncientEmpiresProject
@@ -57,6 +60,20 @@ EXIT_KEEP_PLAYER_FRAME = -1
 # two simulation ticks is treated as a teleport/reset (e.g. a projectile
 # snapping back to its spawn) and is drawn instantly rather than smoothed.
 INTERPOLATION_SNAP_DISTANCE = 48
+
+# Player health (AEPROG DS:0xb82): five bar segments, starts full.
+ENERGY_MAX = 4
+# Post-hit state, AEPROG player draw 0x437c: the hurt timer starts at 0x1e and
+# counts down; while it is above 0x1a the player shows the hurt frame, below
+# that it blinks (drawn only on odd ticks), and the whole window is invulnerable.
+HURT_INVULN_TICKS = 0x1E
+HURT_ANIM_THRESHOLD = 0x1A
+HURT_FRAME = 22            # AE000:004:22 (sprite offset 0x39ec)
+# Immortality tool (AEPROG): DS:0x72c timer, DS:0xb80 uses (4/level); the halo
+# AE000:004:23 is drawn over the player while active (0x43e6).
+IMMORTALITY_TICKS = 0x3A
+IMMORTALITY_USES = 4
+HALO_FRAME = 23
 
 
 def exit_animation_step(step: int) -> tuple[int, int | None]:
@@ -146,6 +163,14 @@ class GameWindow:
         self.simulation = self._room_simulation(self.room_index)
         self.player = PlayerController(self.level, self.part_index, self.room_index)
         self.collected_artifacts: set[int] = set()
+        # Apples already eaten this level, keyed by room index (one apple/room).
+        self.collected_apples: set[int] = set()
+        self.god_mode = False
+        # Post-hit invulnerability/blink countdown (AEPROG hurt window 0x1e).
+        self._hurt_cooldown = 0
+        # Immortality tool: per-level use count and active invulnerability timer.
+        self.immortality_uses = IMMORTALITY_USES
+        self._invuln_timer = 0
         self.artifact_puzzle_solved = False
         self.artifact_puzzle: ArtifactPuzzleState | None = None
         self.answer_puzzle: AnswerPuzzleState | None = None
@@ -233,6 +258,12 @@ class GameWindow:
             variable=self._interpolate_frames_var,
             command=self._toggle_frame_interpolation,
         )
+        self._god_mode_var = tk.BooleanVar(value=self.god_mode)
+        develop.add_checkbutton(
+            label="God Mode",
+            variable=self._god_mode_var,
+            command=self._toggle_god_mode,
+        )
         develop.add_separator()
         develop.add_command(
             label="Collect All Artifact Pieces",
@@ -249,6 +280,13 @@ class GameWindow:
     def _toggle_invisible(self) -> None:
         self.show_invisible = bool(self._show_invisible_var.get())
         self._render()
+
+    def _toggle_god_mode(self) -> None:
+        self.god_mode = bool(self._god_mode_var.get())
+        if self.god_mode:
+            self.player.state.energy = ENERGY_MAX
+            self._hurt_cooldown = 0
+            self._render()
 
     def _toggle_frame_interpolation(self) -> None:
         self.interpolate_frames = bool(self._interpolate_frames_var.get())
@@ -288,6 +326,10 @@ class GameWindow:
         self.simulation = self._room_simulation(self.room_index)
         self.player = PlayerController(self.level, self.part_index, self.room_index)
         self.collected_artifacts.clear()
+        self.collected_apples.clear()
+        self._hurt_cooldown = 0
+        self.immortality_uses = IMMORTALITY_USES
+        self._invuln_timer = 0
         self.artifact_puzzle_solved = False
         self.artifact_puzzle = None
         self.answer_puzzle = None
@@ -334,6 +376,9 @@ class GameWindow:
             return
         if command.jump and self._try_start_exit_door():
             return
+        self._advance_invuln_timers()
+        if command.use_tool and self.player.state.tool == TOOL_IMMORTALITY:
+            self._activate_immortality()
         self.player.tick(command, self.simulation.runtime_tiles())
         self._apply_room_transitions()
         self.simulation.set_player_position(self.player.state.x, self.player.state.y)
@@ -348,6 +393,8 @@ class GameWindow:
                 self.player.state.x, self.player.state.y, self.player.state.facing
             )
         self.simulation.step()
+        self._collect_apple()
+        self._apply_enemy_contact()
         self._last_tick_time = time.perf_counter()
         self._current_render_snapshot = self._capture_render_snapshot()
         if not self.interpolate_frames:
@@ -413,6 +460,69 @@ class GameWindow:
             left, top = header_object_xy(cand.x_raw, cand.y_raw)
             if self._player_overlaps(left, top, 16, 16, self.player.state):
                 self.collected_artifacts.add(cand.index)
+
+    def _apple_collected(self) -> bool:
+        return self.room_index in self.collected_apples
+
+    def _collect_apple(self) -> None:
+        """Red apple pickup restores full energy (AEPROG object type 7, 0x3bc2
+        calls change_energy(+4))."""
+        if self._apple_collected():
+            return
+        marker = part_apple_marker(self.simulation.part, self.room_index)
+        if marker is None:
+            return
+        left, top = apple_marker_screen_xy(marker)
+        if self._player_overlaps(left, top, 16, 16, self.player.state):
+            self.collected_apples.add(self.room_index)
+            self.player.state.energy = ENERGY_MAX
+
+    def _advance_invuln_timers(self) -> None:
+        """AEPROG 0x437c/0x43f8 decrement the hurt and immortality timers once
+        per player tick."""
+        if self._hurt_cooldown > 0:
+            self._hurt_cooldown -= 1
+        if self._invuln_timer > 0:
+            self._invuln_timer -= 1
+
+    def _activate_immortality(self) -> None:
+        """Immortality tool (AEPROG 0x41d8): only when not already invulnerable;
+        spends one of the level's uses and grants a 0x3a-tick halo state.  With
+        no uses left the original just plays the 'denied' SFX."""
+        if self._invuln_timer > 0 or self.immortality_uses <= 0:
+            return
+        self.immortality_uses -= 1
+        self._invuln_timer = IMMORTALITY_TICKS
+
+    def _apply_enemy_contact(self) -> None:
+        """Touching an active enemy costs one energy segment (AEPROG 0x4472
+        change_energy(-1)).  No damage during the hurt window, immortality, or
+        god mode.  Energy 0 is death."""
+        if self._hurt_cooldown > 0 or self._invuln_timer > 0:
+            return
+        if self.god_mode:
+            return
+        for actor in self.simulation.actors.values():
+            if actor.room_index != self.room_index:
+                continue
+            if not getattr(actor, "active", True) or getattr(actor, "hidden", 0):
+                continue
+            # actor.x/y share the player's world space (same model the laser
+            # freeze uses); the 16x16 actor box vs the player collision box.
+            if self._player_overlaps(actor.x, actor.y, 16, 16, self.player.state):
+                self._hurt_player()
+                return
+
+    def _hurt_player(self) -> None:
+        self._hurt_cooldown = HURT_INVULN_TICKS
+        self.player.state.energy -= 1
+        if self.player.state.energy <= 0:
+            self._on_player_death()
+
+    def _on_player_death(self) -> None:
+        # AEPROG 0x3986 restarts the level after the death animation; without a
+        # lives counter we simply reload the level at full energy.
+        self._load(self.level, self.part_index)
 
     def _try_start_exit_door(self) -> bool:
         if not self.artifact_puzzle_solved:
@@ -622,6 +732,8 @@ class GameWindow:
         return GameHudState(
             tool_index=self.player.state.tool,
             artifact_pieces=len(self.collected_artifacts),
+            energy=self.player.state.energy,
+            invulnerability_uses=self.immortality_uses,
             region_index=region_index,
             cavern_index=cavern_index,
         )
@@ -754,6 +866,7 @@ class GameWindow:
         draw_player = self._interpolated_player_state(alpha)
         draw_actors = self._interpolated_actors(actors, alpha)
         platform_offsets = self._interpolated_platform_offsets(alpha)
+        frame_override, blink_off, halo = self._player_draw_state()
         image = self.screen_renderer.render(
             self.level,
             part_index=self.part_index,
@@ -765,11 +878,30 @@ class GameWindow:
             hud=self._hud_state(),
             platform_offsets_override=platform_offsets,
             collected_artifacts=set(self.collected_artifacts),
+            apple_collected=self._apple_collected(),
             show_exit_door=self.artifact_puzzle_solved,
             exit_door_frame=self._exit_door_frame,
-            show_player=not self._exit_player_hidden,
+            show_player=not self._exit_player_hidden and not blink_off,
+            player_frame_override=frame_override,
+            player_halo=halo,
         )
         self._show_image(image)
+
+    def _player_draw_state(self) -> tuple[int | None, bool, bool]:
+        """Resolve the post-hit / immortality draw per AEPROG 0x437c.
+
+        Returns (frame_override, blink_off, halo).  The hurt window takes
+        priority over the halo: its first ticks show the hurt frame, the rest
+        blink the player on/off; immortality otherwise draws the halo.
+        """
+        if self._hurt_cooldown > 0:
+            if self._hurt_cooldown > HURT_ANIM_THRESHOLD:
+                return HURT_FRAME, False, False
+            # Blink: AEPROG draws the player only while the timer is odd.
+            return None, (self._hurt_cooldown % 2 == 0), False
+        if self._invuln_timer > 0:
+            return None, False, True
+        return None, False, False
 
     def _show_image(self, image: Image.Image) -> None:
         if self.scale != 1:

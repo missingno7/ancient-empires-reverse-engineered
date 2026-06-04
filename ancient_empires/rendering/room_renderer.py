@@ -162,6 +162,7 @@ class RenderOptions:
     conveyor_tiles: list[int] | None = None
     reflector_frames: dict[int, int] | None = None
     collected_artifacts: set[int] | None = None
+    apple_collected: bool = False
     show_exit_door: bool = True
     exit_door_frame: int = 0
     show_invisible: bool = False
@@ -248,7 +249,7 @@ class RoomRenderer:
                 self._draw_header_objects(image, room, part.header, collected=options.collected_artifacts)
                 if options.show_exit_door:
                     self._draw_exit_door(image, room, part.header, part.theme, options.exit_door_frame)
-                self._draw_apple_pickup(image, part, room)
+                self._draw_apple_pickup(image, part, room, collected=options.apple_collected)
                 self._draw_control_records(image, room, control_state_overrides=options.control_state_overrides)
                 self._draw_puzzle_markers(image, room)
                 if options.draw_puzzle_panels:
@@ -276,7 +277,7 @@ class RoomRenderer:
                 self._draw_header_objects(image, room, part.header, collected=options.collected_artifacts)
                 if options.show_exit_door:
                     self._draw_exit_door(image, room, part.header, part.theme, options.exit_door_frame)
-                self._draw_apple_pickup(image, part, room)
+                self._draw_apple_pickup(image, part, room, collected=options.apple_collected)
                 self._draw_actors(image, part, room, include_hidden=True)
                 self._draw_player_start(image, room, part.header)
                 self._draw_actor_probes(image, part, room, part.header)
@@ -618,7 +619,9 @@ class RoomRenderer:
             return
         self._blit(image, sprite, *header_exit_door_xy(door.x_raw, door.y_raw))
 
-    def _draw_apple_pickup(self, image: Image.Image, part, room: Room) -> None:
+    def _draw_apple_pickup(self, image: Image.Image, part, room: Room, *, collected: bool = False) -> None:
+        if collected:
+            return
         apple = part_apple_marker(part, room.index)
         sprite = self.graphics.sprite("AE000", 45, 0)
         if sprite is not None and apple is not None:

@@ -50,6 +50,8 @@ class PlayerState:
     tool_ready: bool = True
     change_ready: bool = True
     fired_laser: bool = False
+    # Health, AEPROG DS:0xb82: 0..4 (5 bar segments), starts full.
+    energy: int = 4
 
 
 class PlayerController:

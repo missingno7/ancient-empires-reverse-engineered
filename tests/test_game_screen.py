@@ -303,3 +303,180 @@ def test_invisible_block_overlay_follows_runtime_tiles():
     sim._invalidate_runtime_tiles()
     after = _invisible_clusters(sim.room, sim.runtime_tiles())
     assert before != after
+
+
+def test_hud_energy_bar_width_tracks_energy():
+    """The HUD energy gauge (AEPROG 0x738a) fills width = energy*16 at (244,164)."""
+    from ancient_empires.rendering.game_screen import GameHudState
+
+    project = AncientEmpiresProject(EXE, DATS)
+    renderer = GameScreenRenderer(project.graphics, project.renderer)
+
+    def green_pixels(energy):
+        img = renderer.render(project.levels[0], hud=GameHudState(energy=energy)).convert("RGBA")
+        return sum(
+            1
+            for x in range(244, 308)
+            for y in range(164, 174)
+            if img.getpixel((x, y)) == (0, 200, 0, 255)
+        )
+
+    assert green_pixels(0) == 0
+    assert green_pixels(2) == 2 * 16 * 10
+    assert green_pixels(4) == 4 * 16 * 10
+
+
+def test_apple_pickup_render_suppressed_when_collected():
+    from ancient_empires.game_data.room_payload import part_apple_marker
+
+    project = AncientEmpiresProject(EXE, DATS)
+    renderer = GameScreenRenderer(project.graphics, project.renderer)
+    apple_room = next(ri for ri in range(10) if part_apple_marker(project.levels[0].part(0), ri))
+    visible = renderer.render(project.levels[0], room_index=apple_room, apple_collected=False).tobytes()
+    eaten = renderer.render(project.levels[0], room_index=apple_room, apple_collected=True).tobytes()
+    assert visible != eaten
+
+
+def _make_game_window():
+    """Create a hidden GameWindow, or skip if Tk has no display."""
+    import pytest
+    tkinter = pytest.importorskip("tkinter")
+    from ae_game.app.main_window import GameWindow
+
+    project = AncientEmpiresProject(EXE, DATS)
+    try:
+        window = GameWindow(project, scale=1)
+    except tkinter.TclError as exc:  # headless CI
+        pytest.skip(f"Tk unavailable: {exc}")
+    window.root.withdraw()
+    return window
+
+
+def test_enemy_contact_damages_player_with_mercy_window_and_god_mode():
+    from ae_game.app.main_window import HURT_INVULN_TICKS
+
+    window = _make_game_window()
+    try:
+        actors = [a for a in window.simulation.actors.values() if a.room_index == window.room_index]
+        if not actors:
+            import pytest
+
+            pytest.skip("no actor in starting room to test contact")
+        actor = actors[0]
+        actor.actor_type = 0
+        actor.hidden = 0
+        window.player.state.x, window.player.state.y = actor.x, actor.y
+
+        window.player.state.energy = 4
+        window._apply_enemy_contact()
+        assert window.player.state.energy == 3
+        assert window._hurt_cooldown == HURT_INVULN_TICKS
+
+        # Mercy window: no further damage until it expires.
+        window._apply_enemy_contact()
+        assert window.player.state.energy == 3
+
+        # God mode blocks damage entirely.
+        window._hurt_cooldown = 0
+        window.god_mode = True
+        window._apply_enemy_contact()
+        assert window.player.state.energy == 3
+    finally:
+        window.root.destroy()
+
+
+def test_apple_pickup_restores_full_energy_once():
+    from ancient_empires.game_data.room_payload import part_apple_marker, apple_marker_screen_xy
+
+    window = _make_game_window()
+    try:
+        room = next(ri for ri in range(10) if part_apple_marker(window.project.levels[0].part(0), ri))
+        window.room_index = room
+        window.simulation = window._room_simulation(room)
+        marker = part_apple_marker(window.simulation.part, room)
+        left, top = apple_marker_screen_xy(marker)
+        window.player.state.x, window.player.state.y = left, top
+        window.player.state.energy = 1
+
+        window._collect_apple()
+        assert window.player.state.energy == 4
+        assert window._apple_collected()
+
+        # Eating once removes it; a second pass does not heal again.
+        window.player.state.energy = 2
+        window._collect_apple()
+        assert window.player.state.energy == 2
+    finally:
+        window.root.destroy()
+
+
+def test_player_draw_state_hurt_then_blink_then_normal():
+    from ae_game.app.main_window import (
+        HURT_INVULN_TICKS,
+        HURT_ANIM_THRESHOLD,
+        HURT_FRAME,
+    )
+
+    window = _make_game_window()
+    try:
+        # Drive the hurt window the way _tick does: advance, then read draw state.
+        window._hurt_cooldown = HURT_INVULN_TICKS
+        window._invuln_timer = 0
+        modes = []
+        for _ in range(HURT_INVULN_TICKS):
+            window._advance_invuln_timers()
+            modes.append(window._player_draw_state())
+        # First ticks (timer > 0x1a) show the hurt frame.
+        assert modes[0] == (HURT_FRAME, False, False)
+        assert modes[2] == (HURT_FRAME, False, False)
+        # Then it alternates blink-off / shown until the window ends.
+        blink_phase = modes[HURT_INVULN_TICKS - HURT_ANIM_THRESHOLD:]
+        assert any(b for (_, b, _) in blink_phase)
+        assert any(not b for (_, b, _) in blink_phase)
+        # Window over -> normal draw.
+        window._hurt_cooldown = 0
+        assert window._player_draw_state() == (None, False, False)
+    finally:
+        window.root.destroy()
+
+
+def test_immortality_tool_spends_uses_and_grants_halo():
+    from ae_game.app.main_window import IMMORTALITY_TICKS, IMMORTALITY_USES
+    from ancient_empires.engine.player import TOOL_IMMORTALITY
+
+    window = _make_game_window()
+    try:
+        window.player.state.tool = TOOL_IMMORTALITY
+        window.immortality_uses = IMMORTALITY_USES
+        window._invuln_timer = 0
+
+        window._activate_immortality()
+        assert window.immortality_uses == IMMORTALITY_USES - 1
+        assert window._invuln_timer == IMMORTALITY_TICKS
+        assert window._player_draw_state() == (None, False, True)  # halo
+
+        # Cannot re-activate while still invulnerable.
+        window._activate_immortality()
+        assert window.immortality_uses == IMMORTALITY_USES - 1
+
+        # Spend the rest; never goes negative.
+        for _ in range(10):
+            window._invuln_timer = 0
+            window._activate_immortality()
+        assert window.immortality_uses == 0
+
+        # Immortality blocks enemy damage.
+        actors = [a for a in window.simulation.actors.values() if a.room_index == window.room_index]
+        if actors:
+            a = actors[0]
+            a.actor_type = 0
+            a.hidden = 0
+            window.player.state.x, window.player.state.y = a.x, a.y
+            window.player.state.energy = 4
+            window._invuln_timer = IMMORTALITY_TICKS
+            window._hurt_cooldown = 0
+            window.god_mode = False
+            window._apply_enemy_contact()
+            assert window.player.state.energy == 4
+    finally:
+        window.root.destroy()
