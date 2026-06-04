@@ -406,7 +406,7 @@ def _explore_path_traces(
         )
 
     def visit(pc: int, x: int, y: int, points, segments, conditions, seen: set[int], depth: int):
-        nonlocal truncated, any_loop
+        nonlocal truncated
         if len(traces) >= max_traces:
             truncated = True
             return

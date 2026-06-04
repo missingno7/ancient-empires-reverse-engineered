@@ -14,8 +14,11 @@ def test_level_1_explorer_room_0_game_screen_regression():
     image = GameScreenRenderer(project.graphics, project.renderer).render(project.levels[0])
 
     assert image.size == (320, 200)
+    # Pixel-exact guard for the default room-0 render.  Update this hash only
+    # when an intentional render change lands (HUD energy bar, player draw
+    # anchor, animated decals, etc.).
     assert hashlib.sha256(image.tobytes()).hexdigest() == (
-        "06edf140ef02ad6673e2616771305d8bda16f5ea37203995c3f290922ace784c"
+        "07a3f00a272bf17c336fec2199f82a94d7c377bf51cf29df7f8dc0c92ca12b49"
     )
 
 
@@ -386,7 +389,7 @@ def test_enemy_contact_damages_player_with_mercy_window_and_god_mode():
 
 
 def test_apple_pickup_restores_full_energy_once():
-    from ancient_empires.game_data.room_payload import part_apple_marker, apple_marker_screen_xy
+    from ancient_empires.game_data.room_payload import part_apple_marker
 
     window = _make_game_window()
     try:
@@ -394,8 +397,9 @@ def test_apple_pickup_restores_full_energy_once():
         window.room_index = room
         window.simulation = window._room_simulation(room)
         marker = part_apple_marker(window.simulation.part, room)
-        left, top = apple_marker_screen_xy(marker)
-        window.player.state.x, window.player.state.y = left, top
+        # Stand on the apple; _tick syncs the sim's player position before pickup.
+        window.player.state.x, window.player.state.y = marker.x_raw * 2, marker.y_raw
+        window.simulation.set_player_position(window.player.state.x, window.player.state.y)
         window.player.state.energy = 1
 
         window._collect_apple()
@@ -501,5 +505,121 @@ def test_laser_plays_fire_sound_then_cooldown_click():
 
         assert SFX_LASER in played          # an actual beam
         assert SFX_LASER_BLOCKED in played  # the cooldown click, no new beam
+    finally:
+        window._on_close()
+
+
+def test_pickup_box_is_shared_asm_query_for_artifacts_and_apples():
+    """Artifacts and apples register the same 8x16 raw-x box (AEPROG 0x2e7d /
+    0x2ede) tested against the one player query box (0x3b05)."""
+    from ancient_empires.engine import RoomSimulation
+
+    project = AncientEmpiresProject(EXE, DATS)
+    sim = RoomSimulation(project.levels[0], 0, 0)
+    # Player query box is x = px//2+1 .. +14, y = py+1 .. +39 (raw-x space).
+    sim.set_player_position(40, 40)
+    obj_x, obj_y = 21, 41  # inside the query box -> overlaps
+    assert sim.player_pickup_overlaps(obj_x, obj_y)
+    # An object far outside the query box does not overlap (range, not whole room).
+    assert not sim.player_pickup_overlaps(obj_x + 30, obj_y)
+    assert not sim.player_pickup_overlaps(obj_x, obj_y + 60)
+
+
+def test_player_face_boxes_are_tight_per_frame():
+    from ancient_empires.engine.player import load_player_face_boxes, player_face_box
+
+    boxes = load_player_face_boxes(EXE)
+    assert len(boxes) == 24  # 12 frames x 2 facings
+    xn, yn, xf, yf = player_face_box(boxes, 0, 0)
+    # Much tighter than the 32x40 sprite / the old 39x47 contact box.
+    assert (xf - xn) < 20 and (yf - yn) < 40
+    # Facing flips the box within the sprite width.
+    assert player_face_box(boxes, 0, 1) != (xn, yn, xf, yf)
+
+
+def test_enemy_contact_uses_tight_face_boxes_not_whole_sprite():
+    window = _make_game_window()
+    try:
+        actors = [a for a in window.simulation.actors.values() if a.room_index == window.room_index]
+        if not actors:
+            import pytest
+
+            pytest.skip("no actor in starting room")
+        actor = actors[0]
+        actor.actor_type = 0
+        actor.hidden = 0
+
+        # Overlapping the actor hurts.
+        window.player.state.frame = 0
+        window.player.state.facing = 0
+        window.player.state.x, window.player.state.y = actor.x, actor.y
+        window.player.state.energy = 4
+        window._hurt_cooldown = 0
+        window._invuln_timer = 0
+        window._apply_enemy_contact()
+        assert window.player.state.energy == 3
+
+        # Standing well clear of the actor's sprite does NOT hurt (the old whole
+        # sprite box would have).
+        window.player.state.energy = 4
+        window._hurt_cooldown = 0
+        window.player.state.x = actor.x + 48
+        window._apply_enemy_contact()
+        assert window.player.state.energy == 4
+    finally:
+        window._on_close()
+
+
+def test_animated_decor_renders_on_top_of_static_decor():
+    """L1 Explorer room 4 has a statue (static decor) with animated eyes; the
+    eyes (AEPROG 0xd818) draw after the static decor (0x2d3e), so the render
+    visibly changes across animation phases instead of being hidden."""
+    from ancient_empires.rendering.room_renderer import RenderOptions
+    from ancient_empires.game_data.room_payload import animated_decor_table
+
+    project = AncientEmpiresProject(EXE, DATS)
+    room = project.levels[0].part(0).room(4)
+    assert animated_decor_table(room) is not None  # the statue eyes record
+
+    def frame(phase):
+        return project.renderer.render_room(
+            project.levels[0], 4,
+            RenderOptions(mode="game", zoom=1, part_index=0, animated_decor_phase=phase),
+        ).tobytes()
+
+    frames = {frame(p) for p in range(4)}
+    assert len(frames) > 1  # the eyes animate on top of the statue
+
+
+def test_level_naming_is_shared_between_game_and_editor():
+    from ancient_empires.constants import level_display_name, hud_indices_for_level
+
+    assert level_display_name(0) == "Near East I"
+    assert level_display_name(4) == "Egypt I"
+    assert level_display_name(19) == "Ancient World IV"
+    assert hud_indices_for_level(5) == (1, 1)
+    # Game and editor import the same helpers (no divergent copies).
+    from ae_game.app.main_window import level_display_name as game_name
+    from ae_editor.ui.common import level_display_name as editor_name
+    assert game_name is editor_name is level_display_name
+
+
+def test_artifact_puzzle_registers_rapid_key_taps():
+    """The cursor puzzle handles keys on the event (not sampled per ~100ms
+    tick), so quick taps pressed-and-released between ticks are not dropped."""
+    from types import SimpleNamespace
+    from ancient_empires.engine.artifact_puzzle import ArtifactPuzzleState
+
+    window = _make_game_window()
+    try:
+        window.artifact_puzzle = ArtifactPuzzleState(level_index=0, expert=False)
+        start_col = window.artifact_puzzle.cursor_col
+        # Five fast taps with no tick in between (the old sampler lost these).
+        for _ in range(5):
+            window._on_key_press(SimpleNamespace(keysym="Right"))
+            window._on_key_release(SimpleNamespace(keysym="Right"))
+        assert window.artifact_puzzle is not None
+        moved = (window.artifact_puzzle.cursor_col - start_col) % 6
+        assert moved == 5  # every tap registered
     finally:
         window._on_close()

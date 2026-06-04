@@ -68,28 +68,6 @@ def _record12_sequence_values(rec: bytes) -> list[int]:
     return values
 
 
-def _invisible_clusters(room: Room) -> list[tuple[int, int, int, int]]:
-    cells = {(x, y) for y in range(ROOM_ROWS) for x in range(ROOM_COLUMNS) if room.get(x, y) == 0x07}
-    clusters: list[tuple[int, int, int, int]] = []
-    while cells:
-        seed = next(iter(cells))
-        stack = [seed]
-        cluster = set()
-        cells.remove(seed)
-        while stack:
-            cx, cy = stack.pop()
-            cluster.add((cx, cy))
-            for nx, ny in ((cx-1, cy), (cx+1, cy), (cx, cy-1), (cx, cy+1)):
-                if (nx, ny) in cells:
-                    cells.remove((nx, ny))
-                    stack.append((nx, ny))
-        xs = [x for x, _ in cluster]
-        ys = [y for _, y in cluster]
-        clusters.append((min(xs) * CELL_SIZE, min(ys) * CELL_SIZE, (max(xs) - min(xs) + 1) * CELL_SIZE, (max(ys) - min(ys) + 1) * CELL_SIZE))
-    clusters.sort(key=lambda r: (r[1], r[0]))
-    return clusters
-
-
 def _draw_sequence_on_panel(graphics, panel: Image.Image, seq_values: list[int]) -> Image.Image:
     if not seq_values:
         return panel
@@ -234,7 +212,6 @@ class RoomRenderer:
             if options.draw_background:
                 self._draw_background(image, part.theme)
             if options.mode == "game":
-                self._draw_animated_decor(image, room, part.theme, phase=options.animated_decor_phase)
                 self._draw_visual_objects(image, room, layer="background")
             self._draw_terrain_tiles(image, room, part.theme)
 
@@ -244,6 +221,10 @@ class RoomRenderer:
                 self._draw_laser_crystals(image, room, frame_overrides=options.reflector_frames)
                 if options.draw_platforms:
                     self._draw_platforms(image, room, offsets=options.platform_offsets)
+                # Animated decor is blitted after the foreground decor, crystals
+                # and platforms (AEPROG 0xd818 at 0x2e2f), so it sits on top of
+                # static decor - e.g. statue eyes over the statue body.
+                self._draw_animated_decor(image, room, part.theme, phase=options.animated_decor_phase)
                 if options.show_invisible:
                     self._draw_invisible_blocks(image, room, options.conveyor_tiles)
                 self._draw_header_objects(image, room, part.header, collected=options.collected_artifacts)
@@ -265,7 +246,6 @@ class RoomRenderer:
                 if options.draw_player_start:
                     self._draw_player_start(image, room, part.header)
             elif options.mode == "payload_debug":
-                self._draw_animated_decor(image, room, part.theme, phase=options.animated_decor_phase)
                 self._draw_visual_objects(image, room, layer="background")
                 self._draw_conveyor_tiles(image, room)
                 self._draw_platforms(image, room)
@@ -273,6 +253,8 @@ class RoomRenderer:
                 self._draw_puzzle_markers(image, room)
                 self._draw_laser_crystals(image, room)
                 self._draw_visual_objects(image, room, layer="foreground")
+                # Animated decor on top of the static foreground decor (0xd818).
+                self._draw_animated_decor(image, room, part.theme, phase=options.animated_decor_phase)
                 self._draw_record12_puzzle_panels(image, room)
                 self._draw_header_objects(image, room, part.header, collected=options.collected_artifacts)
                 if options.show_exit_door:

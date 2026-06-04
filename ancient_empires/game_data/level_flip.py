@@ -3,25 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..constants import (
-    CELL_SIZE,
     LEVEL_PART_ACTOR_BLOCK_OFFSET,
     LEVEL_PART_ACTOR_BLOCK_SIZE,
-    LEVEL_PART_HEADER_SIZE,
     ROOM_COLUMNS,
     ROOM_COUNT,
-    ROOM_RECORD_SIZE,
     ROOM_ROWS,
     ROOM_SCREEN_WIDTH_PX,
-    ROOM_TERRAIN_OFFSET,
 )
 from .actor_dsl import opcode_size, s8
 from .level_format import Level, LevelPart, Room
 from .room_payload import (
     ACTOR_RECORD_SIZE,
-    ANIMATED_DECOR_RECORD_SIZE,
-    PLATFORM_TRIPLET_COUNT,
-    PLATFORM_TRIPLET_SIZE,
-    parse_actor_table,
     parse_conveyor_visual_records,
     parse_exe_payload_directory,
     parse_platform_triplets,

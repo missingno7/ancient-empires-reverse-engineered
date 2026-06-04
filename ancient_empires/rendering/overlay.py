@@ -7,10 +7,8 @@ from ..constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS, ROOM_SCREEN_HEIGHT_P
 from ..engine import control_targets, platform_motion_delta, platform_xy
 from ..game_data.level_format import Room
 from ..game_data.actor_scripts import actor_script_bytes, decode_actor_script
-from ..game_data.conveyors import iter_conveyor_runs
 from ..game_data.room_payload import (
     ActorTableRecord,
-    ControlCommand,
     actor_records_for_room,
     control_commands,
     header_object_candidates,

@@ -40,6 +40,7 @@ from ..game_data.room_payload import (
     control_commands,
     header_player_start,
     parse_actor_table,
+    green_block_footprint_cells,
     parse_platform_triplets,
     parse_conveyor_visual_records,
     record12_green_block_records,
@@ -281,32 +282,12 @@ def _green_block_xy(raw_x: int, raw_y: int) -> tuple[int, int]:
     return raw_x * 2 - 8, raw_y - 12
 
 
-def _green_block_footprint_cells_from_raw(raw_x: int, raw_y: int) -> set[tuple[int, int]]:
-    """Collision footprint of a green block, exactly as AEPROG 0x3132 writes it.
-
-    The original fills a 6x2 invisible-solid (0x07) region whose top-left cell is
-    ``col = raw_x // 4 - 1`` (``raw_x`` is the half-resolution x, so /4 = /8 in
-    full pixels) and ``row = raw_y // 8 - 1``.  The earlier geometric heuristic
-    (``(raw_x*2-4)//8`` / ``(raw_y-12)//8``) drifted by a row or column for many
-    blocks, leaving stale invisible walls and clearing the wrong cells when the
-    block teleported.
-    """
-    col = raw_x // 4 - 1
-    row = raw_y // 8 - 1
-    return {
-        (col + dx, row + dy)
-        for dy in range(2)
-        for dx in range(6)
-        if 0 <= col + dx < ROOM_COLUMNS and 0 <= row + dy < ROOM_ROWS
-    }
-
-
 def _green_block_footprint_cells(record: SimGreenBlockState, *, alternate: bool | None = None) -> set[tuple[int, int]]:
     use_alternate = record.at_alternate if alternate is None else alternate
     base = 2 if use_alternate else 0
     if len(record.raw) < base + 2:
         return set()
-    return _green_block_footprint_cells_from_raw(record.raw[base], record.raw[base + 1])
+    return green_block_footprint_cells(record.raw[base], record.raw[base + 1])
 
 
 class RoomSimulation:
@@ -545,13 +526,29 @@ class RoomSimulation:
         2: (0, 0, 8, 16),
     }
 
+    # Player object-query box in raw-x space (AEPROG 0x3b05: x = X/2+1,
+    # y = Y+1, w = 14, h = 39).  Every walk-onto interaction - controls,
+    # symbols, and pickups - is tested against this one box via 0xd89a.
+    _PLAYER_QUERY_SIZE = (14, 39)
+
+    def _player_query_box(self) -> tuple[int, int, int, int]:
+        return self.player_x // 2 + 1, self.player_y + 1, *self._PLAYER_QUERY_SIZE
+
+    def player_pickup_overlaps(self, x_raw: int, y_raw: int, *, w: int = 8, h: int = 16) -> bool:
+        """Whether the player's query box overlaps a pickup box.
+
+        Artifacts (0x2e7d) and apples (0x2ede) both register an 8x16 raw-x box
+        via 0xd825, so this is the single shared test for both ranges.
+        """
+        qx, qy, qw, qh = self._player_query_box()
+        return qx + qw > x_raw and x_raw + w > qx and qy + qh > y_raw and y_raw + h > qy
+
     def _object_code_at_player(self) -> int | None:
         # Player probe box in raw-x space (AEPROG 0x3b05: x = X/2+1, y = Y+1,
         # w = 14, h = 39).  The query is the inclusive AABB test from 0xd89a.
-        qx = self.player_x // 2 + 1
-        qy = self.player_y + 1
-        q_right = qx + 14 - 1
-        q_bottom = qy + 39 - 1
+        qx, qy, qw, qh = self._player_query_box()
+        q_right = qx + qw - 1
+        q_bottom = qy + qh - 1
         for cmd in self.controls():
             if cmd.command is None or cmd.x_raw is None or cmd.y_raw is None:
                 continue
@@ -880,7 +877,13 @@ class RoomSimulation:
         self._refresh_laser_points()
 
     def _advance_platforms(self) -> None:
-        """Slide each platform toward/away from its target by 8 px (0x25b3)."""
+        """Slide each platform toward/away from its target by 8 px (0x25b3).
+
+        AEPROG 0x257d pauses a platform while the player overlaps the cells it
+        would move into (the counter is restored rather than advanced), and it
+        resumes once the player leaves - so a player standing in a platform's
+        path holds it, and it finishes travelling afterwards.
+        """
         active = self.active_target_indices("platform")
         changed = False
         for platform in parse_platform_triplets(self.room):
@@ -891,11 +894,28 @@ class RoomSimulation:
             if current == target:
                 continue
             step = PLATFORM_STEP if target > current else -PLATFORM_STEP
-            current = max(0, min(PLATFORM_TRAVEL_DISTANCE, current + step))
-            self.platform_offsets[platform.index] = current
+            next_offset = max(0, min(PLATFORM_TRAVEL_DISTANCE, current + step))
+            if self._platform_blocked_by_player(platform, next_offset):
+                continue
+            self.platform_offsets[platform.index] = next_offset
             changed = True
         if changed:
             self._invalidate_runtime_tiles()
+
+    def _player_collision_cells(self) -> set[tuple[int, int]]:
+        """Runtime-tile cells the player body occupies (col = x//8-1,
+        row = y//8-2), using the AEPROG 0x257d player box (0x1F x 0x27)."""
+        px, py = self.player_x, self.player_y
+        col0, col1 = px // 8 - 1, (px + 0x1F) // 8 - 1
+        row0, row1 = py // 8 - 2, (py + 0x27) // 8 - 2
+        return {(c, r) for c in range(col0, col1 + 1) for r in range(row0, row1 + 1)}
+
+    def _platform_blocked_by_player(self, platform, offset_magnitude: int) -> bool:
+        dx, dy = platform_motion_delta(platform)
+        scale = offset_magnitude / PLATFORM_TRAVEL_DISTANCE
+        off = (round(dx * scale), round(dy * scale))
+        next_cells = self._platform_footprint_cells(platform, offset=off)
+        return bool(next_cells & self._player_collision_cells())
 
     def platform_render_offset(self, platform) -> tuple[int, int]:
         """Current pixel offset of a platform along its travel vector."""

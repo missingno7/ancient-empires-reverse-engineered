@@ -37,6 +37,7 @@ from .common import (
     parse_platform_triplets,
     part_apple_marker,
     platform_xy,
+    green_block_footprint_cells,
     re,
     record12_green_block_records,
     section_a_symbol_table,
@@ -369,32 +370,11 @@ class EditorToolsMixin:
                 changed = True
         return changed
 
-    def _green_block_footprint_cells_from_xy(self, x_px: int, y_px: int) -> set[tuple[int, int]]:
-        # Green sequence blocks use a 6x2 invisible-solid footprint (tile 07).
-        # The sprite is 56px wide, but collision is the inner 48px strip.
-        start_x = max(0, min(ROOM_COLUMNS - 1, (x_px + 4) // CELL_SIZE))
-        start_y = max(0, min(ROOM_ROWS - 1, y_px // CELL_SIZE))
-        return {
-            (x, y)
-            for y in range(start_y, min(ROOM_ROWS, start_y + 2))
-            for x in range(start_x, min(ROOM_COLUMNS, start_x + 6))
-        }
-
     def _green_block_footprint_cells(self, rec: bytes, *, alternate: bool = False) -> set[tuple[int, int]]:
         if len(rec) < (4 if alternate else 2):
             return set()
         base = 2 if alternate else 0
-        # Match AEPROG 0x3132: 6x2 invisible-solid footprint at
-        # col = raw_x//4 - 1, row = raw_y//8 - 1.
-        raw_x, raw_y = rec[base], rec[base + 1]
-        col = raw_x // 4 - 1
-        row = raw_y // 8 - 1
-        return {
-            (col + dx, row + dy)
-            for dy in range(2)
-            for dx in range(6)
-            if 0 <= col + dx < ROOM_COLUMNS and 0 <= row + dy < ROOM_ROWS
-        }
+        return green_block_footprint_cells(rec[base], rec[base + 1])
 
     def _clear_green_block_footprint(self, room, rec: bytes, *, alternate: bool = False) -> bool:
         changed = False
@@ -1230,7 +1210,6 @@ class EditorToolsMixin:
                 self.status.set(f"Updated exit door: room={room_index} x={x_raw} y={y_raw}")
             elif kind == "player_start":
                 part = self.current_level().part(self.part_var.get())
-                start = header_player_start(part.header)
                 x_raw = self._parse_int_property(self.property_x_var.get(), default=0) & 0xFF
                 y_raw = self._parse_int_property(self.property_y_var.get(), default=0) & 0xFF
                 part.set_player_start(x_raw, y_raw)

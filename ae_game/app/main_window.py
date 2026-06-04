@@ -9,7 +9,11 @@ import tkinter as tk
 
 from PIL import Image, ImageTk
 
-from ancient_empires.constants import ACTOR_TICK_HZ
+from ancient_empires.constants import (
+    ACTOR_TICK_HZ,
+    hud_indices_for_level,
+    level_display_name,
+)
 from ancient_empires.engine.answer_puzzle import (
     AnswerPuzzleState,
     answer_room_player_start,
@@ -22,25 +26,21 @@ from ancient_empires.engine import (
     RoomSimulation,
     resolve_room_edge,
 )
-from ancient_empires.engine.player import TOOL_IMMORTALITY
+from ancient_empires.engine.player import TOOL_IMMORTALITY, load_player_face_boxes, player_face_box
 from ancient_empires.game_data.room_payload import (
     HeaderExitDoor,
     header_exit_door,
     header_object_candidates,
     part_apple_marker,
-    apple_marker_screen_xy,
     transition_links_for_room,
 )
 from ancient_empires.project import AncientEmpiresProject
-from ancient_empires.rendering.coordinates import header_object_xy
 from ancient_empires.rendering.artifact_puzzle_screen import ArtifactPuzzleScreenRenderer
 from ancient_empires.rendering.answer_puzzle_screen import AnswerPuzzleScreenRenderer
 from ancient_empires.rendering.game_screen import GameHudState, GameScreenRenderer
 from ae_game.app.audio_engine import GameAudioEngine
 
 
-REGION_LEVEL_NAMES = ("Near East", "Egypt", "Greece and Rome", "India and China", "Ancient World")
-CHAMBER_NUMERALS = ("I", "II", "III", "IV")
 # Exit-door entry animation (AEPROG 0x233e): three back-to-back 4-step phases.
 #   open : door frames 1->4 while the player stands at the doorway
 #   enter: door held open (frame 4) while the player walks in (frames 12->15)
@@ -112,14 +112,6 @@ class _RenderSnapshot:
     platform_offsets: dict[int, tuple[int, int]]
 
 
-def hud_indices_for_level(level_index: int) -> tuple[int, int]:
-    level_index = max(0, int(level_index))
-    return min(4, level_index // 4), min(3, level_index % 4)
-
-
-def level_display_name(level_index: int) -> str:
-    region_index, cavern_index = hud_indices_for_level(level_index)
-    return f"{REGION_LEVEL_NAMES[region_index]} {CHAMBER_NUMERALS[cavern_index]}"
 
 
 def player_aligned_with_exit_door(player, door) -> bool:
@@ -182,6 +174,8 @@ class GameWindow:
         # Immortality tool: per-level use count and active invulnerability timer.
         self.immortality_uses = IMMORTALITY_USES
         self._invuln_timer = 0
+        # Per-frame player collision boxes for the actor-contact test (DS:0x79E).
+        self._player_face_boxes = load_player_face_boxes(project.exe)
         self._prev_use_tool = False
         self.artifact_puzzle_solved = False
         self.artifact_puzzle: ArtifactPuzzleState | None = None
@@ -412,10 +406,40 @@ class GameWindow:
         self._start_level_music()
 
     def _on_key_press(self, event: tk.Event) -> None:
-        self._keys.add(str(event.keysym).lower())
+        key = str(event.keysym).lower()
+        self._keys.add(key)
+        # The artifact-assembly puzzle is cursor-driven, so handle its keys on
+        # the key event itself (DOS is event-driven).  Sampling once per ~100ms
+        # tick dropped quick taps that were pressed and released between ticks.
+        if self.artifact_puzzle is not None:
+            self._handle_artifact_puzzle_key(key)
 
     def _on_key_release(self, event: tk.Event) -> None:
         self._keys.discard(str(event.keysym).lower())
+
+    def _handle_artifact_puzzle_key(self, key: str) -> None:
+        puzzle = self.artifact_puzzle
+        if puzzle is None:
+            return
+        if key == "left":
+            puzzle.move_cursor(0, -1)
+        elif key == "right":
+            puzzle.move_cursor(0, 1)
+        elif key == "up":
+            puzzle.move_cursor(-1, 0)
+        elif key == "down":
+            puzzle.move_cursor(1, 0)
+        elif key == "f":
+            puzzle.flip_held_piece()
+        elif key == "return":
+            puzzle.take_or_drop()
+        else:
+            return
+        if puzzle.solved:
+            self.artifact_puzzle_solved = True
+            self.artifact_puzzle = None
+            self._reset_render_snapshots()
+        self._render()
 
     def _tick(self) -> None:
         self._previous_render_snapshot = self._current_render_snapshot or self._capture_render_snapshot()
@@ -500,19 +524,6 @@ class GameWindow:
         self.player.part = self.simulation.part
         self._reset_render_snapshots()
 
-    @staticmethod
-    def _player_overlaps(left: int, top: int, width: int, height: int, player) -> bool:
-        player_left = player.x
-        player_top = player.y
-        player_right = player_left + 0x27
-        player_bottom = player_top + 0x2F
-        return (
-            player_right >= left
-            and left + width > player_left
-            and player_bottom >= top
-            and top + height > player_top
-        )
-
     def _configured_artifacts(self) -> set[int]:
         return {cand.index for cand in header_object_candidates(self.simulation.part.header)}
 
@@ -526,8 +537,7 @@ class GameWindow:
                 continue
             if cand.room_plus_one != self.room_index + 1:
                 continue
-            left, top = header_object_xy(cand.x_raw, cand.y_raw)
-            if self._player_overlaps(left, top, 16, 16, self.player.state):
+            if self.simulation.player_pickup_overlaps(cand.x_raw, cand.y_raw):
                 self.collected_artifacts.add(cand.index)
                 self.player.pending_sounds.append(SFX_PICKUP)
 
@@ -542,8 +552,7 @@ class GameWindow:
         marker = part_apple_marker(self.simulation.part, self.room_index)
         if marker is None:
             return
-        left, top = apple_marker_screen_xy(marker)
-        if self._player_overlaps(left, top, 16, 16, self.player.state):
+        if self.simulation.player_pickup_overlaps(marker.x_raw, marker.y_raw):
             self.collected_apples.add(self.room_index)
             self.player.state.energy = ENERGY_MAX
             self.player.pending_sounds.append(SFX_PICKUP)
@@ -569,22 +578,48 @@ class GameWindow:
         self._invuln_timer = IMMORTALITY_TICKS
         self.player.pending_sounds.append(SFX_IMMORTALITY)
 
+    def _actor_face_box(self, actor) -> tuple[int, int, int, int] | None:
+        """Actor collision box (x_near, y_near, x_far, y_far) relative to its
+        anchor.  AEPROG builds this table (DS:0x40D4) at load from the sprite
+        bitmaps, so we use each frame's tight non-transparent bounds."""
+        sprite = self.screen_renderer.room_renderer.actor_sprite(actor.frame, actor.frame_variant)
+        if sprite is None:
+            return None
+        bbox = sprite.getbbox()
+        if bbox is None:
+            return None
+        left, top, right, bottom = bbox
+        return left, top, right, bottom
+
     def _apply_enemy_contact(self) -> None:
         """Touching an active enemy costs one energy segment (AEPROG 0x4472
         change_energy(-1)).  No damage during the hurt window, immortality, or
-        god mode.  Energy 0 is death."""
+        god mode.  Energy 0 is death.
+
+        The overlap uses the original per-sprite hitboxes (AEPROG 0x4bfd): the
+        hand-tuned player face box (DS:0x79E) against the actor's sprite bounds,
+        not the whole 32x40/16x16 sprites - otherwise enemies hit from too far.
+        """
         if self._hurt_cooldown > 0 or self._invuln_timer > 0:
             return
         if self.god_mode:
             return
+        st = self.player.state
+        pxn, pyn, pxf, pyf = player_face_box(self._player_face_boxes, st.frame, st.facing)
+        p_left, p_right = st.x + pxn, st.x + pxf
+        p_top, p_bottom = st.y + pyn, st.y + pyf
         for actor in self.simulation.actors.values():
             if actor.room_index != self.room_index:
                 continue
             if not getattr(actor, "active", True) or getattr(actor, "hidden", 0):
                 continue
-            # actor.x/y share the player's world space (same model the laser
-            # freeze uses); the 16x16 actor box vs the player collision box.
-            if self._player_overlaps(actor.x, actor.y, 16, 16, self.player.state):
+            box = self._actor_face_box(actor)
+            if box is None:
+                continue
+            axn, ayn, axf, ayf = box
+            a_left, a_right = actor.x + axn, actor.x + axf
+            a_top, a_bottom = actor.y + ayn, actor.y + ayf
+            if p_left <= a_right and a_left <= p_right and p_top <= a_bottom and a_top <= p_bottom:
                 self._hurt_player()
                 return
 
@@ -672,26 +707,10 @@ class GameWindow:
         return True
 
     def _tick_artifact_puzzle(self) -> None:
-        puzzle = self.artifact_puzzle
-        if puzzle is None:
+        # Input is handled immediately in _on_key_press (event-driven, no dropped
+        # taps); this keeps the main loop alive while the puzzle is on screen.
+        if self.artifact_puzzle is None:
             return
-        pressed = self._keys - self._previous_keys
-        if "left" in pressed:
-            puzzle.move_cursor(0, -1)
-        if "right" in pressed:
-            puzzle.move_cursor(0, 1)
-        if "up" in pressed:
-            puzzle.move_cursor(-1, 0)
-        if "down" in pressed:
-            puzzle.move_cursor(1, 0)
-        if "f" in pressed:
-            puzzle.flip_held_piece()
-        if "return" in pressed:
-            puzzle.take_or_drop()
-        if puzzle.solved:
-            self.artifact_puzzle_solved = True
-            self.artifact_puzzle = None
-            self._reset_render_snapshots()
         self._previous_keys = set(self._keys)
         self._render()
         self.root.after(self._tick_ms, self._tick)

@@ -904,6 +904,9 @@ class EditorCanvasMixin:
         # Right-click on an editable handle selects it. Right-click again or use
         # the Delete button/key to remove it.  Otherwise right-click keeps the
         # original convenient tile-pick behaviour.
+        # With the dedicated "select" tool active, selecting a handle must not
+        # switch the active tool out from under the user.
+        keep_select_tool = self.editor_tool_var.get() == "select"
         handle = self.find_editor_handle(event)
         if handle is not None:
             self.editor_selected_ref = handle.ref

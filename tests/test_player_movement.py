@@ -201,3 +201,46 @@ def test_player_falls_two_pixels_then_eight_pixels():
 
     controller.tick(PlayerInput(), tiles)
     assert controller.state.y == 42
+
+
+def test_running_jump_keeps_speed_eight_for_whole_arc():
+    """AEPROG: the jump-start sets DS:0x734=8 while running and neither the jump
+    ascent (0x3f8c) nor the fall (0x3fe9) resets it, so a running jump carries 8
+    px/tick the whole arc (only landing at 0x41c1 restores 4)."""
+    tiles = [0] * (ROOM_COLUMNS * ROOM_ROWS)
+    floor_row = 14
+    for c in range(ROOM_COLUMNS):
+        for r in range(floor_row, ROOM_ROWS):
+            tiles[r * ROOM_COLUMNS + c] = 0x07
+
+    controller = _controller_at(x=80, y=(floor_row + 2) * 8 - 0x30)
+    for _ in range(10):  # settle on the floor
+        controller.tick(PlayerInput(), tiles)
+    assert controller.state.move_amount == 4
+
+    controller.tick(PlayerInput(right=True, jump=True), tiles)  # jump start
+    speeds = []
+    for _ in range(12):
+        controller.tick(PlayerInput(right=True, jump=True), tiles)
+        speeds.append(controller.state.move_amount)
+        if controller.state.jump_counter == 0 and controller.state.move_amount == 4:
+            break
+    # The whole arc (ascent + descent) runs at 8 until the player lands.
+    assert speeds[0] == 8 and speeds[3] == 8
+    assert speeds.count(8) >= 5  # several airborne ticks at running speed
+    assert speeds[-1] == 4       # reset only once grounded
+
+
+def test_standing_jump_stays_four_pixels():
+    tiles = [0] * (ROOM_COLUMNS * ROOM_ROWS)
+    floor_row = 14
+    for c in range(ROOM_COLUMNS):
+        for r in range(floor_row, ROOM_ROWS):
+            tiles[r * ROOM_COLUMNS + c] = 0x07
+    controller = _controller_at(x=80, y=(floor_row + 2) * 8 - 0x30)
+    for _ in range(10):
+        controller.tick(PlayerInput(), tiles)
+    x0 = controller.state.x
+    for _ in range(12):
+        controller.tick(PlayerInput(jump=True), tiles)
+    assert controller.state.x == x0  # no horizontal drift on a standing jump

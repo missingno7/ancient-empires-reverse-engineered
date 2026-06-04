@@ -39,3 +39,21 @@ ROOM_SCREEN_HEIGHT_PX = ROOM_ROWS * CELL_SIZE
 
 TERRAIN_BANK_RESOURCE_START = 21
 TERRAIN_BANK_COUNT = 4
+
+# Level naming shown by the in-game HUD (region + chamber).  Shared by the game
+# and the editor so both number levels identically: level index N maps to
+# region N//4 and chamber N%4 (e.g. index 0 = "Near East I", 4 = "Egypt I").
+REGION_LEVEL_NAMES = ("Near East", "Egypt", "Greece and Rome", "India and China", "Ancient World")
+CHAMBER_NUMERALS = ("I", "II", "III", "IV")
+
+
+def hud_indices_for_level(level_index: int) -> tuple[int, int]:
+    """(region, chamber) indices for a level, as the HUD shows them."""
+    level_index = max(0, int(level_index))
+    return min(len(REGION_LEVEL_NAMES) - 1, level_index // 4), min(3, level_index % 4)
+
+
+def level_display_name(level_index: int) -> str:
+    """Human-readable level name, e.g. 'Near East I'."""
+    region_index, cavern_index = hud_indices_for_level(level_index)
+    return f"{REGION_LEVEL_NAMES[region_index]} {CHAMBER_NUMERALS[cavern_index]}"

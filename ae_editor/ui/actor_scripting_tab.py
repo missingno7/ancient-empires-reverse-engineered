@@ -292,7 +292,6 @@ class ActorScriptingTabMixin:
         self.scripting_space = space
         addresses = actor_script_space_reachable_addresses(space, address)
         self.scripting_visible_addresses = addresses
-        by_address = space.instruction_by_address
         try:
             instructions = [decode_instruction(space.raw, addr) for addr in addresses]
             self.scripting_instructions = self._instructions_with_stable_targets(instructions)

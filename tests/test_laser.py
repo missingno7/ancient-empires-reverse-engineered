@@ -484,3 +484,11 @@ def test_reflector_frame_uses_low_five_bits_and_reverse_step():
     sim.reflector_frames[1] = reverse_entry.code & 0x1F
     sim._advance_reflector(reverse_entry.index, reverse_entry.code, reason="button")
     assert sim.reflector_sprite_index(reverse_entry) == 0x11
+
+
+def test_flashlight_does_not_fire_while_on_a_rope():
+    tiles = [0] * (ROOM_COLUMNS * ROOM_ROWS)
+    flash = _controller(TOOL_FLASHLIGHT)
+    flash.state.on_ladder = 1  # AEPROG 0x4210: laser branch skipped while climbing
+    flash.tick(PlayerInput(use_tool=True), tiles)
+    assert flash.state.fired_laser is False

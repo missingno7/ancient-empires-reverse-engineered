@@ -127,3 +127,29 @@ def test_platform_slides_gradually():
         sim.step()
     settled = sim.platform_render_offset(platform)
     assert max(abs(settled[0]), abs(settled[1])) == 48  # reaches full travel
+
+
+def test_platform_movement_is_blocked_by_player_and_resumes(_project=None):
+    """AEPROG 0x257d: a platform pauses while the player stands in the cells it
+    would move into, then finishes travelling once the player leaves."""
+    from ancient_empires.engine import RoomSimulation
+    from ancient_empires.engine.runtime import platform_xy
+    from ancient_empires.game_data.room_payload import parse_platform_triplets
+
+    project = AncientEmpiresProject(EXE, DATS)
+    sim = RoomSimulation(project.levels[0], 0, 1)
+    platform = next(p for p in parse_platform_triplets(sim.room) if p.index == 0)
+    px, py = platform_xy(platform)
+
+    sim.toggle_control(0)  # start the platform travelling
+    # Player parked in the platform's downward path holds it in place.
+    sim.set_player_position(px, py + 24)
+    for _ in range(6):
+        sim.step()
+    assert sim.platform_offsets.get(0, 0) == 0
+
+    # Once the player leaves, the platform finishes its travel.
+    sim.set_player_position(8, 8)
+    for _ in range(8):
+        sim.step()
+    assert sim.platform_offsets.get(0, 0) == 48

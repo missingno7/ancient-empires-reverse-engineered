@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .common import (
     DIFFICULTY_LABELS,
+    level_display_name,
     ROOM_COUNT,
     tk,
     ImageTk,
@@ -134,7 +135,7 @@ class NavigationMixin:
         door_txt = "none" if door is None else f"room={door.room_index} x={door.x_raw:02X} y={door.y_raw:02X}"
         platforms = ", ".join(p.label for p in parse_platform_triplets(room)) or "none"
         self.status.set(
-            f"display={self.display_mode_var.get().upper()} level={level.index + 1} difficulty={DIFFICULTY_LABELS[part.index]} room={room.index} theme={part.theme} "
+            f"display={self.display_mode_var.get().upper()} level={level.index + 1:02d} ({level_display_name(level.index)}) difficulty={DIFFICULTY_LABELS[part.index]} room={room.index} theme={part.theme} "
             f"room_quality={room.quality_label} terrain_off=0x{room.terrain_offset:04X} preamble={room.preamble.hex(' ')} "
             f"platforms=[{platforms}] controls={controls} actors={len(actors)} links={links.label if links else 'none'} "
             f"exit_door={door_txt} crystals={crystal_txt} visual={visual_txt} "

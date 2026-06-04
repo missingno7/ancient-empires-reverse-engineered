@@ -143,10 +143,30 @@ class GameScreenRenderer:
                 )
             if simulation is not None and getattr(simulation, "laser_ttl", 0) > 0:
                 self._draw_laser(screen, simulation.laser_points)
+            # The original blits only the play-field window; a player or actor at
+            # a screen edge is clipped by the surrounding border.  Repaint the
+            # border (the 0x2bc0 blue clear) over any overflow to match.
+            self._draw_play_field_border(screen, room.size)
             self._draw_hud(screen, hud)
             return screen
         finally:
             self.graphics.set_display_mode(previous_display_mode)
+
+    @staticmethod
+    def _draw_play_field_border(screen: Image.Image, room_size: tuple[int, int]) -> None:
+        """Repaint the blue border around the play field so anything drawn past
+        its edges (the player/actors near a screen boundary) is clipped, as the
+        original windowed blit does."""
+        room_w, room_h = room_size
+        left, top = ROOM_ORIGIN
+        right = left + room_w
+        bottom = top + room_h
+        draw = ImageDraw.Draw(screen)
+        # Left, top, and right margins of the play-field window (the bottom is
+        # covered by the HUD, drawn next).
+        draw.rectangle((0, 0, left - 1, bottom - 1), fill=BACKGROUND_COLOR)
+        draw.rectangle((0, 0, SCREEN_WIDTH - 1, top - 1), fill=BACKGROUND_COLOR)
+        draw.rectangle((right, 0, SCREEN_WIDTH - 1, bottom - 1), fill=BACKGROUND_COLOR)
 
     @staticmethod
     def _draw_laser(screen: Image.Image, points) -> None:

@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ..constants import (
-    CELL_SIZE,
     LEVEL_PART_ACTOR_BLOCK_OFFSET,
     LEVEL_PART_ACTOR_BLOCK_SIZE,
     LEVEL_PART_HEADER_SIZE,
@@ -1591,6 +1590,24 @@ def delete_section_a_symbol_entry(room: Room, index: int) -> None:
     data[padding_start:padding_start] = b"\x00" * 3
     del data[original_len:]
     room.trailing = bytes(data)
+
+
+def green_block_footprint_cells(raw_x: int, raw_y: int) -> set[tuple[int, int]]:
+    """Invisible-solid (0x07) cells a green block occupies, per AEPROG 0x3132.
+
+    The original fills a 6x2 region whose top-left cell is
+    ``col = raw_x // 4 - 1`` (``raw_x`` is half-resolution, so /4 == /8 px) and
+    ``row = raw_y // 8 - 1``.  Shared by the runtime collision build and the
+    editor footprint preview so both stay in step with the EXE.
+    """
+    col = raw_x // 4 - 1
+    row = raw_y // 8 - 1
+    return {
+        (col + dx, row + dy)
+        for dy in range(2)
+        for dx in range(6)
+        if 0 <= col + dx < ROOM_COLUMNS and 0 <= row + dy < ROOM_ROWS
+    }
 
 
 def record12_green_block_records(room: Room) -> tuple[int | None, list[bytes]]:

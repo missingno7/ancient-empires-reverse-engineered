@@ -11,7 +11,6 @@ from ..constants import (
     ROOM_COLUMNS,
     ROOM_COUNT,
     ROOM_RECORD_SIZE,
-    ROOM_ROWS,
     ROOM_TERRAIN_OFFSET,
     ROOM_TILE_COUNT,
 )
@@ -175,11 +174,31 @@ class LevelPart:
         self._set_header_bytes(0x0E + slot, [0])
         self._set_header_bytes(0x14 + slot, [0])
 
+    def _flush_rooms_to_raw(self) -> None:
+        """Write the live header + room terrain/trailing back into ``self.raw``.
+
+        ``self.raw`` and the parsed ``Room`` objects are two views of the same
+        bytes.  Editing a ``Room`` (e.g. mirroring terrain) only updates the
+        object, so ``self.raw`` can be stale.  ``set_part_bytes`` re-parses rooms
+        from ``self.raw`` after patching, which would otherwise clobber those
+        pending edits; flushing first keeps the two views consistent.
+        """
+        data = bytearray(self.raw)
+        data[:LEVEL_PART_HEADER_SIZE] = self.header
+        for room in self.rooms:
+            record_start = LEVEL_PART_HEADER_SIZE + room.index * ROOM_RECORD_SIZE
+            terrain_start = record_start + ROOM_TERRAIN_OFFSET
+            data[terrain_start:terrain_start + ROOM_TILE_COUNT] = bytes(room.tiles)
+            tail_start = terrain_start + ROOM_TILE_COUNT
+            data[tail_start:tail_start + len(room.trailing)] = room.trailing
+        self.raw = bytes(data)
+
     def set_part_bytes(self, offset: int, values: bytes | bytearray) -> None:
         """Patch bytes in this part and mirror them into serialized room fields."""
         payload = bytes(values)
         if offset < 0 or offset + len(payload) > len(self.raw):
             raise ValueError(f"part write out of range: offset={offset:#x} len={len(payload)}")
+        self._flush_rooms_to_raw()
         data = bytearray(self.raw)
         data[offset:offset + len(payload)] = payload
         self.raw = bytes(data)

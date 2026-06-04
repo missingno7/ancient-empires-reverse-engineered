@@ -11,6 +11,7 @@ from ..ui.common import (
     Instruction,
     OVERLAY_OPTION_SPECS,
     RoomSimulation,
+    level_display_name,
     tk,
     tkfont,
     ttk,
@@ -337,8 +338,12 @@ class LevelEditorApp(
         self.level_combo = ttk.Combobox(
             top,
             state="readonly",
-            width=16,
-            values=[f"{i + 1:02d}" for i, _level in enumerate(self.project.levels)],
+            width=20,
+            # Same naming the game HUD uses, so editor and game agree on levels.
+            values=[
+                f"{i + 1:02d}: {level_display_name(i)}"
+                for i, _level in enumerate(self.project.levels)
+            ],
         )
         self.level_combo.current(0)
         self.level_combo.pack(side=tk.LEFT)

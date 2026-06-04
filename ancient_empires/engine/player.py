@@ -2,9 +2,46 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..constants import CELL_SIZE, ROOM_COLUMNS, ROOM_ROWS
 from ..game_data.room_payload import header_player_start
+
+
+# Per-frame player collision ("face") boxes baked in AEPROG's data segment at
+# DS:0x79E, indexed by ``frame*2 + facing`` with four signed bytes each:
+# (x_near, y_near, x_far, y_far) added to the player anchor.  These are the
+# tight hand-tuned hitboxes the actor-contact test uses (AEPROG 0x4bfd), much
+# smaller than the 32x40 sprite.
+_PLAYER_FACE_BOX_DS_OFFSET = 0x79E
+_FACE_BOX_MZ_HEADER = 0x200
+_FACE_BOX_DATA_SEGMENT = 0x0FA3
+_PLAYER_FACE_BOX_COUNT = 24  # 12 frames x 2 facings
+
+
+def _s8(byte: int) -> int:
+    return byte - 256 if byte >= 128 else byte
+
+
+def load_player_face_boxes(exe_path: Path | str) -> list[tuple[int, int, int, int]]:
+    """Read the DS:0x79E player collision-box table from AEPROG.EXE."""
+    blob = Path(exe_path).read_bytes()
+    base = _FACE_BOX_MZ_HEADER + _FACE_BOX_DATA_SEGMENT * 16 + _PLAYER_FACE_BOX_DS_OFFSET
+    boxes: list[tuple[int, int, int, int]] = []
+    for index in range(_PLAYER_FACE_BOX_COUNT):
+        entry = blob[base + index * 4: base + index * 4 + 4]
+        if len(entry) < 4:
+            break
+        boxes.append(tuple(_s8(b) for b in entry))  # (x_near, y_near, x_far, y_far)
+    return boxes
+
+
+def player_face_box(boxes: list[tuple[int, int, int, int]], frame: int, facing: int) -> tuple[int, int, int, int]:
+    """Collision box (x_near, y_near, x_far, y_far) for a player frame/facing."""
+    index = int(frame) * 2 + (1 if facing else 0)
+    if boxes and 0 <= index < len(boxes):
+        return boxes[index]
+    return boxes[0] if boxes else (0, 0, 32, 40)
 
 
 SOLID_MASK = 0x07
@@ -97,9 +134,15 @@ class PlayerController:
         # spawned by the simulation from the post-tick position; here we only
         # latch the one-shot intent.  The SFX is played by the caller based on
         # whether a beam was actually emitted (0x14) or the laser was still on
-        # cooldown (0x17), matching AEPROG 0x4214.
+        # cooldown (0x17), matching AEPROG 0x4214.  The original blocks firing
+        # while on a rope (0x4210 ``or si,si`` skips the laser branch).
         state.fired_laser = False
-        if command.use_tool and state.tool_ready and state.tool == TOOL_FLASHLIGHT:
+        if (
+            command.use_tool
+            and state.tool_ready
+            and state.tool == TOOL_FLASHLIGHT
+            and not state.on_ladder
+        ):
             state.tool_ready = False
             state.fired_laser = True
 
@@ -137,7 +180,9 @@ class PlayerController:
                     state.frame = 10
             else:
                 state.jump_counter = 0
-            state.move_amount = 4
+            # AEPROG 0x3f8c does NOT touch DS:0x734 here: the running speed (8)
+            # set at jump start persists for the whole jump, so a jump while
+            # running carries much further than a standing jump.
             return state
 
         below = self._horizontal_span(tiles, state.x + 8, state.y + 0x2F, 9)
@@ -148,7 +193,8 @@ class PlayerController:
                 state.fall_started = True
                 state.y += 2
             state.frame = 10 + (moved & 1)
-            state.move_amount = 4
+            # AEPROG 0x3fe9 also leaves DS:0x734 alone, so the descent of a
+            # running jump keeps the same horizontal speed as the ascent.
             return state
 
         near_floor = self._horizontal_span(tiles, state.x + 8, state.y + 0x28, 9)
@@ -156,7 +202,8 @@ class PlayerController:
             state.y += ((state.y + 0x30) // 8) * 8 - (state.y + 0x28)
             state.fall_started = False
             state.frame = 10 + (moved & 1)
-            state.move_amount = 4
+            # AEPROG 0x404e (snap to floor) jumps past the DS:0x734 reset too;
+            # only the firmly-grounded path (0x41c1, below) restores 4.
             return state
 
         state.fall_started = False
