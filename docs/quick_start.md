@@ -1,6 +1,7 @@
 # Quick Start Guide
 
-This guide gets the editor running and points you at the most useful tabs first.
+This guide gets the editor and first game slice running, then points you at the
+most useful editor tabs.
 
 ## 1. Prepare The Game Files
 
@@ -14,8 +15,9 @@ game_data/AE001.DAT
 ```
 
 `AEPROG.EXE` supplies the game palette and lookup data. `AE000.DAT` and
-`AE001.DAT` supply graphics, levels, actors and room payloads. The editor reads
-`game_data/` by default; you can also pass any other folder on the command line.
+`AE001.DAT` supply graphics, levels, actors and room payloads. The editor and
+game read `game_data/` by default; you can also pass any other folder on the
+command line.
 
 ## 2. Install Dependencies
 
@@ -29,7 +31,7 @@ python -m pip install -r requirements.txt
 If launch later fails with `ModuleNotFoundError: No module named 'PIL'`, Pillow
 was installed into a different Python environment.
 
-## 3. Launch The Editor
+## 3. Launch The Editor Or Game
 
 ```bash
 python run_editor.py
@@ -44,6 +46,21 @@ After package installation, the console entry point is also available:
 ```bash
 ae-level-editor
 ```
+
+Launch the player-facing v0.1.0 game slice:
+
+```bash
+python run_game.py
+```
+
+It opens level 1, Explorer, room 0 with recovered rendering, HUD, audio and
+room-local player movement. The full original gameplay loop is still incomplete.
+
+## Windows ZIP Users
+
+Extract the release ZIP, place `AEPROG.EXE`, `AE000.DAT` and `AE001.DAT` in its
+`game_data/` folder, then run `AncientEmpires.exe` or
+`AncientEmpiresEditor.exe`. Python is already bundled in the executables.
 
 ## First Five Minutes
 
@@ -97,6 +114,8 @@ run it on a desktop session rather than a headless terminal.
 - **`No DAT files found` errors:** check that `AEPROG.EXE`, `AE000.DAT` and
   `AE001.DAT` are inside `game_data/` (or the folder you passed on the command
   line).
+- **Windows ZIP opens but reports missing files:** put the assets in the
+  `game_data/` folder next to `AncientEmpires.exe`, not in the source checkout.
 - **Wrong colors:** make sure the editor is using `AEPROG.EXE`; the game palette
   is not the standard VGA palette.
 - **Edits feel risky:** use **Save as...** and keep the original `AE001.DAT`

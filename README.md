@@ -7,19 +7,21 @@ Challenge of the Ancient Empires*.
 
 The shared `ancient_empires` package decodes the original assets and contains the
 runtime rules recovered so far. `ae_editor` is the Tk research/editor
-application. `ae_game` is the player-facing source-port application; it renders
-the first recovered gameplay screen, while playable gameplay still needs to be
-reconstructed from the disassembly in `Decompile notes/`.
+application. `ae_game` is the player-facing source-port application. For
+v0.1.0 it provides the first room-local gameplay slice with recovered rendering,
+HUD, player movement, collision and audio playback; the full original game loop
+is still being reconstructed from the disassembly in `Decompile notes/`.
 
-The repository does not ship original game assets. To run the editor, drop your
-own copies into the `game_data/` folder in the repository root:
+The repository and public release ZIPs do not ship original game assets. To run
+the editor or game, drop your own legally obtained copies into the `game_data/`
+folder:
 
 - `AEPROG.EXE`
 - `AE000.DAT`
 - `AE001.DAT`
 
-The editor looks in `game_data/` by default. You can also point it at any other
-folder, or override individual paths (see [Quick Launch](#quick-launch)).
+Both applications look in `game_data/` by default. You can also point them at
+another folder, or override the executable path with `--exe`.
 
 ## Start Here
 
@@ -64,6 +66,27 @@ ae-level-editor              # uses ./game_data
 ae-level-editor path/to/game_files
 ```
 
+## Windows Release
+
+Download `ancient-empires-0.1.0-windows-x64.zip`, extract it, and place your own
+game files here:
+
+```text
+game_data/AEPROG.EXE
+game_data/AE000.DAT
+game_data/AE001.DAT
+```
+
+Then run:
+
+```text
+AncientEmpires.exe
+AncientEmpiresEditor.exe
+```
+
+The executables include Python and third-party runtime libraries, so users do
+not need to install Python.
+
 ## Game Launch
 
 ```bash
@@ -74,6 +97,36 @@ python run_game.py
 player movement. Use the arrow keys to walk and jump. This is the first
 room-local gameplay slice; ladders, conveyors, hazards, pickups and room
 transitions are still being reconstructed from the original executable.
+
+## Windows Release Build
+
+To create a self-contained Windows x64 release containing both the game and
+editor executables, use normal Python 3.12 x64 with Tkinter and MSVC Build
+Tools. From a Developer PowerShell:
+
+```powershell
+py -3.12 -m venv .venv-release
+$env:Path = "$PWD\.venv-release\Scripts;$env:Path"
+python -m pip install -r requirements-build.txt
+powershell -ExecutionPolicy Bypass -File tools/build_windows_release.ps1
+```
+
+The script builds the native Nuked-OPL3 audio extension, runs the test suite,
+smoke-tests both frozen executables with `--help`,
+and creates `dist/ancient-empires-0.1.0-windows-x64.zip`. The public release
+does not include original game assets; users place their legally obtained
+`AEPROG.EXE`, `AE000.DAT`, and `AE001.DAT` files in the bundled `game_data`
+folder.
+
+For a local/private bundle that includes files already present in
+`game_data/`, pass `-IncludeGameData`.
+
+Pushing a version tag such as `v0.1.0` runs the Windows release workflow,
+creates the matching GitHub release if needed, and attaches the generated ZIP.
+The workflow can also be run manually to download its artifact without making
+a release.
+
+See [docs/release.md](docs/release.md) for the maintainer release checklist.
 
 ## What You Can Do
 
@@ -154,6 +207,12 @@ Probe one room payload:
 python tools/probe_exe_payload.py --exe game_data/AEPROG.EXE --level 6 --difficulty Explorer --room 5 game_data/AE000.DAT game_data/AE001.DAT
 ```
 
+Run the test suite using a repository-local pytest temp folder:
+
+```bash
+python -m pytest --basetemp build/pytest-tmp
+```
+
 ## Technical References
 
 - [Level Format](docs/level_format.md): current canonical parser model.
@@ -164,6 +223,7 @@ python tools/probe_exe_payload.py --exe game_data/AEPROG.EXE --level 6 --difficu
 - [Actor Script Space](docs/actor_script_space.md): shared bytecode region and
   safe editing model.
 - [Actor DSL](docs/actor_dsl.md): editable script syntax.
+- [Release Checklist](docs/release.md): v0.1.0 Windows build and publish steps.
 
 ## Current Data Model
 

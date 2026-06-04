@@ -10,9 +10,11 @@ hook in ``setup.py`` when the package is pip-installed.
 from __future__ import annotations
 
 import glob
+import importlib
 import os
 import shutil
 import tempfile
+import time
 
 from cffi import FFI
 
@@ -82,7 +84,33 @@ def build_in_place(verbose: bool = True) -> str:
         dest = ""
         for src in artifacts:
             dest = os.path.join(_HERE, os.path.basename(src))
-            shutil.copy2(src, dest)
+            tmp_dest = dest + ".tmp"
+            last_error: OSError | None = None
+            for _attempt in range(10):
+                try:
+                    shutil.copy2(src, tmp_dest)
+                    os.replace(tmp_dest, dest)
+                    last_error = None
+                    break
+                except OSError as exc:
+                    last_error = exc
+                    try:
+                        if os.path.exists(tmp_dest):
+                            os.remove(tmp_dest)
+                    except OSError:
+                        pass
+                    time.sleep(0.5)
+            if last_error is not None:
+                if os.path.exists(dest):
+                    try:
+                        importlib.import_module("nuked_opl3._opl3_cffi")
+                    except Exception:
+                        pass
+                    else:
+                        if verbose:
+                            print(f"kept existing locked extension: {dest}")
+                        return dest
+                raise last_error
         return dest
 
 

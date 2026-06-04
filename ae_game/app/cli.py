@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
 from ancient_empires.project import AncientEmpiresProject
 from .main_window import GameWindow
 
 
-DEFAULT_GAME_DATA_DIR = Path("game_data")
 _DAT_NAMES = ("AE000.DAT", "AE001.DAT")
 _EXE_NAME = "AEPROG.EXE"
+
+
+def default_game_data_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "game_data"
+    return Path("game_data")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "folder",
         nargs="?",
-        default=str(DEFAULT_GAME_DATA_DIR),
+        default=str(default_game_data_dir()),
         help="Folder containing AEPROG.EXE and AE00x.DAT (default: game_data)",
     )
     parser.add_argument("--exe", default=None, help="Path to AEPROG.EXE (overrides folder lookup)")

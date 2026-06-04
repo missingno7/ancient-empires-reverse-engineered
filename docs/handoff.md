@@ -7,6 +7,11 @@ editor, and a player-facing game application. It can load the game files, decode
 graphics banks, parse the 20 level resources, render rooms, show overlays and
 run a room-local Simulation tab for actor, control and puzzle behavior.
 
+The v0.1.0 release path now builds self-contained Windows x64 executables for
+both applications. Public archives intentionally exclude original game assets;
+users provide `AEPROG.EXE`, `AE000.DAT` and `AE001.DAT` in `game_data/`.
+`docs/release.md` is the maintainer checklist.
+
 The editor is not yet a safe full level writer. Treat rendering and overlays as
 the canonical read path. The Editor tab now writes terrain, known header object
 slots, room links, controls, symbol markers, green blocks, visual decor,
@@ -32,6 +37,8 @@ are stored back into `AE001.DAT` as plain uncompressed resources.
   runtime preview; the level viewer stays mostly read-only/diagnostic.
 - `ancient_empires/audio/` handles the Audio atlas, synchronized music parsing,
   PC-speaker SFX previews and MIDI/WAV export.
+- `tools/build_windows_release.ps1` builds the Windows x64 release ZIP, using a
+  normal Python 3.12 x64 desktop runtime with Tkinter and MSVC Build Tools.
 - `docs/engine_architecture.md` defines the planned shared engine boundary for
   the editor Simulation tab and the future real game.
 - `docs/gameplay_reverse_engineering.md` records the player loop findings and
@@ -49,6 +56,18 @@ Compile all Python modules:
 
 ```bash
 python -m compileall ancient_empires ae_editor ae_game tools run_editor.py run_game.py
+```
+
+Run the test suite without depending on the user-profile pytest temp directory:
+
+```bash
+python -m pytest --basetemp build/pytest-tmp
+```
+
+Build the public Windows release ZIP:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build_windows_release.ps1
 ```
 
 Export previews after parser or renderer changes (reads `game_data/` by default):
