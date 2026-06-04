@@ -36,6 +36,7 @@ from ancient_empires.rendering.coordinates import header_object_xy
 from ancient_empires.rendering.artifact_puzzle_screen import ArtifactPuzzleScreenRenderer
 from ancient_empires.rendering.answer_puzzle_screen import AnswerPuzzleScreenRenderer
 from ancient_empires.rendering.game_screen import GameHudState, GameScreenRenderer
+from ae_game.app.audio_engine import GameAudioEngine
 
 
 REGION_LEVEL_NAMES = ("Near East", "Egypt", "Greece and Rome", "India and China", "Ancient World")
@@ -63,6 +64,16 @@ INTERPOLATION_SNAP_DISTANCE = 48
 
 # Player health (AEPROG DS:0xb82): five bar segments, starts full.
 ENERGY_MAX = 4
+# play_sound id used when the player is hit (AEPROG hurt path 0x445e).
+SFX_HURT = 1
+# Laser: 0x14 fires a beam, 0x17 is the blocked/cooldown click (AEPROG 0x4214).
+SFX_LASER = 0x14
+SFX_LASER_BLOCKED = 0x17
+# Immortality tool: 0x00 on activation, 0x11 when no uses remain (AEPROG 0x41fa/0x4200).
+SFX_IMMORTALITY = 0x00
+SFX_IMMORTALITY_DENIED = 0x11
+# Collecting an artifact piece / apple (AEPROG 0x3ba2 play_sound 2).
+SFX_PICKUP = 0x02
 # Post-hit state, AEPROG player draw 0x437c: the hurt timer starts at 0x1e and
 # counts down; while it is above 0x1a the player shows the hurt frame, below
 # that it blinks (drawn only on odd ticks), and the whole window is invulnerable.
@@ -171,6 +182,7 @@ class GameWindow:
         # Immortality tool: per-level use count and active invulnerability timer.
         self.immortality_uses = IMMORTALITY_USES
         self._invuln_timer = 0
+        self._prev_use_tool = False
         self.artifact_puzzle_solved = False
         self.artifact_puzzle: ArtifactPuzzleState | None = None
         self.answer_puzzle: AnswerPuzzleState | None = None
@@ -188,6 +200,9 @@ class GameWindow:
         self._exit_target_level_index: int | None = None
         self.show_invisible = False
         self.interpolate_frames = False
+        self.sound_enabled = True
+        self.music_enabled = True
+        self.audio = GameAudioEngine(project)
         self._keys: set[str] = set()
         self._previous_keys: set[str] = set()
         self._tick_ms = round(1000 / ACTOR_TICK_HZ)
@@ -209,12 +224,21 @@ class GameWindow:
         self._build_menu()
         self.root.bind("<KeyPress>", self._on_key_press)
         self.root.bind("<KeyRelease>", self._on_key_release)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.focus_force()
         self._current_render_snapshot = self._capture_render_snapshot()
         self._previous_render_snapshot = self._current_render_snapshot
         self._render()
+        self._start_level_music()
         self._schedule_render_loop()
         self.root.after(self._tick_ms, self._tick)
+
+    def _start_level_music(self) -> None:
+        self.audio.play_level_music(self.level.index)
+
+    def _on_close(self) -> None:
+        self.audio.shutdown()
+        self.root.destroy()
 
     def _build_menu(self) -> None:
         """Native dropdown 'Develop' menu for debugging (level jump, etc.)."""
@@ -252,12 +276,6 @@ class GameWindow:
             variable=self._show_invisible_var,
             command=self._toggle_invisible,
         )
-        self._interpolate_frames_var = tk.BooleanVar(value=self.interpolate_frames)
-        develop.add_checkbutton(
-            label="Frame Interpolation",
-            variable=self._interpolate_frames_var,
-            command=self._toggle_frame_interpolation,
-        )
         self._god_mode_var = tk.BooleanVar(value=self.god_mode)
         develop.add_checkbutton(
             label="God Mode",
@@ -273,13 +291,57 @@ class GameWindow:
             label="End Level: Answer Puzzle",
             command=self._develop_answer_puzzle,
         )
-        # Placeholders for upcoming cheats (god mode, etc.).
         menubar.add_cascade(label="Develop", menu=develop)
+
+        view = tk.Menu(menubar, tearoff=0)
+        self._interpolate_frames_var = tk.BooleanVar(value=self.interpolate_frames)
+        view.add_checkbutton(
+            label="Frame Interpolation",
+            variable=self._interpolate_frames_var,
+            command=self._toggle_frame_interpolation,
+        )
+        menubar.add_cascade(label="View", menu=view)
+
+        settings = tk.Menu(menubar, tearoff=0)
+        self._sound_enabled_var = tk.BooleanVar(value=self.sound_enabled)
+        settings.add_checkbutton(
+            label="Sound",
+            variable=self._sound_enabled_var,
+            command=self._toggle_sound,
+        )
+        self._music_enabled_var = tk.BooleanVar(value=self.music_enabled)
+        settings.add_checkbutton(
+            label="Music",
+            variable=self._music_enabled_var,
+            command=self._toggle_music,
+        )
+        settings.add_separator()
+        # Sound-card (OPL) music is the default; uncheck for the PC-speaker mix.
+        self._soundcard_music_var = tk.BooleanVar(value=self.audio.music_mode() == "soundcard")
+        settings.add_checkbutton(
+            label="Sound Card Music",
+            variable=self._soundcard_music_var,
+            command=self._toggle_music_mode,
+        )
+        menubar.add_cascade(label="Settings", menu=settings)
+
         self.root.config(menu=menubar)
 
     def _toggle_invisible(self) -> None:
         self.show_invisible = bool(self._show_invisible_var.get())
         self._render()
+
+    def _toggle_sound(self) -> None:
+        self.sound_enabled = bool(self._sound_enabled_var.get())
+        self.audio.set_sound_enabled(self.sound_enabled)
+
+    def _toggle_music(self) -> None:
+        self.music_enabled = bool(self._music_enabled_var.get())
+        self.audio.set_music_enabled(self.music_enabled)
+
+    def _toggle_music_mode(self) -> None:
+        mode = "soundcard" if self._soundcard_music_var.get() else "pcspeaker"
+        self.audio.set_music_mode(mode, self.level.index)
 
     def _toggle_god_mode(self) -> None:
         self.god_mode = bool(self._god_mode_var.get())
@@ -347,6 +409,7 @@ class GameWindow:
         self._reset_render_snapshots()
         self.root.focus_force()
         self._render()
+        self._start_level_music()
 
     def _on_key_press(self, event: tk.Event) -> None:
         self._keys.add(str(event.keysym).lower())
@@ -377,7 +440,9 @@ class GameWindow:
         if command.jump and self._try_start_exit_door():
             return
         self._advance_invuln_timers()
-        if command.use_tool and self.player.state.tool == TOOL_IMMORTALITY:
+        use_tool_edge = command.use_tool and not self._prev_use_tool
+        self._prev_use_tool = command.use_tool
+        if use_tool_edge and self.player.state.tool == TOOL_IMMORTALITY:
             self._activate_immortality()
         self.player.tick(command, self.simulation.runtime_tiles())
         self._apply_room_transitions()
@@ -389,12 +454,16 @@ class GameWindow:
         if self._try_start_artifact_puzzle():
             return
         if self.player.state.fired_laser:
-            self.simulation.fire_laser(
+            emitted = self.simulation.fire_laser(
                 self.player.state.x, self.player.state.y, self.player.state.facing
             )
+            # AEPROG 0x4214: 0x14 when a beam actually fires, 0x17 while the
+            # laser is still on cooldown (DS:08FE set).
+            self.player.pending_sounds.append(SFX_LASER if emitted else SFX_LASER_BLOCKED)
         self.simulation.step()
         self._collect_apple()
         self._apply_enemy_contact()
+        self._drain_sounds()
         self._last_tick_time = time.perf_counter()
         self._current_render_snapshot = self._capture_render_snapshot()
         if not self.interpolate_frames:
@@ -460,6 +529,7 @@ class GameWindow:
             left, top = header_object_xy(cand.x_raw, cand.y_raw)
             if self._player_overlaps(left, top, 16, 16, self.player.state):
                 self.collected_artifacts.add(cand.index)
+                self.player.pending_sounds.append(SFX_PICKUP)
 
     def _apple_collected(self) -> bool:
         return self.room_index in self.collected_apples
@@ -476,6 +546,7 @@ class GameWindow:
         if self._player_overlaps(left, top, 16, 16, self.player.state):
             self.collected_apples.add(self.room_index)
             self.player.state.energy = ENERGY_MAX
+            self.player.pending_sounds.append(SFX_PICKUP)
 
     def _advance_invuln_timers(self) -> None:
         """AEPROG 0x437c/0x43f8 decrement the hurt and immortality timers once
@@ -489,10 +560,14 @@ class GameWindow:
         """Immortality tool (AEPROG 0x41d8): only when not already invulnerable;
         spends one of the level's uses and grants a 0x3a-tick halo state.  With
         no uses left the original just plays the 'denied' SFX."""
-        if self._invuln_timer > 0 or self.immortality_uses <= 0:
+        if self._invuln_timer > 0:
+            return
+        if self.immortality_uses <= 0:
+            self.player.pending_sounds.append(SFX_IMMORTALITY_DENIED)
             return
         self.immortality_uses -= 1
         self._invuln_timer = IMMORTALITY_TICKS
+        self.player.pending_sounds.append(SFX_IMMORTALITY)
 
     def _apply_enemy_contact(self) -> None:
         """Touching an active enemy costs one energy segment (AEPROG 0x4472
@@ -516,8 +591,17 @@ class GameWindow:
     def _hurt_player(self) -> None:
         self._hurt_cooldown = HURT_INVULN_TICKS
         self.player.state.energy -= 1
+        self.player.pending_sounds.append(SFX_HURT)
         if self.player.state.energy <= 0:
             self._on_player_death()
+
+    def _drain_sounds(self) -> None:
+        """Play the SFX queued by the player controller and the actor VM."""
+        ids = list(self.player.pending_sounds)
+        self.player.pending_sounds.clear()
+        ids.extend(self.simulation.drain_pending_sound_ids())
+        for sound_id in ids:
+            self.audio.play_sfx(sound_id)
 
     def _on_player_death(self) -> None:
         # AEPROG 0x3986 restarts the level after the death animation; without a

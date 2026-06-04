@@ -382,7 +382,7 @@ def test_enemy_contact_damages_player_with_mercy_window_and_god_mode():
         window._apply_enemy_contact()
         assert window.player.state.energy == 3
     finally:
-        window.root.destroy()
+        window._on_close()
 
 
 def test_apple_pickup_restores_full_energy_once():
@@ -407,7 +407,7 @@ def test_apple_pickup_restores_full_energy_once():
         window._collect_apple()
         assert window.player.state.energy == 2
     finally:
-        window.root.destroy()
+        window._on_close()
 
 
 def test_player_draw_state_hurt_then_blink_then_normal():
@@ -437,7 +437,7 @@ def test_player_draw_state_hurt_then_blink_then_normal():
         window._hurt_cooldown = 0
         assert window._player_draw_state() == (None, False, False)
     finally:
-        window.root.destroy()
+        window._on_close()
 
 
 def test_immortality_tool_spends_uses_and_grants_halo():
@@ -479,4 +479,27 @@ def test_immortality_tool_spends_uses_and_grants_halo():
             window._apply_enemy_contact()
             assert window.player.state.energy == 4
     finally:
-        window.root.destroy()
+        window._on_close()
+
+
+def test_laser_plays_fire_sound_then_cooldown_click():
+    from ae_game.app.main_window import SFX_LASER, SFX_LASER_BLOCKED
+    from ancient_empires.engine.player import TOOL_FLASHLIGHT
+
+    window = _make_game_window()
+    try:
+        played = []
+        window.audio.play_sfx = lambda sid: played.append(sid)
+        window.player.state.tool = TOOL_FLASHLIGHT
+
+        window._keys = {"space"}
+        window._tick()           # press: a beam fires
+        window._keys = set()
+        window._tick()           # release so the tool re-arms
+        window._keys = {"space"}
+        window._tick()           # press again while the laser is still cooling down
+
+        assert SFX_LASER in played          # an actual beam
+        assert SFX_LASER_BLOCKED in played  # the cooldown click, no new beam
+    finally:
+        window._on_close()

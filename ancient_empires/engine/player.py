@@ -95,12 +95,13 @@ class PlayerController:
 
         # Flashlight fires a laser on Space (AEPROG 0x421b).  The actual beam is
         # spawned by the simulation from the post-tick position; here we only
-        # latch the one-shot intent and play the SFX.
+        # latch the one-shot intent.  The SFX is played by the caller based on
+        # whether a beam was actually emitted (0x14) or the laser was still on
+        # cooldown (0x17), matching AEPROG 0x4214.
         state.fired_laser = False
         if command.use_tool and state.tool_ready and state.tool == TOOL_FLASHLIGHT:
             state.tool_ready = False
             state.fired_laser = True
-            self.pending_sounds.append(SFX_LASER)
 
         # While climbing with up held, left/right is ignored (AEPROG 0x3db6,
         # 0x3e10); otherwise entering a walk branch releases the ladder

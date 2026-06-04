@@ -29,7 +29,9 @@ def test_flashlight_space_fires_laser_boots_does_not():
     flash = _controller(TOOL_FLASHLIGHT)
     flash.tick(PlayerInput(use_tool=True), tiles)
     assert flash.state.fired_laser is True
-    assert SFX_LASER in flash.pending_sounds
+    # The SFX is chosen by the caller from the fire result (0x14 fired / 0x17
+    # cooldown), so player.tick only latches the intent.
+    assert SFX_LASER not in flash.pending_sounds
 
     boots = _controller(TOOL_BOOTS)
     boots.tick(PlayerInput(use_tool=True), tiles)

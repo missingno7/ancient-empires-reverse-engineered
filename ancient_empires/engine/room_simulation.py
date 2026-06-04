@@ -49,6 +49,8 @@ from ..game_data.room_payload import (
 )
 
 COLLISION_TILE_CODE = 0x07
+# play_sound id for switch/symbol activation feedback (AEPROG 0x34fc).
+SFX_TRIGGER = 8
 CONVEYOR_GREY_TILE_CODE = 0x0F
 CONVEYOR_TEAL_TILE_CODE = 0x1F
 CONVEYOR_TILE_TOGGLE = {
@@ -518,14 +520,17 @@ class RoomSimulation:
         if code is None:
             return
         if code >= 0x20:
-            self.emit_symbol((code - 0x20) + 1)
+            if self.emit_symbol((code - 0x20) + 1):
+                # AEPROG plays the activation SFX (play_sound 8) on a trigger.
+                self.pending_sound_ids.append(SFX_TRIGGER)
             return
         if code < 8:
             return
         index = code - 8
         cmd = next((c for c in self.controls() if c.record.index == index), None)
         if cmd is not None and cmd.command != 2:
-            self.toggle_control(index)
+            if self.toggle_control(index) is not None:
+                self.pending_sound_ids.append(SFX_TRIGGER)
 
     # Per-command control interaction boxes (left/top offsets and size) as
     # registered into the object list by the control draw at 0x2f10 via 0xd825,
