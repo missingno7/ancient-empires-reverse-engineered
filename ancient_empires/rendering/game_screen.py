@@ -64,6 +64,8 @@ class GameScreenRenderer:
         platform_offsets_override: dict[int, tuple[int, int]] | None = None,
         collected_artifacts: set[int] | None = None,
         show_exit_door: bool = True,
+        exit_door_frame: int = 0,
+        show_player: bool = True,
     ) -> Image.Image:
         hud = hud or GameHudState()
         previous_display_mode = self.graphics.display_mode
@@ -86,6 +88,9 @@ class GameScreenRenderer:
                 {gb.index: gb.remaining_sequence for gb in simulation.green_blocks} if live_room else None
             )
             reflector_frames = (dict(simulation.reflector_frames) if live_room else None)
+            # Background decals advance one sequence step per actor tick; the
+            # sequences carry duplicated frames to set their own speed.
+            animated_decor_phase = simulation.tick_count if live_room else 0
             if simulation is not None and room_index == simulation.room_index:
                 conveyor_tiles = simulation.runtime_tiles()
                 conveyor_frame = (simulation.tick_count // 2) % 4
@@ -111,11 +116,14 @@ class GameScreenRenderer:
                     platform_offsets=platform_offsets,
                     green_block_alternate=green_block_alternate,
                     green_block_remaining=green_block_remaining,
+                    draw_puzzle_ghost=False,
                     conveyor_frame=conveyor_frame,
+                    animated_decor_phase=animated_decor_phase,
                     conveyor_tiles=conveyor_tiles,
                     reflector_frames=reflector_frames,
                     collected_artifacts=collected_artifacts,
                     show_exit_door=show_exit_door,
+                    exit_door_frame=exit_door_frame,
                     show_invisible=show_invisible,
                     display_mode=display_mode,
                 ),
@@ -123,7 +131,8 @@ class GameScreenRenderer:
             screen.alpha_composite(room, ROOM_ORIGIN)
             if actors is not None:
                 self._draw_live_actors(screen, actors)
-            self._draw_player(screen, level, part_index, room_index, player)
+            if show_player:
+                self._draw_player(screen, level, part_index, room_index, player)
             if simulation is not None and getattr(simulation, "laser_ttl", 0) > 0:
                 self._draw_laser(screen, simulation.laser_points)
             self._draw_hud(screen, hud)
@@ -177,9 +186,13 @@ class GameScreenRenderer:
         if facing:
             sprite = sprite.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
 
-        # The player is drawn into the same offscreen room buffer as objects.
-        # Its viewport mapping is recovered in docs/reverse_engineering_notes.md.
-        screen.alpha_composite(sprite, (ROOM_ORIGIN[0] + x - 4, ROOM_ORIGIN[1] + y - 16))
+        # The player is drawn into the same offscreen room buffer as objects
+        # (AEPROG 0x228a blits the sprite top-left at ds:0x736/0x738 through the
+        # shared 0x3cc blitter), so it uses the same buffer->view mapping: x and
+        # y both net to zero against ROOM_ORIGIN.  The previous -4 x offset put
+        # the player 4px right of every object/rope/terrain tile, which showed
+        # up as the player hanging off-centre on a rope.
+        screen.alpha_composite(sprite, (ROOM_ORIGIN[0] + x - 8, ROOM_ORIGIN[1] + y - 16))
 
     @staticmethod
     def _platform_offsets(simulation, room_index):
@@ -207,6 +220,17 @@ class GameScreenRenderer:
                 continue
             rx, ry = actor_xy(actor.x, actor.y)
             screen.alpha_composite(sprite, (ROOM_ORIGIN[0] + rx, ROOM_ORIGIN[1] + ry))
+            vertical_marker = int(getattr(actor, "vertical_marker", 0))
+            if vertical_marker:
+                # AEPROG 0x4f39 draws palette colour 0x0f *after* the sprite
+                # blit (0x4f33), so the thread overlays the spider's body.
+                x = ROOM_ORIGIN[0] + rx + 16
+                y = ROOM_ORIGIN[1] + ry
+                ImageDraw.Draw(screen).line(
+                    (x, y - vertical_marker + 1, x, y),
+                    fill=(255, 255, 255, 255),
+                    width=1,
+                )
 
     def _draw_hud(self, screen: Image.Image, hud: GameHudState) -> None:
         base = self.graphics.sprite("AE000", 63, 0)
@@ -245,3 +269,7 @@ class GameScreenRenderer:
         cavern = self.graphics.sprite("AE000", 63, 16 + cavern_index)
         if cavern is not None:
             screen.alpha_composite(cavern, (244 + cavern_index * 16, 186))
+
+    def draw_hud(self, screen: Image.Image, hud: GameHudState) -> None:
+        """Draw the shared gameplay HUD for special playable screens."""
+        self._draw_hud(screen, hud)

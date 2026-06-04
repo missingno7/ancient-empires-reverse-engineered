@@ -384,8 +384,17 @@ class EditorToolsMixin:
         if len(rec) < (4 if alternate else 2):
             return set()
         base = 2 if alternate else 0
-        x_px, y_px = self._green_block_xy_from_raw(rec[base], rec[base + 1])
-        return self._green_block_footprint_cells_from_xy(x_px, y_px)
+        # Match AEPROG 0x3132: 6x2 invisible-solid footprint at
+        # col = raw_x//4 - 1, row = raw_y//8 - 1.
+        raw_x, raw_y = rec[base], rec[base + 1]
+        col = raw_x // 4 - 1
+        row = raw_y // 8 - 1
+        return {
+            (col + dx, row + dy)
+            for dy in range(2)
+            for dx in range(6)
+            if 0 <= col + dx < ROOM_COLUMNS and 0 <= row + dy < ROOM_ROWS
+        }
 
     def _clear_green_block_footprint(self, room, rec: bytes, *, alternate: bool = False) -> bool:
         changed = False

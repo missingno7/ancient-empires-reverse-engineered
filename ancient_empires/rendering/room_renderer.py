@@ -153,12 +153,19 @@ class RenderOptions:
     platform_offsets: dict[int, tuple[int, int]] | None = None
     green_block_alternate: dict[int, bool] | None = None
     green_block_remaining: dict[int, list[int]] | None = None
+    # The faint "ghost" panel at the green block's *other* position is an
+    # editor-only aid showing where the block will move; the running game never
+    # draws it.  Editors leave this True; the game renderer sets it False.
+    draw_puzzle_ghost: bool = True
     conveyor_frame: int = 0
+    animated_decor_phase: int = 0
     conveyor_tiles: list[int] | None = None
     reflector_frames: dict[int, int] | None = None
     collected_artifacts: set[int] | None = None
     show_exit_door: bool = True
+    exit_door_frame: int = 0
     show_invisible: bool = False
+    transparent_background: bool = False
     display_mode: str = "vga"  # vga, ega, cga
 
 
@@ -200,7 +207,8 @@ class RoomRenderer:
     def _render_room_with_current_graphics(self, level: Level, room_index: int, options: RenderOptions) -> Image.Image:
         part = level.part(options.part_index)
         room = part.room(room_index)
-        image = Image.new("RGBA", (ROOM_SCREEN_WIDTH_PX, ROOM_SCREEN_HEIGHT_PX), (0, 0, 0, 255))
+        background = (0, 0, 0, 0) if options.transparent_background else (0, 0, 0, 255)
+        image = Image.new("RGBA", (ROOM_SCREEN_WIDTH_PX, ROOM_SCREEN_HEIGHT_PX), background)
         draw = ImageDraw.Draw(image, "RGBA")
         self._current_theme = part.theme
         self._current_level_index = level.index
@@ -225,7 +233,7 @@ class RoomRenderer:
             if options.draw_background:
                 self._draw_background(image, part.theme)
             if options.mode == "game":
-                self._draw_animated_decor(image, room, part.theme)
+                self._draw_animated_decor(image, room, part.theme, phase=options.animated_decor_phase)
                 self._draw_visual_objects(image, room, layer="background")
             self._draw_terrain_tiles(image, room, part.theme)
 
@@ -236,10 +244,10 @@ class RoomRenderer:
                 if options.draw_platforms:
                     self._draw_platforms(image, room, offsets=options.platform_offsets)
                 if options.show_invisible:
-                    self._draw_invisible_blocks(image, room)
+                    self._draw_invisible_blocks(image, room, options.conveyor_tiles)
                 self._draw_header_objects(image, room, part.header, collected=options.collected_artifacts)
                 if options.show_exit_door:
-                    self._draw_exit_door(image, room, part.header, part.theme)
+                    self._draw_exit_door(image, room, part.header, part.theme, options.exit_door_frame)
                 self._draw_apple_pickup(image, part, room)
                 self._draw_control_records(image, room, control_state_overrides=options.control_state_overrides)
                 self._draw_puzzle_markers(image, room)
@@ -249,13 +257,14 @@ class RoomRenderer:
                         room,
                         alternate=options.green_block_alternate,
                         remaining=options.green_block_remaining,
+                        draw_ghost=options.draw_puzzle_ghost,
                     )
                 if options.draw_actors:
                     self._draw_actors(image, part, room, include_hidden=False)
                 if options.draw_player_start:
                     self._draw_player_start(image, room, part.header)
             elif options.mode == "payload_debug":
-                self._draw_animated_decor(image, room, part.theme)
+                self._draw_animated_decor(image, room, part.theme, phase=options.animated_decor_phase)
                 self._draw_visual_objects(image, room, layer="background")
                 self._draw_conveyor_tiles(image, room)
                 self._draw_platforms(image, room)
@@ -266,7 +275,7 @@ class RoomRenderer:
                 self._draw_record12_puzzle_panels(image, room)
                 self._draw_header_objects(image, room, part.header, collected=options.collected_artifacts)
                 if options.show_exit_door:
-                    self._draw_exit_door(image, room, part.header, part.theme)
+                    self._draw_exit_door(image, room, part.header, part.theme, options.exit_door_frame)
                 self._draw_apple_pickup(image, part, room)
                 self._draw_actors(image, part, room, include_hidden=True)
                 self._draw_player_start(image, room, part.header)
@@ -382,12 +391,12 @@ class RoomRenderer:
             elif triplet.orientation == "horizontal" and horizontal is not None:
                 self._blit(image, horizontal, x, y)
 
-    def _draw_invisible_blocks(self, image: Image.Image, room: Room) -> None:
+    def _draw_invisible_blocks(self, image: Image.Image, room: Room, tiles: list[int] | None = None) -> None:
         """Debug overlay: outline invisible solid clusters (developer menu)."""
         from .overlay import _invisible_clusters
 
         draw = ImageDraw.Draw(image, "RGBA")
-        for x_px, y_px, w_px, h_px in _invisible_clusters(room):
+        for x_px, y_px, w_px, h_px in _invisible_clusters(room, tiles):
             draw.rectangle(
                 [x_px, y_px, x_px + w_px - 1, y_px + h_px - 1],
                 outline=(255, 0, 255, 200),
@@ -454,7 +463,7 @@ class RoomRenderer:
             if symbol is not None:
                 self._blit(image, symbol, x + 4, y)
 
-    def _draw_record12_puzzle_panels(self, image: Image.Image, room: Room, *, alternate: dict[int, bool] | None = None, remaining: dict[int, list[int]] | None = None) -> None:
+    def _draw_record12_puzzle_panels(self, image: Image.Image, room: Room, *, alternate: dict[int, bool] | None = None, remaining: dict[int, list[int]] | None = None, draw_ghost: bool = True) -> None:
         """Draw the puzzle progress block from the 12-byte section when present.
 
         This is still a partial model, but it is much cleaner than hard-coding
@@ -488,7 +497,7 @@ class RoomRenderer:
             solid_xy = alternate_xy if (at_alternate and alternate_xy is not None) else default_xy
             ghost_xy = default_xy if (at_alternate and alternate_xy is not None) else alternate_xy
             self._blit(image, panel_img, *solid_xy)
-            if ghost_xy is not None and ghost_xy != solid_xy:
+            if draw_ghost and ghost_xy is not None and ghost_xy != solid_xy:
                 ghost = panel_img.copy()
                 alpha = ghost.getchannel("A").point(lambda a: min(a, 96))
                 ghost.putalpha(alpha)
@@ -509,13 +518,21 @@ class RoomRenderer:
                 continue
             self._blit(image, sprite, *object_entry_xy(entry))
 
-    def _draw_animated_decor(self, image: Image.Image, room: Room, theme: int) -> None:
+    def _draw_animated_decor(self, image: Image.Image, room: Room, theme: int, *, phase: int = 0) -> None:
         table = animated_decor_table(room)
         if table is None:
             return
         resource_id = 25 + theme
         for record in table.records:
-            sprite_index = record.preview_sprite_index
+            # Each decal cycles its 0-terminated sprite sequence; ``phase`` is
+            # the live animation counter (0 = static editor/preview).  The
+            # record's own stored phase offsets each decal so they flicker out
+            # of sync, exactly like the preview frame.
+            seq = record.sprite_sequence
+            if seq:
+                sprite_index = seq[(record.phase + phase) % len(seq)]
+            else:
+                sprite_index = record.preview_sprite_index
             sprite = self.graphics.sprite("AE001", resource_id, sprite_index)
             if sprite is None:
                 continue
@@ -585,11 +602,18 @@ class RoomRenderer:
             x, y = header_object_xy(cand.x_raw, cand.y_raw)
             self._blit(image, diamond, x, y)
 
-    def _draw_exit_door(self, image: Image.Image, room: Room, header: bytes, theme: int) -> None:
+    def _draw_exit_door(
+        self,
+        image: Image.Image,
+        room: Room,
+        header: bytes,
+        theme: int,
+        frame: int = 0,
+    ) -> None:
         door = header_exit_door(header)
         if door is None or door.room_index != room.index:
             return
-        sprite = self.graphics.sprite("AE001", 21 + theme, 0)
+        sprite = self.graphics.sprite("AE001", 21 + theme, max(0, min(4, int(frame))))
         if sprite is None:
             return
         self._blit(image, sprite, *header_exit_door_xy(door.x_raw, door.y_raw))

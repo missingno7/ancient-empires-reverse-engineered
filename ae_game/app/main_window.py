@@ -10,6 +10,12 @@ import tkinter as tk
 from PIL import Image, ImageTk
 
 from ancient_empires.constants import ACTOR_TICK_HZ
+from ancient_empires.engine.answer_puzzle import (
+    AnswerPuzzleState,
+    answer_room_player_start,
+    parse_answer_puzzle_room,
+)
+from ancient_empires.engine.artifact_puzzle import ArtifactPuzzleState
 from ancient_empires.engine import (
     PlayerController,
     PlayerInput,
@@ -17,18 +23,56 @@ from ancient_empires.engine import (
     resolve_room_edge,
 )
 from ancient_empires.game_data.room_payload import (
+    HeaderExitDoor,
     header_exit_door,
     header_object_candidates,
     transition_links_for_room,
 )
 from ancient_empires.project import AncientEmpiresProject
-from ancient_empires.rendering.coordinates import header_exit_door_xy, header_object_xy
+from ancient_empires.rendering.coordinates import header_object_xy
+from ancient_empires.rendering.artifact_puzzle_screen import ArtifactPuzzleScreenRenderer
+from ancient_empires.rendering.answer_puzzle_screen import AnswerPuzzleScreenRenderer
 from ancient_empires.rendering.game_screen import GameHudState, GameScreenRenderer
 
 
 REGION_LEVEL_NAMES = ("Near East", "Egypt", "Greece and Rome", "India and China", "Ancient World")
 CHAMBER_NUMERALS = ("I", "II", "III", "IV")
-EXIT_ENTER_FRAMES = (19, 20, 21, 20, 21, 20)
+# Exit-door entry animation (AEPROG 0x233e): three back-to-back 4-step phases.
+#   open : door frames 1->4 while the player stands at the doorway
+#   enter: door held open (frame 4) while the player walks in (frames 12->15)
+#   close: door frames 3->0 with the player gone
+EXIT_OPEN_DOOR_FRAMES = (1, 2, 3, 4)
+EXIT_ENTER_PLAYER_FRAMES = (12, 13, 14, 15)
+EXIT_CLOSE_DOOR_FRAMES = (3, 2, 1, 0)
+EXIT_ANIMATION_STEPS = (
+    len(EXIT_OPEN_DOOR_FRAMES) + len(EXIT_ENTER_PLAYER_FRAMES) + len(EXIT_CLOSE_DOOR_FRAMES)
+)
+ARTIFACT_COMPLETE_FRAMES = (16, 17, 18, 19, 18, 19)
+
+# Sentinel player-frame returned by exit_animation_step for the opening phase,
+# meaning "keep the player's current standing frame".
+EXIT_KEEP_PLAYER_FRAME = -1
+
+# Frame-interpolation guard: a per-axis jump larger than this (pixels) between
+# two simulation ticks is treated as a teleport/reset (e.g. a projectile
+# snapping back to its spawn) and is drawn instantly rather than smoothed.
+INTERPOLATION_SNAP_DISTANCE = 48
+
+
+def exit_animation_step(step: int) -> tuple[int, int | None]:
+    """Return ``(door_frame, player_frame)`` for entry-animation step 0..11.
+
+    ``player_frame`` is ``None`` when the player must be hidden (door closing)
+    and ``EXIT_KEEP_PLAYER_FRAME`` when it should keep its current standing
+    frame (door opening).  Mirrors the three phases of AEPROG 0x233e.
+    """
+    n_open = len(EXIT_OPEN_DOOR_FRAMES)
+    n_enter = len(EXIT_ENTER_PLAYER_FRAMES)
+    if step < n_open:
+        return EXIT_OPEN_DOOR_FRAMES[step], EXIT_KEEP_PLAYER_FRAME
+    if step < n_open + n_enter:
+        return 4, EXIT_ENTER_PLAYER_FRAMES[step - n_open]
+    return EXIT_CLOSE_DOOR_FRAMES[step - n_open - n_enter], None
 
 
 @dataclass
@@ -50,6 +94,31 @@ def level_display_name(level_index: int) -> str:
     return f"{REGION_LEVEL_NAMES[region_index]} {CHAMBER_NUMERALS[cavern_index]}"
 
 
+def player_aligned_with_exit_door(player, door) -> bool:
+    """AEPROG 0x3cc8: the player's anchor must be directly in front of a door.
+
+    The runtime door slot is built at 0x2d9f from header bytes 5/6/7: room
+    (0x4377), x (0x4378, stored ``<<1`` so ``x_raw*2``) and y (0x4379, stored
+    as-is).  The trigger loop at 0x3cc8 then accepts the player when
+    ``|player.x - x_raw*2| <= 2`` and ``y_raw <= player.y <= y_raw + 0x10``.
+    The loop is gated only by the held Up-key (DS:0B68) and door count
+    (DS:0722); it does not reject ladder, jump or fall state.  This narrow box
+    is what stops a nearby rope or platform from activating the door.
+
+    Our ``PlayerController`` grounds the player a pixel or two above the floor
+    line the original used as ``y_raw`` (verified: the player rests at
+    ``y_raw - 1`` / ``y_raw - 2`` directly in front of every reachable exit
+    door).  We absorb that collision-anchor difference with a small slack on
+    the upper edge so a standing player actually lands inside the box.
+    """
+    door_x = door.x_raw * 2
+    door_y = door.y_raw
+    return (
+        door_x - 2 <= player.x <= door_x + 2
+        and door_y - 4 <= player.y <= door_y + 0x10
+    )
+
+
 class GameWindow:
     def __init__(self, project: AncientEmpiresProject, *, scale: int = 3):
         self.project = project
@@ -62,6 +131,12 @@ class GameWindow:
         self.part_index = 0
         self.room_index = 0
         self.screen_renderer = GameScreenRenderer(project.graphics, project.renderer)
+        self.puzzle_renderer = ArtifactPuzzleScreenRenderer(project.graphics)
+        self.answer_puzzle_renderer = AnswerPuzzleScreenRenderer(
+            project.graphics,
+            self.screen_renderer,
+            project.ae001[20].decoded,
+        )
         # The original keeps every room's actors/controls in one persistent
         # table and only re-initialises a room the first time it is entered
         # (load_room at 0x4517 skips reload when the room is already current).
@@ -71,11 +146,25 @@ class GameWindow:
         self.simulation = self._room_simulation(self.room_index)
         self.player = PlayerController(self.level, self.part_index, self.room_index)
         self.collected_artifacts: set[int] = set()
+        self.artifact_puzzle_solved = False
+        self.artifact_puzzle: ArtifactPuzzleState | None = None
+        self.answer_puzzle: AnswerPuzzleState | None = None
+        self.answer_player: PlayerController | None = None
+        self.answer_room = parse_answer_puzzle_room(project.ae001[20].decoded)
+        self._answer_exit_ticks = 0
+        self._artifact_complete_ticks = 0
         self._exit_enter_ticks = 0
+        self._exit_door_frame = 0
+        self._exit_player_start_frame = 0
+        self._exit_player_hidden = False
+        self._exit_door_x = 0
+        self._exit_door_y = 0
+        self._answer_player_hidden = False
         self._exit_target_level_index: int | None = None
         self.show_invisible = False
         self.interpolate_frames = False
         self._keys: set[str] = set()
+        self._previous_keys: set[str] = set()
         self._tick_ms = round(1000 / ACTOR_TICK_HZ)
         self._render_ms = round(1000 / 60)
         self._tick_seconds = 1.0 / ACTOR_TICK_HZ
@@ -144,6 +233,15 @@ class GameWindow:
             variable=self._interpolate_frames_var,
             command=self._toggle_frame_interpolation,
         )
+        develop.add_separator()
+        develop.add_command(
+            label="Collect All Artifact Pieces",
+            command=self._collect_all_artifacts,
+        )
+        develop.add_command(
+            label="End Level: Answer Puzzle",
+            command=self._develop_answer_puzzle,
+        )
         # Placeholders for upcoming cheats (god mode, etc.).
         menubar.add_cascade(label="Develop", menu=develop)
         self.root.config(menu=menubar)
@@ -161,6 +259,20 @@ class GameWindow:
         self._schedule_render_loop()
         self._render()
 
+    def _collect_all_artifacts(self) -> None:
+        if self.artifact_puzzle_solved or self.artifact_puzzle is not None:
+            return
+        self.collected_artifacts = self._configured_artifacts()
+        self.root.focus_force()
+        self._render()
+
+    def _develop_answer_puzzle(self) -> None:
+        next_level_index = self.level.index + 1
+        if next_level_index >= len(self.project.levels):
+            return
+        self._exit_target_level_index = next_level_index
+        self._start_answer_puzzle()
+
     def _select_level(self, level_index: int) -> None:
         self._load(self.project.levels[level_index], self.part_index)
 
@@ -176,7 +288,19 @@ class GameWindow:
         self.simulation = self._room_simulation(self.room_index)
         self.player = PlayerController(self.level, self.part_index, self.room_index)
         self.collected_artifacts.clear()
+        self.artifact_puzzle_solved = False
+        self.artifact_puzzle = None
+        self.answer_puzzle = None
+        self.answer_player = None
+        self._answer_exit_ticks = 0
+        self._artifact_complete_ticks = 0
         self._exit_enter_ticks = 0
+        self._exit_door_frame = 0
+        self._exit_player_start_frame = 0
+        self._exit_player_hidden = False
+        self._exit_door_x = 0
+        self._exit_door_y = 0
+        self._answer_player_hidden = False
         self._exit_target_level_index = None
         self._reset_render_snapshots()
         self.root.focus_force()
@@ -190,6 +314,14 @@ class GameWindow:
 
     def _tick(self) -> None:
         self._previous_render_snapshot = self._current_render_snapshot or self._capture_render_snapshot()
+        if self.artifact_puzzle is not None:
+            self._tick_artifact_puzzle()
+            return
+        if self.answer_puzzle is not None:
+            self._tick_answer_puzzle()
+            return
+        if self._tick_artifact_complete_animation():
+            return
         command = PlayerInput(
             left="left" in self._keys,
             right="right" in self._keys,
@@ -209,6 +341,8 @@ class GameWindow:
         # triggers (opcode 0x08) inside step() are the real control paths.
         self.simulation.apply_player_object_interaction()
         self._collect_artifacts()
+        if self._try_start_artifact_puzzle():
+            return
         if self.player.state.fired_laser:
             self.simulation.fire_laser(
                 self.player.state.x, self.player.state.y, self.player.state.facing
@@ -281,20 +415,25 @@ class GameWindow:
                 self.collected_artifacts.add(cand.index)
 
     def _try_start_exit_door(self) -> bool:
-        if not self._all_artifacts_collected():
+        if not self.artifact_puzzle_solved:
             return False
         door = header_exit_door(self.simulation.part.header)
         if door is None or door.room_index != self.room_index:
             return False
-        left, top = header_exit_door_xy(door.x_raw, door.y_raw)
-        if not self._player_overlaps(left, top, 46, 33, self.player.state):
+        if not player_aligned_with_exit_door(self.player.state, door):
             return False
         next_level_index = self.level.index + 1
         if next_level_index >= len(self.project.levels):
             return False
-        self._exit_enter_ticks = len(EXIT_ENTER_FRAMES)
+        self._exit_enter_ticks = EXIT_ANIMATION_STEPS
+        self._exit_door_frame = EXIT_OPEN_DOOR_FRAMES[0]
+        self._exit_player_start_frame = self.player.state.frame
+        self._exit_player_hidden = False
+        # The enter phase walks the player into the doorway (AEPROG draws it at
+        # the door x and door y + 4).
+        self._exit_door_x = door.x_raw * 2
+        self._exit_door_y = door.y_raw + 4
         self._exit_target_level_index = next_level_index
-        self.player.state.frame = EXIT_ENTER_FRAMES[0]
         self._last_tick_time = time.perf_counter()
         self._current_render_snapshot = self._capture_render_snapshot()
         if not self.interpolate_frames:
@@ -302,17 +441,33 @@ class GameWindow:
         self.root.after(self._tick_ms, self._tick)
         return True
 
-    def _tick_exit_enter_animation(self) -> bool:
-        if self._exit_enter_ticks <= 0:
+    def _try_start_artifact_puzzle(self) -> bool:
+        if self.artifact_puzzle_solved or self.artifact_puzzle is not None:
             return False
-        frame_index = len(EXIT_ENTER_FRAMES) - self._exit_enter_ticks
-        self.player.state.frame = EXIT_ENTER_FRAMES[min(frame_index, len(EXIT_ENTER_FRAMES) - 1)]
-        self._exit_enter_ticks -= 1
-        if self._exit_enter_ticks <= 0 and self._exit_target_level_index is not None:
-            next_level_index = self._exit_target_level_index
-            self._exit_target_level_index = None
-            self._level_var.set(next_level_index)
-            self._load(self.project.levels[next_level_index], self.part_index)
+        if not self._all_artifacts_collected():
+            return False
+        self._artifact_complete_ticks = len(ARTIFACT_COMPLETE_FRAMES)
+        self.player.state.frame = ARTIFACT_COMPLETE_FRAMES[0]
+        self._last_tick_time = time.perf_counter()
+        self._current_render_snapshot = self._capture_render_snapshot()
+        if not self.interpolate_frames:
+            self._render()
+        self.root.after(self._tick_ms, self._tick)
+        return True
+
+    def _tick_artifact_complete_animation(self) -> bool:
+        if self._artifact_complete_ticks <= 0:
+            return False
+        frame_index = len(ARTIFACT_COMPLETE_FRAMES) - self._artifact_complete_ticks
+        self.player.state.frame = ARTIFACT_COMPLETE_FRAMES[min(frame_index, len(ARTIFACT_COMPLETE_FRAMES) - 1)]
+        self._artifact_complete_ticks -= 1
+        if self._artifact_complete_ticks <= 0:
+            self.artifact_puzzle = ArtifactPuzzleState(
+                level_index=self.level.index,
+                expert=self.part_index == 1,
+            )
+            self._previous_keys = set(self._keys)
+            self._render()
             self.root.after(self._tick_ms, self._tick)
             return True
         self._last_tick_time = time.perf_counter()
@@ -321,6 +476,146 @@ class GameWindow:
             self._render()
         self.root.after(self._tick_ms, self._tick)
         return True
+
+    def _tick_artifact_puzzle(self) -> None:
+        puzzle = self.artifact_puzzle
+        if puzzle is None:
+            return
+        pressed = self._keys - self._previous_keys
+        if "left" in pressed:
+            puzzle.move_cursor(0, -1)
+        if "right" in pressed:
+            puzzle.move_cursor(0, 1)
+        if "up" in pressed:
+            puzzle.move_cursor(-1, 0)
+        if "down" in pressed:
+            puzzle.move_cursor(1, 0)
+        if "f" in pressed:
+            puzzle.flip_held_piece()
+        if "return" in pressed:
+            puzzle.take_or_drop()
+        if puzzle.solved:
+            self.artifact_puzzle_solved = True
+            self.artifact_puzzle = None
+            self._reset_render_snapshots()
+        self._previous_keys = set(self._keys)
+        self._render()
+        self.root.after(self._tick_ms, self._tick)
+
+    def _tick_exit_enter_animation(self) -> bool:
+        if self._exit_enter_ticks <= 0:
+            return False
+        step = EXIT_ANIMATION_STEPS - self._exit_enter_ticks
+        door_frame, player_frame = exit_animation_step(step)
+        self._exit_door_frame = door_frame
+        if player_frame is None:
+            # Door-closing phase: the player has entered and is gone.
+            self._exit_player_hidden = True
+        else:
+            self._exit_player_hidden = False
+            if player_frame == EXIT_KEEP_PLAYER_FRAME:
+                self.player.state.frame = self._exit_player_start_frame
+            else:
+                self.player.state.frame = player_frame
+                self.player.state.x = self._exit_door_x
+                self.player.state.y = self._exit_door_y
+        self._exit_enter_ticks -= 1
+        if self._exit_enter_ticks <= 0 and self._exit_target_level_index is not None:
+            self._exit_door_frame = 0
+            self._exit_player_hidden = False
+            self._start_answer_puzzle()
+            self.root.after(self._tick_ms, self._tick)
+            return True
+        self._last_tick_time = time.perf_counter()
+        self._current_render_snapshot = self._capture_render_snapshot()
+        if not self.interpolate_frames:
+            self._render()
+        self.root.after(self._tick_ms, self._tick)
+        return True
+
+    def _start_answer_puzzle(self) -> None:
+        self.answer_puzzle = AnswerPuzzleState(
+            self.project.exe,
+            level_index=self.level.index,
+            expert=self.part_index == 1,
+            theme=self.level.part(self.part_index).theme,
+        )
+        start_x, start_y = answer_room_player_start(self.project.ae001[20].decoded)
+        self.answer_puzzle.player.x = start_x
+        self.answer_puzzle.player.y = start_y
+        self.answer_player = PlayerController(self.level, self.part_index, 0)
+        self.answer_player.state = self.answer_puzzle.player
+        self._answer_exit_ticks = 0
+        self._answer_player_hidden = False
+        self._previous_keys = set(self._keys)
+        self.root.focus_force()
+        self._render()
+
+    def _tick_answer_puzzle(self) -> None:
+        puzzle = self.answer_puzzle
+        controller = self.answer_player
+        if puzzle is None or controller is None:
+            return
+        if self._answer_exit_ticks > 0:
+            self._tick_answer_exit_animation()
+            return
+
+        command = PlayerInput(
+            left="left" in self._keys,
+            right="right" in self._keys,
+            jump="up" in self._keys,
+            down="down" in self._keys,
+            change_tool=False,
+            use_tool=False,
+        )
+        started_exit = False
+        if command.jump:
+            for door_index, door_y in enumerate((18, 66, 114)):
+                door = HeaderExitDoor(room_index=0, x_raw=122, y_raw=door_y)
+                if player_aligned_with_exit_door(puzzle.player, door):
+                    if puzzle.choose(door_index):
+                        self._answer_exit_ticks = EXIT_ANIMATION_STEPS
+                        self._exit_player_start_frame = puzzle.player.frame
+                        self._exit_door_x = door.x_raw * 2
+                        self._exit_door_y = door.y_raw + 4
+                        self._answer_player_hidden = False
+                        started_exit = True
+                    break
+        if not started_exit:
+            controller.tick(command, self.answer_room.tiles)
+        self._previous_keys = set(self._keys)
+        self._render()
+        self.root.after(self._tick_ms, self._tick)
+
+    def _tick_answer_exit_animation(self) -> None:
+        puzzle = self.answer_puzzle
+        if puzzle is None:
+            return
+        step = EXIT_ANIMATION_STEPS - self._answer_exit_ticks
+        door_frame, player_frame = exit_animation_step(step)
+        puzzle.door_frame = door_frame
+        if player_frame is None:
+            self._answer_player_hidden = True
+        else:
+            self._answer_player_hidden = False
+            if player_frame == EXIT_KEEP_PLAYER_FRAME:
+                puzzle.player.frame = self._exit_player_start_frame
+            else:
+                puzzle.player.frame = player_frame
+                puzzle.player.x = self._exit_door_x
+                puzzle.player.y = self._exit_door_y
+        self._answer_exit_ticks -= 1
+        if self._answer_exit_ticks <= 0 and self._exit_target_level_index is not None:
+            next_level_index = self._exit_target_level_index
+            self._exit_target_level_index = None
+            self.answer_puzzle = None
+            self.answer_player = None
+            self._level_var.set(next_level_index)
+            self._load(self.project.levels[next_level_index], self.part_index)
+            self.root.after(self._tick_ms, self._tick)
+            return
+        self._render()
+        self.root.after(self._tick_ms, self._tick)
 
     def _hud_state(self) -> GameHudState:
         region_index, cavern_index = hud_indices_for_level(self.level.index)
@@ -365,6 +660,13 @@ class GameWindow:
     def _lerp_point(a: tuple[int, int], b: tuple[int, int], alpha: float) -> tuple[int, int]:
         return round(a[0] + (b[0] - a[0]) * alpha), round(a[1] + (b[1] - a[1]) * alpha)
 
+    @staticmethod
+    def _is_teleport(a: tuple[int, int], b: tuple[int, int]) -> bool:
+        """A jump larger than a few tiles is a reset/respawn (e.g. a projectile
+        snapping back to its origin), not real movement, so it must not be
+        smoothed."""
+        return abs(b[0] - a[0]) > INTERPOLATION_SNAP_DISTANCE or abs(b[1] - a[1]) > INTERPOLATION_SNAP_DISTANCE
+
     def _interpolation_alpha(self) -> float:
         if not self.interpolate_frames:
             return 1.0
@@ -374,6 +676,10 @@ class GameWindow:
         previous = self._previous_render_snapshot
         current = self._current_render_snapshot
         if not self.interpolate_frames or previous is None or current is None or previous.room_index != current.room_index:
+            return self.player.state
+        old_xy = (previous.player_x, previous.player_y)
+        new_xy = (current.player_x, current.player_y)
+        if self._is_teleport(old_xy, new_xy):
             return self.player.state
         return replace(
             self.player.state,
@@ -390,7 +696,7 @@ class GameWindow:
         for actor in actors:
             old_xy = previous.actor_positions.get(actor.index)
             new_xy = current.actor_positions.get(actor.index)
-            if old_xy is None or new_xy is None:
+            if old_xy is None or new_xy is None or self._is_teleport(old_xy, new_xy):
                 out.append(actor)
                 continue
             drawn = copy.copy(actor)
@@ -425,6 +731,20 @@ class GameWindow:
             self._render_after_id = self.root.after(self._render_ms, self._render_loop)
 
     def _render(self) -> None:
+        if self.artifact_puzzle is not None:
+            image = self.puzzle_renderer.render(self.artifact_puzzle)
+            self._show_image(image)
+            return
+        if self.answer_puzzle is not None:
+            image = self.answer_puzzle_renderer.render(
+                self.answer_puzzle,
+                level=self.level,
+                part_index=self.part_index,
+                hud=self._hud_state(),
+                show_player=not self._answer_player_hidden,
+            )
+            self._show_image(image)
+            return
         actors = [
             actor
             for actor in self.simulation.actors.values()
@@ -445,8 +765,13 @@ class GameWindow:
             hud=self._hud_state(),
             platform_offsets_override=platform_offsets,
             collected_artifacts=set(self.collected_artifacts),
-            show_exit_door=self._all_artifacts_collected(),
+            show_exit_door=self.artifact_puzzle_solved,
+            exit_door_frame=self._exit_door_frame,
+            show_player=not self._exit_player_hidden,
         )
+        self._show_image(image)
+
+    def _show_image(self, image: Image.Image) -> None:
         if self.scale != 1:
             image = image.resize(
                 (image.width * self.scale, image.height * self.scale),

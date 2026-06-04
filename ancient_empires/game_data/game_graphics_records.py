@@ -30,6 +30,37 @@ class DecodedGameGraphic:
     height: int
 
 
+def decode_answer_symbol_bank(decoded: bytes) -> list[Image.Image]:
+    """Decode the monochrome 40x29 symbol bank used by the exit-door puzzle.
+
+    AE001 resource 34 is a type-1 offset table, but its entries are not normal
+    0x47 graphics records. Each entry is four header bytes followed by a
+    40x29, one-bit bitmap (five bytes per row). The game draws these symbols
+    over the white question cells at AEPROG 0x9a0e.
+    """
+    if len(decoded) < 4:
+        return []
+    table_bytes = int.from_bytes(decoded[:2], "little")
+    count = table_bytes // 2 - 1
+    if count <= 0 or table_bytes > len(decoded):
+        return []
+
+    images: list[Image.Image] = []
+    for index in range(count):
+        offset = int.from_bytes(decoded[index * 2:index * 2 + 2], "little")
+        payload = decoded[offset + 4:offset + 4 + 5 * 29]
+        if len(payload) != 5 * 29:
+            break
+        image = Image.new("RGBA", (40, 29), (0, 0, 0, 0))
+        pixels = image.load()
+        for y in range(29):
+            for x in range(40):
+                if payload[y * 5 + x // 8] & (0x80 >> (x & 7)):
+                    pixels[x, y] = (0, 0, 0, 255)
+        images.append(image)
+    return images
+
+
 def iter_game_graphics_records(decoded: bytes, rtype: int) -> Iterator[GameGraphicsRecord]:
     """Yield game graphics bitmap payloads embedded in a decoded resource.
 

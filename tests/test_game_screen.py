@@ -73,6 +73,54 @@ def test_platform_offset_override_is_render_only():
     assert sim.platform_offsets == before_state
 
 
+def test_live_spider_draws_one_pixel_white_thread_from_actor_marker():
+    from ancient_empires.engine import RoomSimulation
+    from ancient_empires.rendering.coordinates import actor_xy
+    from ancient_empires.rendering.game_screen import ROOM_ORIGIN
+
+    project = AncientEmpiresProject(EXE, DATS)
+    renderer = GameScreenRenderer(project.graphics, project.renderer)
+    sim = RoomSimulation(project.levels[0], 0, 2)
+    spider = next(actor for actor in sim.actors.values() if actor.name == "Spider" and actor.room_index == 2)
+
+    # The thread is anchored at the spawn y, so it only appears once the spider
+    # has descended below it.
+    spider.y += 32
+    image = renderer.render(project.levels[0], room_index=2, simulation=sim, actors=sim.actors.values())
+    rx, ry = actor_xy(spider.x, spider.y)
+    x = ROOM_ORIGIN[0] + rx + 16
+    top = ROOM_ORIGIN[1] + ry - spider.vertical_marker + 1
+
+    assert image.getpixel((x, top)) == (255, 255, 255, 255)
+    assert image.getpixel((x - 1, top)) != (255, 255, 255, 255)
+
+    spider.thread_anchor_y = None
+    without_thread = renderer.render(project.levels[0], room_index=2, simulation=sim, actors=sim.actors.values())
+    assert without_thread.getpixel((x, top)) != (255, 255, 255, 255)
+
+
+def test_spider_thread_stretches_from_fixed_anchor_as_it_descends():
+    """The thread is pinned to the spawn position; descending the spider
+    lengthens it instead of dragging a fixed segment under it."""
+    from ancient_empires.engine import RoomSimulation
+
+    project = AncientEmpiresProject(EXE, DATS)
+    sim = RoomSimulation(project.levels[0], 0, 2)
+    spider = next(a for a in sim.actors.values() if a.name == "Spider" and a.room_index == 2)
+
+    anchor = spider.thread_anchor_y
+    assert anchor is not None
+    assert spider.vertical_marker == spider.y - anchor
+
+    spider.y += 40
+    # Anchor stays put, so the thread grows by exactly the descent.
+    assert spider.vertical_marker == spider.y - anchor
+
+    # Back at (or above) the anchor there is no thread.
+    spider.y = anchor
+    assert spider.vertical_marker == 0
+
+
 def test_header_artifact_and_exit_door_render_options():
     from ancient_empires.game_data.room_payload import header_exit_door, header_object_candidates
 
@@ -101,6 +149,20 @@ def test_header_artifact_and_exit_door_render_options():
     ).tobytes()
 
     assert visible_exit != hidden_exit
+
+
+def test_exit_door_frame_override_animates_themed_door():
+    from ancient_empires.game_data.room_payload import header_exit_door
+
+    project = AncientEmpiresProject(EXE, DATS)
+    renderer = GameScreenRenderer(project.graphics, project.renderer)
+    door = header_exit_door(project.levels[0].parts[0].header)
+
+    assert door is not None
+    closed = renderer.render(project.levels[0], room_index=door.room_index, exit_door_frame=0).tobytes()
+    open_door = renderer.render(project.levels[0], room_index=door.room_index, exit_door_frame=4).tobytes()
+
+    assert closed != open_door
 
 
 def test_hud_artifact_pieces_and_invulnerability_uses_change_the_render():
@@ -158,3 +220,86 @@ def test_green_block_moves_when_symbol_sequence_completes():
     assert block.at_alternate  # sequence complete -> block swapped
     after = renderer.render(project.levels[8], room_index=0, simulation=sim).tobytes()
     assert partial != after  # block now drawn at its alternate position
+
+
+def test_animated_background_decor_advances_with_phase():
+    """Animated decals cycle their sprite sequence as the phase advances
+    (previously they were frozen on the stored preview frame)."""
+    from ancient_empires.rendering.room_renderer import RenderOptions
+
+    project = AncientEmpiresProject(EXE, DATS)
+    renderer = project.renderer
+    # L8 room 8 has visible animated decals (not covered by terrain).
+    frames = {
+        renderer.render_room(
+            project.levels[8],
+            8,
+            RenderOptions(mode="game", zoom=1, part_index=0, draw_actors=False, animated_decor_phase=phase),
+        ).tobytes()
+        for phase in range(8)
+    }
+    assert len(frames) > 1
+
+
+def test_game_render_omits_editor_only_puzzle_ghost():
+    """The faint alternate-position 'ghost' of a green block is an editor aid
+    and must not appear in the live game view."""
+    from ancient_empires.rendering.room_renderer import RenderOptions
+
+    project = AncientEmpiresProject(EXE, DATS)
+    renderer = project.renderer
+    base = dict(mode="game", zoom=1, part_index=0, draw_actors=False)
+    with_ghost = renderer.render_room(project.levels[8], 0, RenderOptions(**base, draw_puzzle_ghost=True)).tobytes()
+    without_ghost = renderer.render_room(project.levels[8], 0, RenderOptions(**base, draw_puzzle_ghost=False)).tobytes()
+    assert with_ghost != without_ghost
+
+
+def test_green_block_footprint_matches_asm_formula():
+    """Green-block collision is the 6x2 region at col=raw_x//4-1, row=raw_y//8-1
+    (AEPROG 0x3132), not the old geometric heuristic."""
+    from ancient_empires.engine import RoomSimulation
+    from ancient_empires.engine.room_simulation import _green_block_footprint_cells
+
+    project = AncientEmpiresProject(EXE, DATS)
+    sim = RoomSimulation(project.levels[8], 0, 1)
+    block = sim.green_blocks[0]
+    rx, ry = block.raw[0], block.raw[1]
+    col, row = rx // 4 - 1, ry // 8 - 1
+    expected = {(col + dx, row + dy) for dy in range(2) for dx in range(6)}
+    assert _green_block_footprint_cells(block, alternate=False) == expected
+
+
+def test_green_block_teleport_leaves_no_stale_invisible_wall():
+    """Moving a block to its alternate position must clear the invisible-solid
+    tiles at the default position (and vice versa)."""
+    from ancient_empires.engine import RoomSimulation
+    from ancient_empires.engine.room_simulation import _green_block_footprint_cells
+    from ancient_empires.constants import ROOM_COLUMNS
+
+    project = AncientEmpiresProject(EXE, DATS)
+    sim = RoomSimulation(project.levels[8], 0, 1)
+    block = sim.green_blocks[0]
+    default_cells = _green_block_footprint_cells(block, alternate=False)
+
+    block.at_alternate = True
+    sim._invalidate_runtime_tiles()
+    tiles = sim.runtime_tiles()
+    alt_cells = _green_block_footprint_cells(block, alternate=True)
+    # Default position no longer solid; alternate position now solid.
+    assert all(tiles[y * ROOM_COLUMNS + x] != 0x07 for x, y in default_cells - alt_cells)
+    assert all(tiles[y * ROOM_COLUMNS + x] == 0x07 for x, y in alt_cells)
+
+
+def test_invisible_block_overlay_follows_runtime_tiles():
+    """The show-invisible overlay reflects the live collision grid, so a moved
+    green block (or platform) updates instead of staying on the stored terrain."""
+    from ancient_empires.engine import RoomSimulation
+    from ancient_empires.rendering.overlay import _invisible_clusters
+
+    project = AncientEmpiresProject(EXE, DATS)
+    sim = RoomSimulation(project.levels[8], 0, 0)
+    before = _invisible_clusters(sim.room, sim.runtime_tiles())
+    sim.green_blocks[0].at_alternate = True
+    sim._invalidate_runtime_tiles()
+    after = _invisible_clusters(sim.room, sim.runtime_tiles())
+    assert before != after

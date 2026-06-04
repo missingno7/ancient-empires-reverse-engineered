@@ -6,7 +6,11 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from .palette import build_game_ega_palette, dac6_to_pillow_palette, find_vga_palette_dac6
-from .game_graphics_records import decode_game_graphics_record, iter_game_graphics_records
+from .game_graphics_records import (
+    decode_answer_symbol_bank,
+    decode_game_graphics_record,
+    iter_game_graphics_records,
+)
 from ..constants import (
     TERRAIN_BANK_COUNT,
     TERRAIN_BANK_RESOURCE_START,
@@ -52,6 +56,15 @@ class GraphicsSet:
         self.terrain_banks_by_mode: dict[str, list[list[Image.Image]]] = {mode: [] for mode in GRAPHICS_DISPLAY_MODES}
 
         self._load_archive_banks("AE001", ae001)
+        answer_symbols = decode_answer_symbol_bank(ae001[34].decoded) if len(ae001) > 34 else []
+        for mode in GRAPHICS_DISPLAY_MODES:
+            # The symbols are monochrome and therefore identical in every mode.
+            self.banks_by_mode[mode]["AE001:034"] = answer_symbols
+            self.refs_by_mode[mode]["AE001:034"] = [
+                SpriteRef("AE001", 34, f"answer_symbol_{index:03d}", image)
+                for index, image in enumerate(answer_symbols)
+            ]
+            self.ae001_banks_by_mode[mode][34] = answer_symbols
         if ae000 is not None:
             self._load_archive_banks("AE000", ae000)
 

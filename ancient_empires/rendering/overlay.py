@@ -93,8 +93,14 @@ def _conveyor_runs(room: Room) -> list[tuple[int, int, int, int]]:
         runs.append((cv.index, cx, cy, max(8, (cv.length + 1) * CELL_SIZE)))
     return runs
 
-def _invisible_clusters(room: Room) -> list[tuple[int, int, int, int]]:
-    cells = {(x, y) for y in range(ROOM_ROWS) for x in range(ROOM_COLUMNS) if room.get(x, y) == 0x07}
+def _invisible_clusters(room: Room, tiles: list[int] | None = None) -> list[tuple[int, int, int, int]]:
+    # ``tiles`` is the live runtime collision grid when available, so the
+    # overlay reflects moved platforms and teleported green blocks instead of
+    # the static stored terrain.
+    def code(x: int, y: int) -> int:
+        return tiles[y * ROOM_COLUMNS + x] if tiles is not None else room.get(x, y)
+
+    cells = {(x, y) for y in range(ROOM_ROWS) for x in range(ROOM_COLUMNS) if code(x, y) == 0x07}
     clusters: list[tuple[int, int, int, int]] = []
     while cells:
         seed = next(iter(cells))

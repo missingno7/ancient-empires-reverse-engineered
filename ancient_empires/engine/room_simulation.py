@@ -159,6 +159,12 @@ class SimActorState:
     script_offset: int
     saved_script_offset: int
     restart_script_offset: int
+    # Fixed anchor of the spider's hanging thread: the spider's *spawn* ``y``.
+    # ``None`` for actors that have no thread (record byte +0x1A == 0).  The live
+    # thread length is ``current_y - anchor`` so the thread stays pinned at the
+    # original spawn position and stretches as the spider descends, instead of
+    # being a fixed segment dragged under it.
+    thread_anchor_y: int | None
     pc: int
     call_stack: list[int] = field(default_factory=list)
     loop_counters: dict[int, int] = field(default_factory=dict)
@@ -184,6 +190,7 @@ class SimActorState:
             script_offset=record.script_offset,
             saved_script_offset=record.saved_script_offset,
             restart_script_offset=record.restart_script_offset,
+            thread_anchor_y=(record.y if record.vertical_marker else None),
             pc=record.script_offset,
             loop_counters={
                 0x04: record.loop_counter_a,
@@ -191,6 +198,16 @@ class SimActorState:
                 0x06: record.loop_counter_c,
             },
         )
+
+    @property
+    def vertical_marker(self) -> int:
+        """Live hanging-thread length: distance from the fixed spawn anchor to
+        the spider's current ``y`` (AEPROG draws the thread from
+        ``y - vertical_marker + 1`` to ``y``).  Zero when the actor has no
+        thread or has climbed back up to the anchor."""
+        if self.thread_anchor_y is None:
+            return 0
+        return max(0, self.y - self.thread_anchor_y)
 
     @property
     def active(self) -> bool:
@@ -262,13 +279,23 @@ def _green_block_xy(raw_x: int, raw_y: int) -> tuple[int, int]:
     return raw_x * 2 - 8, raw_y - 12
 
 
-def _green_block_footprint_cells_from_xy(x_px: int, y_px: int) -> set[tuple[int, int]]:
-    start_x = max(0, min(ROOM_COLUMNS - 1, (x_px + 4) // CELL_SIZE))
-    start_y = max(0, min(ROOM_ROWS - 1, y_px // CELL_SIZE))
+def _green_block_footprint_cells_from_raw(raw_x: int, raw_y: int) -> set[tuple[int, int]]:
+    """Collision footprint of a green block, exactly as AEPROG 0x3132 writes it.
+
+    The original fills a 6x2 invisible-solid (0x07) region whose top-left cell is
+    ``col = raw_x // 4 - 1`` (``raw_x`` is the half-resolution x, so /4 = /8 in
+    full pixels) and ``row = raw_y // 8 - 1``.  The earlier geometric heuristic
+    (``(raw_x*2-4)//8`` / ``(raw_y-12)//8``) drifted by a row or column for many
+    blocks, leaving stale invisible walls and clearing the wrong cells when the
+    block teleported.
+    """
+    col = raw_x // 4 - 1
+    row = raw_y // 8 - 1
     return {
-        (x, y)
-        for y in range(start_y, min(ROOM_ROWS, start_y + 2))
-        for x in range(start_x, min(ROOM_COLUMNS, start_x + 6))
+        (col + dx, row + dy)
+        for dy in range(2)
+        for dx in range(6)
+        if 0 <= col + dx < ROOM_COLUMNS and 0 <= row + dy < ROOM_ROWS
     }
 
 
@@ -277,8 +304,7 @@ def _green_block_footprint_cells(record: SimGreenBlockState, *, alternate: bool 
     base = 2 if use_alternate else 0
     if len(record.raw) < base + 2:
         return set()
-    x_px, y_px = _green_block_xy(record.raw[base], record.raw[base + 1])
-    return _green_block_footprint_cells_from_xy(x_px, y_px)
+    return _green_block_footprint_cells_from_raw(record.raw[base], record.raw[base + 1])
 
 
 class RoomSimulation:
@@ -1151,7 +1177,12 @@ class RoomSimulation:
                         tiles[idx] = CONVEYOR_TILE_TOGGLE.get(tiles[idx], tiles[idx])
 
         for block in self.green_blocks:
+            # AEPROG keeps the block's invisible-solid tiles only at its current
+            # position.  Our stored terrain bakes them at the default spot, so
+            # clear *both* candidate positions before writing the live one;
+            # otherwise teleporting the block leaves a stale invisible wall.
             clear_cells(_green_block_footprint_cells(block, alternate=False))
+            clear_cells(_green_block_footprint_cells(block, alternate=True))
             write_cells(_green_block_footprint_cells(block))
 
         return tiles

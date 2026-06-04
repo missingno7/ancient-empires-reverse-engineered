@@ -67,6 +67,22 @@ bleeds two rows past the body into the floor and blocks all walking.
 Live enemies are drawn each frame from the actor VM positions (`0x4ef8`,
 buffer base `0xb8`). `GameScreenRenderer` suppresses the static record pass and
 blits each active simulation actor through `RoomRenderer.actor_sprite`.
+The same loop checks actor record byte `+0x1A`; when nonzero, it draws a
+one-pixel line in VGA colour `0x0F` at `actor_x + 16`, from
+`actor_y - value + 1` through `actor_y`, *after* the sprite blit (`0x4f33`
+draws the sprite, then `0x4f39` draws the line), so the thread overlays the
+spider's body. Spider records populate this field to produce their white
+hanging thread.
+
+`+0x1A` is the *current* thread length, not a constant: the line's top
+(`actor_y - value + 1`) stays pinned at the spider's spawn position while the
+original grows/shrinks the byte as the spider descends and climbs, so the
+thread stretches between the original position and the body.  Every stock
+spider record stores a nonzero `+0x1A` purely as a "has thread" flag.  The
+Python port anchors at the spawn position (`thread_anchor_y = spawn_y`) and
+derives the live length as `max(0, current_y - thread_anchor_y)` via the
+`SimActorState.vertical_marker` property, rather than dragging the spawn-time
+length under the moving sprite (length is `0` at the spawn position).
 
 The keyboard IRQ handler around `0x69F5` maps scan code `0x4B` to left,
 `0x4D` to right and `0x48` to the shared action/jump state. Home and Page Up
@@ -226,6 +242,57 @@ The selected tool is `DS:0b7e` (0..2), drawn as AE000:063 sprite `3 + tool`:
   `0x7313`, sets the invulnerability timer `DS:072c = 0x3a`, and plays SFX `0x11`
   when the count is already 0.  Immortality is recovered in the ASM but not yet
   ported.
+
+- **Ancient Artifact puzzle** is entered after all header artifact pieces are
+  collected.  The post-collection player animation uses `AE000:004:16..19`;
+  the exit-door animation uses `AE000:004:12..15`.  The puzzle panel background
+  is `AE001:063`, and the artifact image/title resource is selected as
+  `AE001:(65 + chamber + region*8 + (4 if Expert else 0))`; for example level 1
+  Explorer selects `AE001:065` and level 1 Expert selects `AE001:069`.  The
+  title sprite is blitted at `(140, 44)`, and `AE001:064` supplies separate
+  Explorer/Expert instruction bands.  The board table at `DS:C316` is 4 rows by 6
+  columns of `(tile, orientation)` cells.  Left columns 0..2 hold loose pieces;
+  right columns 3..5 are the assembly target.  `0x8DA4` takes a cell into
+  `DS:C132`, `0x8FE2` drops it back, and routine `0x950C` redraws the held piece
+  at the moving cursor position.  Explorer puzzles do not flip pieces; Expert
+  puzzles use `F` to cycle the held orientation.  `0x969D` validates one of the
+  four orientation/order patterns before the level exit door is revealed.
+
+- **Exit-door answer puzzle** is entered after the player uses the revealed
+  level exit.  Odd progression stages load `AE001:020`, a special `0x2750`-byte
+  room resource whose first room stores the terrain, tiles and rope layout.
+  The four room-frame images are `AE001:030..033`, selected by the level-part
+  theme and drawn over that room.  `AE001:034` is a separate bank of 182 monochrome 40x29
+  symbols; unlike normal game graphics, each offset-table entry is a four-byte
+  header followed by a one-bit bitmap.  The question definitions are embedded
+  in `AEPROG.EXE` at `DS:0DCC` as 40 records of 24 bytes: Explorer questions
+  `0..19`, Expert questions `20..39`.  Each record contains eleven
+  `(symbol, transform)` pairs, an allowed-missing-cell bitmask at `+0x16`, and a
+  first-wrong-answer hint resource at `+0x17`.
+
+  Initialisation at `0x9B68..0x9D78` chooses an allowed missing cell, draws a
+  question mark from symbol-bank entry 145, randomises the correct answer among
+  door positions `9..11`, and fills the other two doors from record slots 9 and
+  10.  The normal terrain pass draws the special room's platforms and rope over
+  the backdrop; they are not separate answer-screen decoration.  The player
+  traverses this room through the ordinary movement loop, including terrain
+  collision and rope climbing.  The normal player/object collision loop passes
+  the entered door index to
+  `0x9DCC`; only a positive result reaches the level-transition animation at
+  `0x233E`.  The answer symbols remain visible in their white openings until
+  the player chooses one; a correct answer reveals the themed door in that
+  opening and animates the player through it.  The Python port reads these
+  original records, renders the themed question room with the shared HUD, and
+  gates the next level on the correct door.
+
+  Normal level exit activation uses the door object registered at
+  `(header[0x06]*2, header[0x07])`.  The player anchor must be within only
+  `x +/- 2` pixels and from `y` through `y + 16` (`0x3CC8..0x3D13`), rather
+  than merely overlapping the 46x33 door artwork.  The loop is gated by held
+  Up-key state `DS:0B68`; it does not separately reject ladder, jump, or fall
+  state.  The narrow coordinate box prevents most nearby rope activations.
+  Routine `0x233E` opens the themed door, plays player frames
+  `AE000:004:12..15`, then closes the door behind the player.
 
 ## Missing engine systems
 
