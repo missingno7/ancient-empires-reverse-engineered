@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from ae_game.app.main_window import (
     EXIT_ANIMATION_STEPS,
     EXIT_KEEP_PLAYER_FRAME,
@@ -22,6 +24,7 @@ from ancient_empires.rendering.game_screen import GameHudState, GameScreenRender
 
 EXE = Path("game_data/AEPROG.EXE")
 DATS = [Path("game_data/AE000.DAT"), Path("game_data/AE001.DAT")]
+pytestmark = pytest.mark.game_data
 
 
 def test_question_table_contains_explorer_and_expert_records():

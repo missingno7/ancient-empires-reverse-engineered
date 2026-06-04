@@ -11,3 +11,8 @@ ancient-empires = "ae_game.app.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["ancient_empires*", "ae_editor*", "ae_game*", "nuked_opl3*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "game_data: tests that require local original game assets in game_data/",
+]

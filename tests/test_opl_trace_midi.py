@@ -111,6 +111,7 @@ def test_opl_register_channel_op_mapping():
     assert _opl_register_channel_op(0x52) == (8, 0)  # ch8 modulator (0x12 slot)
 
 
+@pytest.mark.game_data
 @pytest.mark.skipif(not _HAVE_GAME, reason="game data not present")
 def test_trace_midi_is_well_formed_and_balanced(tmp_path):
     proj = AncientEmpiresProject(EXE, DATS)

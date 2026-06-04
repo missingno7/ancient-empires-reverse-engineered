@@ -35,14 +35,16 @@ python -m pip install -r requirements-build.txt
 powershell -ExecutionPolicy Bypass -File tools\build_windows_release.ps1
 ```
 
-For private testing only, include local `game_data/` assets:
+For private testing only, include local `game_data/` assets and run the
+asset-backed tests:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\build_windows_release.ps1 -IncludeGameData
+powershell -ExecutionPolicy Bypass -File tools\build_windows_release.ps1 -IncludeGameData -RunGameDataTests
 ```
 
-The script runs the test suite with `--basetemp build\pytest-tmp`, builds both
-executables, smoke-tests their frozen imports with `--help`, and writes:
+The script runs the asset-free test suite with
+`--basetemp build\pytest-tmp -m "not game_data"`, builds both executables,
+smoke-tests their frozen imports with `--help`, and writes:
 
 ```text
 dist\ancient-empires-0.1.0-windows-x64.zip
@@ -52,7 +54,7 @@ dist\ancient-empires-0.1.0-windows-x64.zip
 
 Before tagging, inspect the archive and confirm it does not contain original
 game assets. The release ZIP should contain the two executables, `LICENSE`,
-`README.txt`, and an empty `game_data/` directory.
+`README.txt`, and `game_data/README.txt`.
 
 Commit the release work, tag it, and push the branch and tag:
 

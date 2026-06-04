@@ -1,3 +1,5 @@
+import pytest
+
 from ancient_empires.audio.core import PC_SPEAKER_DIRECT_BASE_DIVISOR, _duration_ticks_from_game_code
 
 
@@ -17,6 +19,7 @@ def test_regular_duration_code_still_uses_subdivision_and_dotted_flag():
     assert _duration_ticks_from_game_code(0x0B, 300) == 55
 
 
+@pytest.mark.game_data
 def test_caf1_sound_00_duration_matches_capture_note():
     from pathlib import Path
 

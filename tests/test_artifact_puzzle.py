@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from ancient_empires.engine.artifact_puzzle import ArtifactPuzzleState, PUZZLE_EMPTY
 from ancient_empires.project import AncientEmpiresProject
 from ancient_empires.rendering.artifact_puzzle_screen import ArtifactPuzzleScreenRenderer
@@ -7,6 +9,7 @@ from ancient_empires.rendering.artifact_puzzle_screen import ArtifactPuzzleScree
 
 EXE = Path("game_data/AEPROG.EXE")
 DATS = [Path("game_data/AE000.DAT"), Path("game_data/AE001.DAT")]
+pytestmark = pytest.mark.game_data
 
 
 def test_level_1_expert_uses_recovered_puzzle_resource():

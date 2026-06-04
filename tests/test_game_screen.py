@@ -1,12 +1,15 @@
 from pathlib import Path
 import hashlib
 
+import pytest
+
 from ancient_empires.project import AncientEmpiresProject
 from ancient_empires.rendering.game_screen import BACKGROUND_COLOR, GameScreenRenderer
 
 
 EXE = Path("game_data/AEPROG.EXE")
 DATS = [Path("game_data/AE000.DAT"), Path("game_data/AE001.DAT")]
+pytestmark = pytest.mark.game_data
 
 
 def test_level_1_explorer_room_0_game_screen_regression():

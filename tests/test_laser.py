@@ -1,6 +1,8 @@
 """Flashlight laser: fire, beam, actor freeze, lever trip (AEPROG 0x5a3b)."""
 from pathlib import Path
 
+import pytest
+
 from ancient_empires.engine import PlayerController, PlayerInput, PlayerState, RoomSimulation
 from ancient_empires.engine.player import SFX_LASER, TOOL_BOOTS, TOOL_FLASHLIGHT
 from ancient_empires.engine.room_simulation import (
@@ -14,6 +16,7 @@ from ancient_empires.constants import ROOM_COLUMNS, ROOM_ROWS
 
 EXE = Path("game_data/AEPROG.EXE")
 DATS = [Path("game_data/AE000.DAT"), Path("game_data/AE001.DAT")]
+pytestmark = pytest.mark.game_data
 
 
 def _controller(tool):

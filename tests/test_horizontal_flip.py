@@ -9,6 +9,7 @@ from ancient_empires.game_data.level_flip import flip_level_horizontally
 _AE001 = Path(__file__).resolve().parents[1] / "game_data" / "AE001.DAT"
 
 
+@pytest.mark.game_data
 @pytest.mark.skipif(not _AE001.exists(), reason="game data not present")
 def test_horizontal_level_flip_is_involution_for_all_stock_levels():
     ae001 = DatArchive(_AE001)

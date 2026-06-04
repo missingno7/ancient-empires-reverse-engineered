@@ -1,6 +1,8 @@
 """Walk-onto-button activation through the simulation (AEPROG 0x3c50)."""
 from pathlib import Path
 
+import pytest
+
 from ancient_empires.project import AncientEmpiresProject
 from ancient_empires.engine import RoomSimulation
 from ancient_empires.game_data.room_payload import control_commands
@@ -8,6 +10,7 @@ from ancient_empires.game_data.room_payload import control_commands
 
 EXE = Path("game_data/AEPROG.EXE")
 DATS = [Path("game_data/AE000.DAT"), Path("game_data/AE001.DAT")]
+pytestmark = pytest.mark.game_data
 
 
 def _sim_with_button():

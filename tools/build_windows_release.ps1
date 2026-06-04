@@ -1,5 +1,6 @@
 param(
     [switch]$IncludeGameData,
+    [switch]$RunGameDataTests,
     [switch]$SkipTests
 )
 
@@ -49,7 +50,11 @@ if (-not $SkipTests) {
         Remove-Item -LiteralPath $PytestTemp -Recurse -Force
     }
     New-Item -ItemType Directory -Force -Path $PytestTemp | Out-Null
-    Invoke-Checked { python -m pytest --basetemp $PytestTemp } "Test suite"
+    $PytestArgs = @("--basetemp", $PytestTemp)
+    if (-not $RunGameDataTests) {
+        $PytestArgs += @("-m", "not game_data")
+    }
+    Invoke-Checked { python -m pytest @PytestArgs } "Test suite"
 }
 
 Write-Host "Building game executable..."
@@ -77,6 +82,7 @@ if (Test-Path $ReleaseDir) {
 }
 New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $ReleaseDir "game_data") | Out-Null
+Copy-Item "docs\windows_game_data_readme.txt" (Join-Path $ReleaseDir "game_data\README.txt")
 Copy-Item "dist\AncientEmpires.exe" $ReleaseDir
 Copy-Item "dist\AncientEmpiresEditor.exe" $ReleaseDir
 Copy-Item "LICENSE" $ReleaseDir

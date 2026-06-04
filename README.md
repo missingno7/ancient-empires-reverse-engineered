@@ -111,15 +111,16 @@ python -m pip install -r requirements-build.txt
 powershell -ExecutionPolicy Bypass -File tools/build_windows_release.ps1
 ```
 
-The script builds the native Nuked-OPL3 audio extension, runs the test suite,
-smoke-tests both frozen executables with `--help`,
+The script builds the native Nuked-OPL3 audio extension, runs the asset-free
+test suite with `-m "not game_data"`, smoke-tests both frozen executables with `--help`,
 and creates `dist/ancient-empires-0.1.0-windows-x64.zip`. The public release
 does not include original game assets; users place their legally obtained
 `AEPROG.EXE`, `AE000.DAT`, and `AE001.DAT` files in the bundled `game_data`
 folder.
 
 For a local/private bundle that includes files already present in
-`game_data/`, pass `-IncludeGameData`.
+`game_data/` and runs the asset-backed tests too, pass
+`-IncludeGameData -RunGameDataTests`.
 
 Pushing a version tag such as `v0.1.0` runs the Windows release workflow,
 creates the matching GitHub release if needed, and attaches the generated ZIP.
@@ -211,6 +212,12 @@ Run the test suite using a repository-local pytest temp folder:
 
 ```bash
 python -m pytest --basetemp build/pytest-tmp
+```
+
+Run only tests that do not require original game assets:
+
+```bash
+python -m pytest --basetemp build/pytest-tmp -m "not game_data"
 ```
 
 ## Technical References

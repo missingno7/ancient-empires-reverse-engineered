@@ -6,6 +6,7 @@ from ancient_empires.project import AncientEmpiresProject
 
 EXE = Path("game_data/AEPROG.EXE")
 DATS = [Path("game_data/AE000.DAT"), Path("game_data/AE001.DAT")]
+pytestmark = pytest.mark.game_data
 
 
 def _engine():

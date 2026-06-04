@@ -64,10 +64,18 @@ Run the test suite without depending on the user-profile pytest temp directory:
 python -m pytest --basetemp build/pytest-tmp
 ```
 
-Build the public Windows release ZIP:
+Build the public Windows release ZIP. This intentionally skips tests marked
+`game_data`, because GitHub and public CI do not have the original commercial
+assets:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\build_windows_release.ps1
+```
+
+For local private validation with assets present:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build_windows_release.ps1 -IncludeGameData -RunGameDataTests
 ```
 
 Export previews after parser or renderer changes (reads `game_data/` by default):
