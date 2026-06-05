@@ -6,6 +6,7 @@ from dataclasses import replace
 import copy
 import time
 import tkinter as tk
+from typing import Callable
 
 from PIL import Image, ImageTk
 
@@ -37,7 +38,10 @@ from ancient_empires.game_data.room_payload import (
 from ancient_empires.project import AncientEmpiresProject
 from ancient_empires.rendering.artifact_puzzle_screen import ArtifactPuzzleScreenRenderer
 from ancient_empires.rendering.answer_puzzle_screen import AnswerPuzzleScreenRenderer
+from ancient_empires.rendering.bitmap_font import BitmapFont
+from ancient_empires.rendering.dialog_screen import DifficultyDialogRenderer
 from ancient_empires.rendering.game_screen import GameHudState, GameScreenRenderer
+from ancient_empires.rendering.map_screen import ANCIENT_WORLD_LEVEL_INDEX, MAP_CHOICES, MapScreenRenderer
 from ae_game.app.audio_engine import GameAudioEngine
 
 
@@ -52,6 +56,9 @@ EXIT_ANIMATION_STEPS = (
     len(EXIT_OPEN_DOOR_FRAMES) + len(EXIT_ENTER_PLAYER_FRAMES) + len(EXIT_CLOSE_DOOR_FRAMES)
 )
 ARTIFACT_COMPLETE_FRAMES = (16, 17, 18, 19, 18, 19)
+ANCIENT_REVEAL_FRAMES = 24
+MAP_LEVEL_TRANSITION_FRAMES = 18
+CROSSFADE_FRAMES = 12
 
 # Sentinel player-frame returned by exit_animation_step for the opening phase,
 # meaning "keep the player's current standing frame".
@@ -150,7 +157,22 @@ class GameWindow:
         self.level = project.levels[0]
         self.part_index = 0
         self.room_index = 0
+        self.scene = "difficulty"
+        self.difficulty_selection = 0
+        self.map_selection = 0
+        self.completed_levels: set[int] = set()
+        self._ancient_reveal_frame = 0
+        self._map_transition_frame = 0
+        self._map_transition_level_index: int | None = None
+        self._crossfade_frame = 0
+        self._crossfade_source: Image.Image | None = None
+        self._crossfade_target: Image.Image | None = None
+        self._crossfade_finish: Callable[[], None] | None = None
         self.screen_renderer = GameScreenRenderer(project.graphics, project.renderer)
+        self.map_renderer = MapScreenRenderer(project.graphics)
+        if project.ae000 is None:
+            raise ValueError("AE000.DAT is required for the original menu font")
+        self.dialog_renderer = DifficultyDialogRenderer(BitmapFont.from_resource(project.ae000[0].decoded))
         self.puzzle_renderer = ArtifactPuzzleScreenRenderer(project.graphics)
         self.answer_puzzle_renderer = AnswerPuzzleScreenRenderer(
             project.graphics,
@@ -223,7 +245,6 @@ class GameWindow:
         self._current_render_snapshot = self._capture_render_snapshot()
         self._previous_render_snapshot = self._current_render_snapshot
         self._render()
-        self._start_level_music()
         self._schedule_render_loop()
         self.root.after(self._tick_ms, self._tick)
 
@@ -335,7 +356,11 @@ class GameWindow:
 
     def _toggle_music_mode(self) -> None:
         mode = "soundcard" if self._soundcard_music_var.get() else "pcspeaker"
-        self.audio.set_music_mode(mode, self.level.index)
+        if self.scene == "map":
+            self.audio.set_music_mode(mode)
+            self.audio.play_map_music()
+        else:
+            self.audio.set_music_mode(mode, self.level.index)
 
     def _toggle_god_mode(self) -> None:
         self.god_mode = bool(self._god_mode_var.get())
@@ -368,10 +393,144 @@ class GameWindow:
         self._start_answer_puzzle()
 
     def _select_level(self, level_index: int) -> None:
+        self.scene = "game"
         self._load(self.project.levels[level_index], self.part_index)
 
     def _select_part(self, part_index: int) -> None:
+        self.scene = "game"
         self._load(self.level, part_index)
+
+    def _completed_map_regions_for_levels(self, completed_levels: set[int]) -> set[int]:
+        regions: set[int] = set()
+        for region_index, choice in enumerate(MAP_CHOICES):
+            start = choice.level_index
+            if all(level_index in completed_levels for level_index in range(start, start + 4)):
+                regions.add(region_index)
+        return regions
+
+    def _selectable_map_regions(self, completed_regions: set[int] | None = None) -> list[int]:
+        completed = self._completed_map_regions() if completed_regions is None else set(completed_regions)
+        return [index for index in range(len(MAP_CHOICES)) if index not in completed]
+
+    def _normalized_map_selection(self, preferred: int | None = None, completed_regions: set[int] | None = None) -> int:
+        preferred = self.map_selection if preferred is None else preferred
+        selectable = self._selectable_map_regions(completed_regions)
+        if not selectable:
+            return max(0, min(preferred, len(MAP_CHOICES) - 1))
+        if preferred in selectable:
+            return preferred
+        for index in selectable:
+            if index > preferred:
+                return index
+        return selectable[0]
+
+    def _map_image(
+        self,
+        *,
+        selected: int | None = None,
+        completed_regions: set[int] | None = None,
+    ) -> Image.Image:
+        completed = self._completed_map_regions() if completed_regions is None else set(completed_regions)
+        chosen = self._normalized_map_selection(selected, completed)
+        return self.map_renderer.render(chosen, completed)
+
+    def _hud_state_for_preview(self, level_index: int, player_state) -> GameHudState:
+        region_index, cavern_index = hud_indices_for_level(level_index)
+        return GameHudState(
+            tool_index=player_state.tool,
+            artifact_pieces=0,
+            invulnerability_uses=IMMORTALITY_USES,
+            energy=player_state.energy,
+            region_index=region_index,
+            cavern_index=cavern_index,
+        )
+
+    def _render_current_game_image(self) -> Image.Image:
+        actors = [
+            actor
+            for actor in self.simulation.actors.values()
+            if actor.room_index == self.room_index
+        ]
+        frame_override, blink_off, halo = self._player_draw_state()
+        return self.screen_renderer.render(
+            self.level,
+            part_index=self.part_index,
+            room_index=self.room_index,
+            player=self.player.state,
+            actors=actors,
+            simulation=self.simulation,
+            show_invisible=self.show_invisible,
+            hud=self._hud_state(),
+            collected_artifacts=set(self.collected_artifacts),
+            apple_collected=self._apple_collected(),
+            show_exit_door=self.artifact_puzzle_solved,
+            exit_door_frame=self._exit_door_frame,
+            show_player=not self._exit_player_hidden and not blink_off,
+            player_frame_override=frame_override,
+            player_halo=halo,
+        )
+
+    def _preview_level_start_image(self, level_index: int) -> Image.Image:
+        level = self.project.levels[level_index]
+        room_index = 0
+        simulation = RoomSimulation(level, self.part_index, room_index)
+        player = PlayerController(level, self.part_index, room_index).state
+        actors = [actor for actor in simulation.actors.values() if actor.room_index == room_index]
+        return self.screen_renderer.render(
+            level,
+            part_index=self.part_index,
+            room_index=room_index,
+            player=player,
+            actors=actors,
+            simulation=simulation,
+            hud=self._hud_state_for_preview(level.index, player),
+            collected_artifacts=set(),
+            apple_collected=False,
+            show_exit_door=False,
+            show_player=True,
+        )
+
+    def _render_current_answer_puzzle_image(self) -> Image.Image:
+        if self.answer_puzzle is None:
+            raise RuntimeError("Answer puzzle is not active")
+        return self.answer_puzzle_renderer.render(
+            self.answer_puzzle,
+            level=self.level,
+            part_index=self.part_index,
+            hud=self._hud_state(),
+            show_player=not self._answer_player_hidden,
+        )
+
+    def _prepare_answer_puzzle_state(self) -> tuple[AnswerPuzzleState, PlayerController]:
+        puzzle = AnswerPuzzleState(
+            self.project.exe,
+            level_index=self.level.index,
+            expert=self.part_index == 1,
+            theme=self.level.part(self.part_index).theme,
+        )
+        start_x, start_y = answer_room_player_start(self.project.ae001[20].decoded)
+        puzzle.player.x = start_x
+        puzzle.player.y = start_y
+        controller = PlayerController(self.level, self.part_index, 0)
+        controller.state = puzzle.player
+        return puzzle, controller
+
+    def _render_answer_puzzle_image_for(self, puzzle: AnswerPuzzleState, *, show_player: bool = True) -> Image.Image:
+        return self.answer_puzzle_renderer.render(
+            puzzle,
+            level=self.level,
+            part_index=self.part_index,
+            hud=self._hud_state(),
+            show_player=show_player,
+        )
+
+    def _start_crossfade(self, source: Image.Image, target: Image.Image, on_finish: Callable[[], None]) -> None:
+        self.scene = "crossfade"
+        self._crossfade_frame = 0
+        self._crossfade_source = source.convert("RGBA")
+        self._crossfade_target = target.convert("RGBA")
+        self._crossfade_finish = on_finish
+        self._render()
 
     def _load(self, level, part_index: int) -> None:
         """(Re)enter a level/part at room 0 with a fresh simulation cache."""
@@ -408,6 +567,12 @@ class GameWindow:
     def _on_key_press(self, event: tk.Event) -> None:
         key = str(event.keysym).lower()
         self._keys.add(key)
+        if self.scene == "difficulty":
+            self._handle_difficulty_key(key)
+            return
+        if self.scene == "map":
+            self._handle_map_key(key)
+            return
         # The artifact-assembly puzzle is cursor-driven, so handle its keys on
         # the key event itself (DOS is event-driven).  Sampling once per ~100ms
         # tick dropped quick taps that were pressed and released between ticks.
@@ -441,7 +606,149 @@ class GameWindow:
             self._reset_render_snapshots()
         self._render()
 
+    def _handle_difficulty_key(self, key: str) -> None:
+        if key in {"up", "down", "left", "right"}:
+            self.difficulty_selection = 1 - self.difficulty_selection
+            self._render()
+        elif key == "return":
+            self.part_index = self.difficulty_selection
+            self._part_var.set(self.part_index)
+            self.scene = "map"
+            self.audio.play_map_music()
+            self._render()
+        elif key == "escape":
+            self._on_close()
+
+    def _handle_map_key(self, key: str) -> None:
+        if self._all_normal_regions_completed():
+            return
+        completed_regions = self._completed_map_regions()
+        selectable = self._selectable_map_regions(completed_regions)
+        if not selectable:
+            return
+        self.map_selection = self._normalized_map_selection(self.map_selection, completed_regions)
+        current_index = selectable.index(self.map_selection)
+        if key in {"left", "up"}:
+            self.map_selection = selectable[(current_index - 1) % len(selectable)]
+            self._render()
+        elif key in {"right", "down"}:
+            self.map_selection = selectable[(current_index + 1) % len(selectable)]
+            self._render()
+        elif key == "return":
+            choice = MAP_CHOICES[self.map_selection]
+            self._start_map_level_transition(choice.level_index)
+
+    def _completed_map_regions(self) -> set[int]:
+        return self._completed_map_regions_for_levels(self.completed_levels)
+
+    def _start_map_level_transition(self, level_index: int) -> None:
+        source = self._map_image(selected=self.map_selection)
+        target = self._preview_level_start_image(level_index)
+
+        def finish() -> None:
+            self._crossfade_source = None
+            self._crossfade_target = None
+            self._crossfade_finish = None
+            self.scene = "game"
+            self._level_var.set(level_index)
+            self._load(self.project.levels[level_index], self.part_index)
+
+        self._start_crossfade(source, target, finish)
+
+    def _finish_map_level_transition(self) -> None:
+        level_index = self._map_transition_level_index
+        self._map_transition_level_index = None
+        self._map_transition_frame = 0
+        if level_index is None:
+            self.scene = "map"
+            self._render()
+            return
+        self.scene = "game"
+        self._level_var.set(level_index)
+        self._load(self.project.levels[level_index], self.part_index)
+
+    def _all_normal_regions_completed(self) -> bool:
+        return len(self._completed_map_regions()) == len(MAP_CHOICES)
+
+    def _return_to_map_or_ancient_world(self) -> None:
+        self.answer_puzzle = None
+        self.answer_player = None
+        self._exit_target_level_index = None
+        self._answer_exit_ticks = 0
+        self._map_transition_frame = 0
+        self._map_transition_level_index = None
+        if self._all_normal_regions_completed() and len(self.project.levels) > ANCIENT_WORLD_LEVEL_INDEX:
+            self.scene = "ancient_reveal"
+            self._ancient_reveal_frame = 0
+        else:
+            self.scene = "map"
+            self.map_selection = self._normalized_map_selection(min(self.map_selection, len(MAP_CHOICES) - 1))
+            self.audio.play_map_music()
+        self._reset_render_snapshots()
+        self.root.focus_force()
+        self._render()
+
+    def _complete_current_level(self) -> None:
+        self.completed_levels.add(self.level.index)
+        if self.level.index < ANCIENT_WORLD_LEVEL_INDEX and self.level.index % 4 == 3:
+            self._return_to_map_or_ancient_world()
+            return
+
+        next_level_index = self._exit_target_level_index
+        if next_level_index is None or next_level_index >= len(self.project.levels):
+            self._return_to_map_or_ancient_world()
+            return
+        self._exit_target_level_index = None
+        self.answer_puzzle = None
+        self.answer_player = None
+        self._level_var.set(next_level_index)
+        self.scene = "game"
+        self._load(self.project.levels[next_level_index], self.part_index)
+
+    def _tick_ancient_reveal(self) -> None:
+        self._ancient_reveal_frame += 1
+        if self._ancient_reveal_frame >= ANCIENT_REVEAL_FRAMES:
+            self.scene = "game"
+            self._level_var.set(ANCIENT_WORLD_LEVEL_INDEX)
+            self._load(self.project.levels[ANCIENT_WORLD_LEVEL_INDEX], self.part_index)
+            self.root.after(self._tick_ms, self._tick)
+            return
+        self._render()
+        self.root.after(self._tick_ms, self._tick)
+
+    def _tick_map_transition(self) -> None:
+        self._map_transition_frame += 1
+        if self._map_transition_frame >= MAP_LEVEL_TRANSITION_FRAMES:
+            self._finish_map_level_transition()
+            self.root.after(self._tick_ms, self._tick)
+            return
+        self._render()
+        self.root.after(self._tick_ms, self._tick)
+
+    def _tick_crossfade(self) -> None:
+        self._crossfade_frame += 1
+        if self._crossfade_frame >= CROSSFADE_FRAMES:
+            finish = self._crossfade_finish
+            if finish is not None:
+                finish()
+            self.root.after(self._tick_ms, self._tick)
+            return
+        self._render()
+        self.root.after(self._tick_ms, self._tick)
+
     def _tick(self) -> None:
+        if self.scene in {"difficulty", "map"}:
+            self.root.after(self._tick_ms, self._tick)
+            return
+        if self.scene == "ancient_reveal":
+            self._tick_ancient_reveal()
+            return
+        if self.scene == "map_transition":
+            self._tick_map_transition()
+            return
+        if self.scene == "crossfade":
+            self._tick_crossfade()
+            return
         self._previous_render_snapshot = self._current_render_snapshot or self._capture_render_snapshot()
         if self.artifact_puzzle is not None:
             self._tick_artifact_puzzle()
@@ -736,7 +1043,7 @@ class GameWindow:
         if self._exit_enter_ticks <= 0 and self._exit_target_level_index is not None:
             self._exit_door_frame = 0
             self._exit_player_hidden = False
-            self._start_answer_puzzle()
+            self._start_answer_puzzle_crossfade()
             self.root.after(self._tick_ms, self._tick)
             return True
         self._last_tick_time = time.perf_counter()
@@ -747,22 +1054,32 @@ class GameWindow:
         return True
 
     def _start_answer_puzzle(self) -> None:
-        self.answer_puzzle = AnswerPuzzleState(
-            self.project.exe,
-            level_index=self.level.index,
-            expert=self.part_index == 1,
-            theme=self.level.part(self.part_index).theme,
-        )
-        start_x, start_y = answer_room_player_start(self.project.ae001[20].decoded)
-        self.answer_puzzle.player.x = start_x
-        self.answer_puzzle.player.y = start_y
-        self.answer_player = PlayerController(self.level, self.part_index, 0)
-        self.answer_player.state = self.answer_puzzle.player
+        self.answer_puzzle, self.answer_player = self._prepare_answer_puzzle_state()
         self._answer_exit_ticks = 0
         self._answer_player_hidden = False
         self._previous_keys = set(self._keys)
         self.root.focus_force()
         self._render()
+
+    def _start_answer_puzzle_crossfade(self) -> None:
+        source = self._render_current_game_image()
+        puzzle, controller = self._prepare_answer_puzzle_state()
+        target = self._render_answer_puzzle_image_for(puzzle, show_player=True)
+
+        def finish() -> None:
+            self._crossfade_source = None
+            self._crossfade_target = None
+            self._crossfade_finish = None
+            self.scene = "game"
+            self.answer_puzzle = puzzle
+            self.answer_player = controller
+            self._answer_exit_ticks = 0
+            self._answer_player_hidden = False
+            self._previous_keys = set(self._keys)
+            self.root.focus_force()
+            self._render()
+
+        self._start_crossfade(source, target, finish)
 
     def _tick_answer_puzzle(self) -> None:
         puzzle = self.answer_puzzle
@@ -819,16 +1136,80 @@ class GameWindow:
                 puzzle.player.y = self._exit_door_y
         self._answer_exit_ticks -= 1
         if self._answer_exit_ticks <= 0 and self._exit_target_level_index is not None:
-            next_level_index = self._exit_target_level_index
-            self._exit_target_level_index = None
-            self.answer_puzzle = None
-            self.answer_player = None
-            self._level_var.set(next_level_index)
-            self._load(self.project.levels[next_level_index], self.part_index)
+            self._start_answer_result_crossfade()
             self.root.after(self._tick_ms, self._tick)
             return
         self._render()
         self.root.after(self._tick_ms, self._tick)
+
+    def _start_answer_result_crossfade(self) -> None:
+        if self.answer_puzzle is None or self._exit_target_level_index is None:
+            return
+        source = self._render_current_answer_puzzle_image()
+        completed_after = set(self.completed_levels)
+        completed_after.add(self.level.index)
+
+        if self.level.index < ANCIENT_WORLD_LEVEL_INDEX and self.level.index % 4 == 3:
+            completed_regions = self._completed_map_regions_for_levels(completed_after)
+            if len(completed_regions) == len(MAP_CHOICES) and len(self.project.levels) > ANCIENT_WORLD_LEVEL_INDEX:
+                target = self.map_renderer.render_ancient_reveal(0, ANCIENT_REVEAL_FRAMES)
+
+                def finish() -> None:
+                    self._crossfade_source = None
+                    self._crossfade_target = None
+                    self._crossfade_finish = None
+                    self.completed_levels = completed_after
+                    self.answer_puzzle = None
+                    self.answer_player = None
+                    self._exit_target_level_index = None
+                    self._answer_exit_ticks = 0
+                    self.scene = "ancient_reveal"
+                    self._ancient_reveal_frame = 0
+                    self._reset_render_snapshots()
+                    self.root.focus_force()
+                    self._render()
+
+                self._start_crossfade(source, target, finish)
+                return
+
+            next_selection = self._normalized_map_selection(self.map_selection, completed_regions)
+            target = self._map_image(selected=next_selection, completed_regions=completed_regions)
+
+            def finish() -> None:
+                self._crossfade_source = None
+                self._crossfade_target = None
+                self._crossfade_finish = None
+                self.completed_levels = completed_after
+                self.answer_puzzle = None
+                self.answer_player = None
+                self._exit_target_level_index = None
+                self._answer_exit_ticks = 0
+                self.scene = "map"
+                self.map_selection = next_selection
+                self.audio.play_map_music()
+                self._reset_render_snapshots()
+                self.root.focus_force()
+                self._render()
+
+            self._start_crossfade(source, target, finish)
+            return
+
+        next_level_index = self._exit_target_level_index
+        target = self._preview_level_start_image(next_level_index)
+
+        def finish() -> None:
+            self._crossfade_source = None
+            self._crossfade_target = None
+            self._crossfade_finish = None
+            self.completed_levels = completed_after
+            self.answer_puzzle = None
+            self.answer_player = None
+            self._answer_exit_ticks = 0
+            self.scene = "game"
+            self._level_var.set(next_level_index)
+            self._load(self.project.levels[next_level_index], self.part_index)
+
+        self._start_crossfade(source, target, finish)
 
     def _hud_state(self) -> GameHudState:
         region_index, cavern_index = hud_indices_for_level(self.level.index)
@@ -946,19 +1327,38 @@ class GameWindow:
             self._render_after_id = self.root.after(self._render_ms, self._render_loop)
 
     def _render(self) -> None:
+        if self.scene == "difficulty":
+            self._show_image(self.dialog_renderer.render(self.difficulty_selection))
+            return
+        if self.scene == "map":
+            self.map_selection = self._normalized_map_selection(self.map_selection)
+            self._show_image(self._map_image(selected=self.map_selection))
+            return
+        if self.scene == "map_transition":
+            self._show_image(
+                self.map_renderer.render_level_enter_transition(
+                    self.map_selection,
+                    self._completed_map_regions(),
+                    self._map_transition_frame,
+                    MAP_LEVEL_TRANSITION_FRAMES,
+                )
+            )
+            return
+        if self.scene == "crossfade":
+            if self._crossfade_source is None or self._crossfade_target is None:
+                return
+            alpha = max(0.0, min(1.0, self._crossfade_frame / max(1, CROSSFADE_FRAMES)))
+            self._show_image(Image.blend(self._crossfade_source, self._crossfade_target, alpha))
+            return
+        if self.scene == "ancient_reveal":
+            self._show_image(self.map_renderer.render_ancient_reveal(self._ancient_reveal_frame, ANCIENT_REVEAL_FRAMES))
+            return
         if self.artifact_puzzle is not None:
             image = self.puzzle_renderer.render(self.artifact_puzzle)
             self._show_image(image)
             return
         if self.answer_puzzle is not None:
-            image = self.answer_puzzle_renderer.render(
-                self.answer_puzzle,
-                level=self.level,
-                part_index=self.part_index,
-                hud=self._hud_state(),
-                show_player=not self._answer_player_hidden,
-            )
-            self._show_image(image)
+            self._show_image(self._render_current_answer_puzzle_image())
             return
         actors = [
             actor

@@ -72,3 +72,15 @@ def test_audio_engine_toggles_are_no_op_safe():
         engine.set_sound_enabled(True)
     finally:
         engine.shutdown()
+
+
+def test_soundcard_game_music_render_has_no_extra_tail():
+    engine = _engine()
+    try:
+        item = engine._music_by_index[("AE001.DAT", 116)]
+        no_tail = engine._render_soundcard(item, tail_seconds=0.0)
+        with_tail = engine._render_soundcard(item, tail_seconds=1.0)
+        assert no_tail is not None and with_tail is not None
+        assert len(with_tail) > len(no_tail)
+    finally:
+        engine.shutdown()

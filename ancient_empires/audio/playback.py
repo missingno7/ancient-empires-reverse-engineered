@@ -112,7 +112,7 @@ class AudioPreviewStartTask:
 class OplRealtimeSource:
     """Incremental Nuked-OPL3 renderer for realtime callback playback."""
 
-    def __init__(self, data: bytes, exe_path: Path | str, *, speed: float) -> None:
+    def __init__(self, data: bytes, exe_path: Path | str, *, speed: float, tail_seconds: float = 1.0) -> None:
         from nuked_opl3 import OPL3, OPL_NATIVE_RATE  # type: ignore
 
         self._chip = OPL3(sample_rate=OPL_NATIVE_RATE)
@@ -121,7 +121,7 @@ class OplRealtimeSource:
         self._speed = max(0.10, min(8.0, float(speed)))
         self._write_index = 0
         self._sample = 0
-        self._tail_samples = self.sample_rate
+        self._tail_samples = max(0, int(round(self.sample_rate * max(0.0, float(tail_seconds)))))
         self._filter_profile = os.environ.get("AE_OPL_FILTER_PROFILE", "off")
         self._filter_previous = 0.0
 

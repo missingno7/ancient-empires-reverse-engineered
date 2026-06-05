@@ -787,8 +787,8 @@ def describe_soundcard_music_header(data: bytes) -> str:
 
 
 KNOWN_MUSIC_BASES = {
-    ("AE000", 49): "startup/title intro music (confirmed: D26C pushes resource 0x31)",
-    ("AE000", 53): "menu/interstitial music (confirmed D5F9 call with 0x35)",
+    ("AE000", 49): "map menu music (sound-card half is AE000:050)",
+    ("AE000", 53): "interstitial music (confirmed D5F9 call with 0x35)",
     ("AE000", 67): "game/menu music (confirmed D5F9 call with 0x43)",
     ("AE000", 69): "game/menu music (confirmed D5F9 call with 0x45)",
 }

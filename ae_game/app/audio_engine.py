@@ -18,6 +18,8 @@ from ancient_empires.audio.core import SAMPLE_RATE, build_audio_atlas
 
 MUSIC_ARCHIVE = "AE001.DAT"
 MUSIC_BASE_INDEX = 115  # AE001 resource 0x73, PC-speaker half of the first pair
+MAP_MUSIC_ARCHIVE = "AE000.DAT"
+MAP_MUSIC_BASE_INDEX = 49  # Map menu pair: AE000:049 PC-speaker, AE000:050 sound-card.
 
 
 def level_music_base_index(level_index: int) -> int:
@@ -135,10 +137,10 @@ class GameAudioEngine:
             chunks.append(chunk)
         return self._np.concatenate(chunks) if chunks else None
 
-    def _render_soundcard(self, item):
+    def _render_soundcard(self, item, *, tail_seconds: float = 0.0):
         from ancient_empires.audio.playback import OplRealtimeSource
 
-        source = OplRealtimeSource(item.data, self._exe_path, speed=1.0)
+        source = OplRealtimeSource(item.data, self._exe_path, speed=1.0, tail_seconds=tail_seconds)
         chunks = []
         while not source.finished:
             chunk = source.read(8192)
@@ -163,7 +165,7 @@ class GameAudioEngine:
     def _render_music_item(self, item):
         try:
             if item.kind == "soundcard-music":
-                return self._render_soundcard(item)
+                return self._render_soundcard(item, tail_seconds=0.0)
             return self._render_pcspeaker(item)
         except Exception:
             return None
@@ -197,6 +199,17 @@ class GameAudioEngine:
         item = self._music_by_index.get((MUSIC_ARCHIVE, index))
         if item is None:  # fall back to the PC-speaker half if a pair is missing
             item = self._music_by_index.get((MUSIC_ARCHIVE, base))
+        self._set_music(item)
+
+    def play_map_music(self) -> None:
+        """Loop the recovered map-menu music pair (sound-card AE000:050)."""
+        if not self.available:
+            return
+        base = MAP_MUSIC_BASE_INDEX
+        index = base + 1 if self._music_mode == "soundcard" else base
+        item = self._music_by_index.get((MAP_MUSIC_ARCHIVE, index))
+        if item is None:
+            item = self._music_by_index.get((MAP_MUSIC_ARCHIVE, base))
         self._set_music(item)
 
     def _set_music(self, item) -> None:
