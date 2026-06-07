@@ -1,4 +1,6 @@
 Pillow>=10.0
+moderngl>=5.10
+pygame>=2.5
 numpy>=1.24
 sounddevice>=0.5
 cffi>=1.15

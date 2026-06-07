@@ -316,3 +316,75 @@ overlay/debug tooling.
 ## Developer notes
 
 - Current module layout is documented in [`docs/project_structure.md`](docs/project_structure.md).
+
+
+## Enhanced Lighting Renderer
+
+The optional Enhanced Lighting renderer now uses a hidden **pygame + ModernGL**
+GPU backend. The classic renderer still produces the base frame, but the
+playfield crop is then processed through an off-screen fragment shader. HUD is
+explicitly excluded from lighting and shadow passes.
+
+
+## ModernGL uniform fix
+
+The enhanced shader now sets uniforms through safe helpers. Some uniforms can be
+optimized away by the OpenGL compiler when a shader path does not currently use
+them. ModernGL then does not expose those uniforms, so direct indexing caused
+errors such as:
+
+```text
+KeyError: 'u_terrain_shadow_opacity'
+```
+
+The renderer now ignores uniforms that are not active in the linked shader.
+
+
+## Enhanced renderer tuning update
+
+Default enhanced renderer values now match the tested config preset:
+
+- Effects resolution scale: 1.00
+- Ambient darkness: 0.49
+- Player torch radius: 85
+- Player torch intensity: 1.59
+- Artifact glow radius: 50
+- Artifact glow intensity: 1.15
+- Glow strength: 0.16
+- Projected platform shadow opacity: 0.75
+- Projected terrain shadow opacity: 0.75
+- Drop/contact shadow opacity: 0.27
+- Shadow softness: 10.0
+
+The player's torch light no longer blinks when the hurt/invulnerability sprite
+blink hides the player sprite. Platform drop shadows were shortened by roughly
+8 px so they align more naturally with platform edges.
+
+
+## Player light center tweak
+
+The player torch emitter is now placed near the visual center of the player
+sprite instead of using the raw gameplay anchor position. This prevents the
+light from appearing to come from the upper-left/anchor point. The contact
+shadow was adjusted accordingly so it remains under the feet.
+
+
+## Moving platform shadow fix
+
+Enhanced platform shadow blockers now use the same per-frame platform offsets as
+the base renderer. When interpolation provides temporary render offsets, those
+are used. Otherwise the renderer falls back to the current simulation snapshot.
+This prevents an old platform position from casting a shadow after the platform
+has moved.
+
+
+## Platform blocker geometry tweak
+
+Platform shadows no longer use the full visible platform sprite as the shadow
+occluder. They now behave like terrain made from 8x8 cells:
+
+- horizontal platform blocker: 48x8, centered inside the visible sprite
+- vertical platform blocker: 8x48, centered inside the visible sprite
+
+This avoids strange light/shadow behavior around decorative platform edges and
+makes platform shadows closer to terrain shadows.

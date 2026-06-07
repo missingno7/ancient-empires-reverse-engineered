@@ -41,6 +41,11 @@ from ancient_empires.rendering.answer_puzzle_screen import AnswerPuzzleScreenRen
 from ancient_empires.rendering.bitmap_font import BitmapFont
 from ancient_empires.rendering.dialog_screen import DifficultyDialogRenderer
 from ancient_empires.rendering.game_screen import GameHudState, GameScreenRenderer
+from ancient_empires.rendering.enhanced_renderer import (
+    EnhancedGamePostProcessor,
+    EnhancedRenderConfig,
+    build_enhanced_context,
+)
 from ancient_empires.rendering.map_screen import ANCIENT_WORLD_LEVEL_INDEX, MAP_CHOICES, MapScreenRenderer
 from ae_game.app.audio_engine import GameAudioEngine
 
@@ -216,6 +221,10 @@ class GameWindow:
         self._exit_target_level_index: int | None = None
         self.show_invisible = False
         self.interpolate_frames = False
+        self.renderer_mode = "classic"
+        self.enhanced_render_config = EnhancedRenderConfig(enabled=False)
+        self.enhanced_renderer = EnhancedGamePostProcessor()
+        self._enhanced_config_window: tk.Toplevel | None = None
         self.sound_enabled = True
         self.music_enabled = True
         self.audio = GameAudioEngine(project)
@@ -253,6 +262,10 @@ class GameWindow:
 
     def _on_close(self) -> None:
         self.audio.shutdown()
+        try:
+            self.enhanced_renderer.close()
+        except Exception:
+            pass
         self.root.destroy()
 
     def _build_menu(self) -> None:
@@ -315,6 +328,27 @@ class GameWindow:
             variable=self._interpolate_frames_var,
             command=self._toggle_frame_interpolation,
         )
+
+        renderer_menu = tk.Menu(view, tearoff=0)
+        self._renderer_mode_var = tk.StringVar(value=self.renderer_mode)
+        renderer_menu.add_radiobutton(
+            label="Classic",
+            value="classic",
+            variable=self._renderer_mode_var,
+            command=self._select_renderer_mode,
+        )
+        renderer_menu.add_radiobutton(
+            label="Enhanced Lighting",
+            value="enhanced",
+            variable=self._renderer_mode_var,
+            command=self._select_renderer_mode,
+        )
+        renderer_menu.add_separator()
+        renderer_menu.add_command(
+            label="Config...",
+            command=self._open_enhanced_renderer_config,
+        )
+        view.add_cascade(label="Renderer", menu=renderer_menu)
         menubar.add_cascade(label="View", menu=view)
 
         settings = tk.Menu(menubar, tearoff=0)
@@ -376,6 +410,95 @@ class GameWindow:
         self._current_render_snapshot = self._capture_render_snapshot()
         self._previous_render_snapshot = self._current_render_snapshot
         self._schedule_render_loop()
+        self._render()
+
+    def _select_renderer_mode(self) -> None:
+        self.renderer_mode = str(self._renderer_mode_var.get())
+        self.enhanced_render_config = self.enhanced_render_config.with_updates(
+            enabled=self.renderer_mode == "enhanced"
+        )
+        self._render()
+
+    def _open_enhanced_renderer_config(self) -> None:
+        if self._enhanced_config_window is not None and self._enhanced_config_window.winfo_exists():
+            self._enhanced_config_window.lift()
+            self._enhanced_config_window.focus_force()
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("Enhanced Renderer Config")
+        win.resizable(False, False)
+        self._enhanced_config_window = win
+
+        def on_close() -> None:
+            self._enhanced_config_window = None
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", on_close)
+
+        row = 0
+        tk.Label(win, text="Enhanced renderer settings", font=("TkDefaultFont", 10, "bold")).grid(
+            row=row, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
+        )
+        row += 1
+
+        bool_specs = [
+            ("Ambient darkness", "ambient_enabled"),
+            ("Projected shadows", "shadows_enabled"),
+            ("Terrain casts shadows", "terrain_shadows_enabled"),
+            ("Platforms cast shadows", "platform_shadows_enabled"),
+            ("Soft drop/contact shadows", "drop_shadows_enabled"),
+            ("Glow", "glow_enabled"),
+        ]
+        for label, field in bool_specs:
+            var = tk.BooleanVar(value=bool(getattr(self.enhanced_render_config, field)))
+            def command(field=field, var=var) -> None:
+                self.enhanced_render_config = self.enhanced_render_config.with_updates(**{field: bool(var.get())})
+                self._render()
+            tk.Checkbutton(win, text=label, variable=var, command=command).grid(
+                row=row, column=0, columnspan=2, sticky="w", padx=8
+            )
+            row += 1
+
+        slider_specs = [
+            ("Effects resolution scale", "effect_scale", 0.25, 1.0, 0.05),
+            ("Ambient darkness", "ambient_darkness", 0.0, 0.85, 0.01),
+            ("Player torch radius", "player_radius", 16.0, 140.0, 1.0),
+            ("Player torch intensity", "player_intensity", 0.0, 2.0, 0.01),
+            ("Artifact glow radius", "artifact_radius", 16.0, 170.0, 1.0),
+            ("Artifact glow intensity", "artifact_intensity", 0.0, 2.4, 0.01),
+            ("Glow strength", "glow_strength", 0.0, 1.2, 0.01),
+            ("Projected platform shadow opacity", "shadow_opacity", 0.0, 0.75, 0.01),
+            ("Projected terrain shadow opacity", "terrain_shadow_opacity", 0.0, 0.75, 0.01),
+            ("Drop/contact shadow opacity", "drop_shadow_opacity", 0.0, 0.75, 0.01),
+            ("Shadow softness", "shadow_blur", 1.0, 18.0, 0.5),
+        ]
+        for label, field, min_value, max_value, resolution in slider_specs:
+            tk.Label(win, text=label).grid(row=row, column=0, sticky="w", padx=8, pady=(4, 0))
+            var = tk.DoubleVar(value=float(getattr(self.enhanced_render_config, field)))
+            def command(_value: str, field=field, var=var) -> None:
+                self.enhanced_render_config = self.enhanced_render_config.with_updates(**{field: float(var.get())})
+                self._render()
+            tk.Scale(
+                win,
+                from_=min_value,
+                to=max_value,
+                resolution=resolution,
+                orient=tk.HORIZONTAL,
+                length=240,
+                variable=var,
+                command=command,
+            ).grid(row=row, column=1, sticky="ew", padx=8, pady=(4, 0))
+            row += 1
+
+        tk.Button(win, text="Enable enhanced renderer", command=lambda: self._enable_enhanced_from_config()).grid(
+            row=row, column=0, columnspan=2, sticky="ew", padx=8, pady=(8, 8)
+        )
+
+    def _enable_enhanced_from_config(self) -> None:
+        self.renderer_mode = "enhanced"
+        self._renderer_mode_var.set("enhanced")
+        self.enhanced_render_config = self.enhanced_render_config.with_updates(enabled=True)
         self._render()
 
     def _collect_all_artifacts(self) -> None:
@@ -1388,7 +1511,44 @@ class GameWindow:
             player_frame_override=frame_override,
             player_halo=halo,
         )
-        self._show_image(image)
+        enhanced_context = None
+        if self.enhanced_render_config.enabled:
+            enhanced_context = build_enhanced_context(
+                self.level,
+                part_index=self.part_index,
+                room_index=self.room_index,
+                # Keep the player's torch light alive even when the player
+                # sprite is blinking during hurt invulnerability. The original
+                # blink only hides the sprite; it should not make the enhanced
+                # lighting flicker.
+                player_state=draw_player if not self._exit_player_hidden else None,
+                collected_artifacts=set(self.collected_artifacts),
+                # Use the exact platform offsets used for this rendered frame.
+                # If interpolation did not provide a temporary render override,
+                # fall back to the current simulation snapshot.  This keeps
+                # platform shadow blockers attached to moving platforms instead
+                # of the original room-data positions.
+                platform_offsets=platform_offsets or self._current_platform_offsets_for_render(),
+                config=self.enhanced_render_config,
+            )
+        self._show_image(image, enhanced_context=enhanced_context)
+
+    def _current_platform_offsets_for_render(self) -> dict[int, tuple[int, int]]:
+        """Return platform offsets for this exact rendered frame.
+
+        The enhanced renderer must use the same platform positions as the base
+        renderer.  When frame interpolation is enabled, `_render_game()` already
+        computes `platform_offsets` from the previous/current render snapshots.
+        When interpolation is off, there may still be moving platforms in the
+        current simulation; in that case fall back to the current snapshot so
+        shadow blockers do not stay at the original parse-time positions.
+        """
+        if self._current_render_snapshot is not None:
+            return dict(self._current_render_snapshot.platform_offsets)
+        return {
+            platform.index: (platform.dx, platform.dy)
+            for platform in getattr(self.simulation, "platforms", ())
+        }
 
     def _player_draw_state(self) -> tuple[int | None, bool, bool]:
         """Resolve the post-hit / immortality draw per AEPROG 0x437c.
@@ -1406,11 +1566,18 @@ class GameWindow:
             return None, False, True
         return None, False, False
 
-    def _show_image(self, image: Image.Image) -> None:
+    def _show_image(self, image: Image.Image, *, enhanced_context=None) -> None:
         if self.scale != 1:
             image = image.resize(
                 (image.width * self.scale, image.height * self.scale),
                 Image.Resampling.NEAREST,
+            )
+        if enhanced_context is not None and self.enhanced_render_config.enabled:
+            image = self.enhanced_renderer.apply(
+                image,
+                enhanced_context,
+                self.enhanced_render_config,
+                scale=float(self.scale),
             )
         self._photo = ImageTk.PhotoImage(image)
         self.canvas.create_image(0, 0, image=self._photo, anchor=tk.NW)
